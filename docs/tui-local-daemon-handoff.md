@@ -1,6 +1,6 @@
 # TUI local app-server handoff and fallback
 
-Status: deferred proposal. Graph handoff, the commands below, transition records, and automatic local fallback are not implemented by this document.
+Status: cold local-daemon recovery implemented, including restoration of the owning agent tree and continuation of eligible unfinished turns; executable validation is outstanding. Healthy graph handoff remains a deferred proposal. The `/server` commands and graph transition records below are not implemented.
 
 Related work:
 
@@ -14,17 +14,45 @@ Codex TUI can run against an embedded app-server or a shared local app-server da
 
 - `/agents` is unavailable to an embedded session;
 - starting the local daemon from that dialog does not move the current session to it; and
-- non-embedded disconnections enter the existing reconnect flow rather than automatically moving the graph to an embedded app-server.
+- non-embedded disconnections enter the reconnect flow, which can now restore the selected local conversation's owning agent tree in an embedded app-server after proving that its connected daemon exited.
 
-The TUI should support an explicit, reversible handoff between its embedded app-server and the local daemon. After confirmed local-daemon death, a separately authorized cold-recovery flow could restore durable conversation state through a new embedded app-server while retaining the TUI's interface. Recovery must report interrupted or lost process-local work; it cannot silently recreate the former runtime's authority.
+The remaining proposal is explicit, reversible handoff between the embedded app-server and the local daemon. Implemented cold recovery reconstructs durable conversation state through ordinary resume, preserves editable local input, and automatically continues eligible unfinished turns without asking Main to call `resume_agent` or send continuation prompts. It does not recreate process-local delivery capabilities, approvals, or tool handles.
 
 This is a local-host feature. A remote app-server owns a potentially different workspace, environment, credential, and permission boundary and must not silently fall back to the local machine.
 
-## Goals
+## Implemented cold recovery
+
+The TUI retains a native process monitor from its actual local socket connection before the WebSocket and initialization handshakes complete. Linux uses a pidfd, macOS uses a process-exit kqueue event, and Windows retains a process handle. A lost socket, missing PID file, refused connection, or unavailable process monitor is not evidence of process death. Missing or denied native monitoring leaves ordinary reconnect behavior unchanged.
+
+Only an attached `LocalDaemon` Unix-socket session with a known displayed thread ID can fall back. Explicit `--remote` connections, including Unix sockets and loopback WebSockets, never fall back. An overview without a selected conversation and an initial submission whose thread ID was never received cannot be reconstructed automatically. Requiring the daemon at startup does not prevent recovery after a later verified death.
+
+Recovery reuses launch-time home, auth selection, configuration loader, executor manager, and network-policy owners; starts the same embedded app-server used by `--no-daemon`; and retains thread UUIDs. The old daemon was the writer, and its exit releases its operating-system locks. Ordinary canonical-history, parent ownership, and writer-lock checks still apply; recovery neither deletes locks nor bypasses these checks.
+
+A restart confirmed through `/daemon` reconnects to the replacement daemon. That expected shutdown does not trigger embedded recovery.
+
+Recovery has two phases. Preparation walks from the selected thread to its owning root and inspects durable work before loading descendants. It restores the selected thread, agents with recoverable unfinished turns, and their required ancestors parent-first. Completed, interrupted, errored, and idle historical agents stay unloaded; an open ownership edge alone does not allocate a runtime or consume the root's agent capacity. Closed or transferred agents are not reopened. Restoration retains the latest thread-owned reasoning-summary preference, including child settings absent from the launch configuration; it does not replace newer settings with an unfinished turn's older selection. Failure to restore the selected thread or an owning ancestor leaves the TUI offline with its draft intact; unavailable active branches are reported individually. One preparation attempt is allowed per embedded server instance. A server-bound, single-use plan authorizes continuation only after the TUI adopts the new connection and event stream.
+
+Continuation considers each restored thread's latest durable, unfinished regular turn. It validates receiver-owned canonical history and matching saved permissions, local environment, model, collaboration mode, and plugin selection, then uses the existing recovery submission with the original turn ID and no new user message. Newly persisted turn contexts include a recovery snapshot for the output schema, resolved service tier, parent lineage, and configured summary preference; an absent schema within that snapshot certifies that the original turn had no schema. The guarded admission also compares resolved settings before sampling. Completed, explicitly interrupted, errored, and idle agents remain idle. Newer or already active work invalidates an old candidate. Changed settings, ambiguous ancestry, unavailable context or recovery snapshots, non-regular work, and unsupported environment selections leave that agent paused with an explanation. Older rollouts remain readable and explicitly resumable, but their missing start-only constraints cannot be inferred for automatic continuation.
+
+The recovery snapshot records both the configured and resolved reasoning summary. The outer turn-context `summary` remains upstream's optional compatibility placeholder. Earlier fork snapshots that lack the new resolved field use their recorded outer summary; missing or mismatched effective settings still prevent automatic continuation.
+
+Recovery also records personality and exact workspace-root URIs in the start options. Snapshots without recorded roots remain readable, but require new input because their original execution scope cannot be certified.
+
+Local drafts and paused input survive. Exact durable client-message receipts can confirm previous admission; uncertain submissions are not automatically resent and hold following queued messages until confirmed or explicitly recovered. Known-unsent Tab messages in the displayed thread retain their order and resume after the recovered turn completes, or immediately when recovery confirms that thread is idle. Pre-existing manual-recovery holds and retained background queues remain paused. An unconfirmed or paused continuation does not authorize an immediate queue drain. Stale requests, task-tool connections, interactive approvals, and response routes are retired. Recovered background threads are live in the new server; cached threads outside the owning tree remain replay-only. Restoring a turn restarts sampling from saved context, not the former model stream or subprocess. Missing tool outcomes use the same prompt-only placeholders as `/continue`: `aborted` for function, custom-tool, and shell calls, and an empty result for client tool searches. The model decides whether to retry; a placeholder is not saved evidence of completion. Recovery does not directly re-execute historical tool calls or promise to restore unflushed output. External commands may outlive the daemon, and their effects may still need checking before another call; this is not an exactly-once execution guarantee.
+
+Tool dispatch also checks the canonical publication result before creating its execution future. A rejected append or lost append/flush acknowledgment quarantines publication and stops dispatch, so a failed write cannot produce an external tool effect with no recorded call. Fault-injected coverage checks both failures against an acknowledged-call control.
+
+The recovery notice identifies the new embedded owner. Daemon-wide `/agents` is no longer available. Visible history is rebuilt through the existing bounded resume/replay path; exact scroll position, overlays, and every transient transcript cell are not preserved by this implementation.
+
+Regression coverage includes native peer lifetime, local versus TCP client monitoring, embedded recovery with saved history and editable input, a fresh model turn after recovery, writer-lock enforcement, stale-event isolation, and remote/live-peer/unknown-thread exclusions. A public session-facade fixture kills a test-owned subprocess after a child's input and turn context are on disk, then checks recovery from root or child selection at the root's capacity limit. Historical idle agents stay unloaded while an unfinished nested child and its required owner are restored. The fixture also checks original turn identity, preserved output schema, service tier, and reasoning summary, no added continuation prompt, and refusal after a mid-turn collaboration-mode or summary change. A durable sleep call without its outcome permits automatic continuation with a prompt-only placeholder. Selector and admission coverage checks inherited-history boundaries, terminal turns, newer-work guards, and matching call/output identities and families. These tests require executable CI validation; static inspection and formatting do not establish that they pass.
+
+Remaining lifecycle qualification: exercise an actual killed daemon through the full TUI event loop and cancellation during embedded startup/resume. The fallback fixture composes peer death with separately shut-down embedded ownership; the tree fixture kills its real in-process server owner but invokes recovery through the public session facade rather than the terminal event loop. Legacy and V2 tree restoration, transferred/partially unavailable branches, and cross-server plan rejection need broader integration coverage. Run the native-monitor and recovery coverage on Linux, macOS, and Windows before treating cross-platform recovery as qualified. The new protocol metadata also requires generated-schema validation in remote CI.
+
+## Remaining handoff goals
 
 - Let an existing embedded TUI move its current root thread graph to the shared local daemon.
 - Let a daemon-backed TUI move its graph back to an embedded app-server.
-- Recover automatically into embedded mode after an unambiguous local-daemon process failure.
+- Extend cold daemon-death recovery with faithful retention of transient interface state.
 - Keep thread UUIDs, validated durable graph metadata, aliases, roles, nicknames, and canonical model context. Preserve queued work only through an explicit authenticated healthy-handoff protocol, not by inferring it from audit history after process death.
 - Preserve the TUI's rendered transcript, composer, focus, scroll position, selected agent, and overlays rather than rebuilding the visible interface through the ordinary cold-resume path.
 - Use real per-thread writer exclusion together with root ownership and admission checks. A backend without the required exclusion capability must reject the transition rather than treating unsupported locking as success.
@@ -39,7 +67,7 @@ This is a local-host feature. A remote app-server owns a potentially different w
 - Replacing the per-thread writer lock with a second ownership or lease system.
 - Treating every stored rollout as loaded in the daemon-wide `/agents` dashboard.
 - Adding a daemon-wide aggregate agent limit as part of handoff.
-- Reconstructing process-local queues, scoped `m` grants, pending observers, or accepted delivery capabilities from durable audit history after a cold boundary.
+- Reconstructing process-local queues, pending observers, or accepted delivery capabilities from durable audit history after a cold boundary. Legacy send-grant records are inert.
 - Fixing all cold-resume transcript reconstruction gaps. A live TUI handoff should avoid invoking visible transcript reconstruction, but ordinary `codex resume` remains separate work.
 
 ## Current ownership and limits
@@ -99,7 +127,7 @@ The first implementation should admit a handoff only when:
 - every accepted canonical publication and exact-instance delivery obligation has settled without ambiguity; and
 - every rollout and durable graph update has an acknowledged flush. This is not an fsync guarantee.
 
-The existing queue is process-local, and cold history does not restore its pending entries or scoped grants. Healthy transfer therefore needs a new authenticated, versioned transfer protocol with explicit root authorization, source fencing, destination admission, and atomic disposition of each transferable pending entry. The first implementation should reject graphs containing state that this protocol cannot transfer. Already accepted receipts remain attached to their exact runtime instances and must settle there; the destination must never retarget them or manufacture acknowledgement from readable history. An active `m` grant cannot outlive its target turn merely because a graph is being moved.
+The existing queue is process-local, and cold history does not restore its pending entries. Healthy transfer therefore needs a new authenticated, versioned transfer protocol with explicit root authorization, source fencing, destination admission, and atomic disposition of each transferable pending entry. The first implementation should reject graphs containing state that this protocol cannot transfer. Already accepted receipts remain attached to their exact runtime instances and must settle there; the destination must never retarget them or manufacture acknowledgement from readable history. Retired send-permission settings are not transferable runtime state.
 
 The TUI can wait for ordinary work to finish or ask the user to interrupt it. It must not silently interrupt active work merely to optimize memory.
 
@@ -152,19 +180,11 @@ For a supported local store, operating-system-backed writer exclusion is necessa
 - if the daemon is merely unreachable but still alive, its writer locks remain held and embedded restoration receives an ownership conflict;
 - a restarted daemon cannot reload a thread already restored by an embedded TUI because that TUI owns the same lock.
 
-After a local-daemon transport closes, the TUI should:
+The implemented cold path above restores the owning tree, reconciles durable conversation state, and resumes eligible unfinished turns after adopting the replacement connection. Retaining every transient interface cell and exact scroll position remains future work. Process-local approvals, queue entries, observation routes, and subprocess handles are not transferred.
 
-1. retain the complete in-memory interface state;
-2. determine whether the local daemon process has exited;
-3. retain ordinary reconnect behavior unless process death and the configured local-recovery authority are established;
-4. start an embedded app-server and perform explicitly authorized cold recovery of validated durable threads, subject to all graph and writer checks;
-5. reconcile durable events produced before the disconnect;
-6. mark any in-flight turn, subprocess, or approval that died with the daemon as interrupted; and
-7. display a concise recovery notice identifying lost process-local queue/observation state that cannot be recovered.
+Daemon death is not a healthy transfer. Unadmitted queue entries, pending automatic observations, and unresolved accepted capabilities cannot be reconstructed from audit rows, draft text, or a missing RPC response. Cold history remains audit-only for those capabilities. Automatic continuation is restricted to already admitted, durably recorded unfinished work under the recovery contract above; it does not authorize replaying ambiguous submissions. The TUI preserves an unsubmitted draft but never automatically resubmits a possibly accepted prompt. Ambiguous candidates remain paused. Restored same-tree agents can communicate without send grants.
 
-Daemon death is not a healthy transfer. Unadmitted queue entries, scoped reply grants, pending automatic observations, and unresolved accepted capabilities cannot be reconstructed from audit rows, draft text, or a missing RPC response. Cold history remains audit-only for these purposes; new work requires explicit reconciliation and fresh authorization. The TUI may preserve an unsubmitted draft, but must not automatically resubmit a possibly accepted prompt. If interrupted work or writer state is ambiguous, recovery fails closed rather than inferring a safe retry.
-
-If the writer lock is still held, the TUI must not force ownership. It should enter a recoverable connection state, retry the local daemon, and offer an explicit return-to-embedded action once ownership becomes available.
+If the writer lock is still held, the TUI must not force ownership. The current cold path fails closed and retains local input. A future explicit return-to-embedded action could retry after ownership becomes available.
 
 Remote disconnection remains a reconnect flow. It must not instantiate local runtimes for remote threads.
 
@@ -233,7 +253,7 @@ These measurements should guide any later global residency or memory policy.
 | Destination cannot acquire a writer lock | Never force the lock; recover the source only after positively excluding destination commitment and reacquiring complete ownership. |
 | Destination restores only part of the graph | Fence partial destination runtimes and reconcile transition status before recovery; retain all existing canonical rollouts and receipts. |
 | TUI disconnects after destination commits | Reconnect to the committed owner using the transition record. |
-| Daemon exits during an active turn | Perform authorized cold recovery of durable state, mark incomplete work interrupted, and leave lost queues, grants, and unresolved capabilities inert. |
+| Daemon exits during an active turn | Perform authorized cold recovery of durable state, mark incomplete work interrupted, and leave lost queues and unresolved capabilities inert. Legacy send grants remain inert. |
 | Local socket drops while daemon remains alive | Retry; do not create a competing runtime. |
 | Remote socket drops | Reconnect remotely; never fall back locally. |
 
@@ -252,7 +272,7 @@ Existing `thread/resume` remains a primitive for reconstructing an individual ru
 
 Wire payloads should use stable thread IDs and camelCase fields. Any experimental RPC must update the app-server documentation and generated schemas when implementation begins.
 
-## Required coverage
+## Remaining graph-handoff coverage
 
 1. An idle embedded root with idle descendants moves to the daemon with the same UUIDs, aliases, roles, nicknames, model settings, and effective model context.
 2. `/agents` becomes available immediately after connection without restarting the TUI.
@@ -277,5 +297,5 @@ Wire payloads should use stable thread IDs and camelCase fields. Any experimenta
 3. Preserve the TUI transcript while rebinding its app-server session.
 4. Extend handoff to an idle complete root graph.
 5. Add explicit daemon-to-embedded disconnect.
-6. Add automatic fallback after confirmed local-daemon process exit.
+6. Extend the implemented conversation-level fallback to the validated graph-wide handoff contract.
 7. Measure real memory savings and recovery latency before considering global daemon resource limits or busy-graph draining.

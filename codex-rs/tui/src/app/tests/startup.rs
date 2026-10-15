@@ -960,6 +960,7 @@ async fn unattended_modals_survive_unfinished_terminal_input() -> Result<()> {
         /*remote_cwd*/ None,
         app_server.thread_tool_transport(),
         super::super::reconnect::ReconnectPresentation::Overview,
+        /*fallback*/ None,
     )
     .await?;
     app.finish_reconnect(

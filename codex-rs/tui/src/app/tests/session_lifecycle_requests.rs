@@ -1942,7 +1942,6 @@ async fn agent_control_admission_preserves_current_and_saved_provider_quarantine
             app.agent_navigation.response_observation(source, target),
             None
         );
-        assert_eq!(app.agent_navigation.reply_route(source, target), None);
         app.observe_agent_from_selector(
             &mut app_server,
             source,
@@ -1962,8 +1961,6 @@ async fn agent_control_admission_preserves_current_and_saved_provider_quarantine
             app.agent_navigation.response_observation(target, unrelated),
             None
         );
-        assert_eq!(app.agent_navigation.reply_route(target, unrelated), None);
-        assert_eq!(app.agent_navigation.subtree_messaging(source), None);
 
         let error = app
             .ensure_agent_control_admission(source, Some(target))

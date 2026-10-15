@@ -35,6 +35,9 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+#[path = "stream_events_publication_tests.rs"]
+mod publication;
+
 fn assistant_output_text(text: &str) -> ResponseItem {
     assistant_output_text_with_phase(text, /*phase*/ None)
 }

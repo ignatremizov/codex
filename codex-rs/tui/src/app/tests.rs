@@ -2970,12 +2970,6 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
         }
     );
     insta::assert_snapshot!(observation.compact_label(), @"passive");
-    assert_eq!(
-        app.agent_navigation
-            .reply_route(observer_thread_id, receiver_thread_id),
-        None,
-        "persisted per-turn reply metadata must not synthesize an acknowledged live route",
-    );
     app.agent_navigation
         .clear_response_observation(observer_thread_id, receiver_thread_id);
 
@@ -11711,6 +11705,13 @@ async fn start_config_write_test_app_server(app: &App) -> Result<AppServerSessio
 
 #[path = "tests/active_reconnect_tests.rs"]
 mod active_reconnect;
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "tests/local_daemon_fallback_tests.rs"]
+mod local_daemon_fallback;
+
+#[path = "tests/local_tree_recovery_tests.rs"]
+mod local_tree_recovery;
 
 #[cfg(unix)]
 #[path = "tests/navigation_reconnect_tests.rs"]

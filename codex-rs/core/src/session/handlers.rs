@@ -722,6 +722,7 @@ pub(super) async fn submission_loop(
                 Op::RecoverTurn {
                     thread_settings,
                     start_options,
+                    expected_previous_turn_id,
                     reply,
                 } => {
                     let result = turn_input::handle_recovery(
@@ -732,6 +733,7 @@ pub(super) async fn submission_loop(
                         },
                         start_options,
                         sub.id.clone(),
+                        expected_previous_turn_id,
                     )
                     .await;
                     let _ = reply.send(result);

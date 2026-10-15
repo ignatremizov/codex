@@ -204,7 +204,6 @@ mod agent_cycling;
 mod agent_lifecycle_control;
 mod agent_mailbox;
 mod agent_message_consolidation;
-mod agent_messaging;
 mod agent_navigation;
 mod agent_observation_display;
 mod agent_picker;
@@ -269,6 +268,7 @@ mod turn_tips;
 pub(crate) use new_session::has_launch_setting;
 mod clipboard;
 mod footer_selection;
+mod local_daemon_fallback;
 mod native_history;
 mod owned_transcript;
 mod pending_interactive_replay;
@@ -326,6 +326,7 @@ use self::agent_navigation::AgentNavigationState;
 use self::agent_prompt_queue::QueuedAgentPrompt;
 use self::app_server_requests::PendingAppServerRequests;
 use self::loaded_threads::find_loaded_subagent_threads_for_primary;
+pub(crate) use self::local_daemon_fallback::EmbeddedAppServerRecovery;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 pub(crate) use self::platform_actions::WindowsSandboxHost;
 use self::platform_actions::*;
@@ -581,10 +582,6 @@ pub(crate) struct App {
     launch_cwd: PathBuf,
     /// Resume anchor selected by `/cd`; ordinary resumes retain the immutable launch cwd.
     runtime_working_directory_override: Option<PathBuf>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "retain the state runtime for the app lifetime")
-    )]
     pub(crate) state_db: Option<StateDbHandle>,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
