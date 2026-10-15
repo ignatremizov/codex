@@ -107,6 +107,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                     transport.execute(req).await
                 }
             },
+            |_| true,
         )
         .await?;
 
@@ -148,6 +149,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                     transport.stream(req).await
                 }
             },
+            |error| !crate::error::is_model_capacity_error(error),
         )
         .await?;
 

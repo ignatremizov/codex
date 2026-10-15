@@ -22,6 +22,18 @@ impl ChatWidget {
             notification => notification,
         };
         // A stale progress event must not even clear a current retry status.
+        if let ServerNotification::Error(error) = &notification
+            && error.will_retry
+            && error.retry_at.is_some()
+            && (replay_kind.is_some()
+                || self.turn_lifecycle.last_turn_id.as_deref() != Some(error.turn_id.as_str())
+                || self
+                    .thread_id()
+                    .is_some_and(|id| id.to_string() != error.thread_id)
+                || !self.turn_lifecycle.agent_turn_running)
+        {
+            return;
+        }
         if let ServerNotification::ContextCompactionStatus(status) = &notification
             && (replay_kind.is_some()
                 || status.message.trim().is_empty()
@@ -69,7 +81,7 @@ impl ChatWidget {
             })
         );
         if !is_history_only_replay && !is_retry_error {
-            self.restore_retry_status_header_if_present();
+            self.restore_retry_status_header_if_present(&notification);
         }
         match notification {
             ServerNotification::McpServerOauthLoginCompleted(notification) => {
@@ -258,6 +270,15 @@ impl ChatWidget {
                             notification.error.message,
                             notification.error.additional_details,
                         );
+                        if let Some(retry_at) = notification.retry_at {
+                            self.set_status_countdown_deadline_at_ms(
+                                StatusCountdownOwner::ModelRetry {
+                                    turn_id: notification.turn_id,
+                                },
+                                retry_at.saturating_mul(1_000),
+                            );
+                            self.bottom_pane.set_global_status_timer_visible(true);
+                        }
                     }
                 } else {
                     self.last_non_retry_error = Some((

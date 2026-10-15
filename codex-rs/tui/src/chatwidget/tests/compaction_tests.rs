@@ -164,6 +164,7 @@ async fn invalid_decoding_status_cannot_clear_retry_or_change_active_compaction(
             thread_id: thread_id.to_string(),
             turn_id: "turn-1".into(),
             will_retry: true,
+            retry_at: None,
             error: codex_app_server_protocol::TurnError {
                 message: "Reconnecting".into(),
                 codex_error_info: None,
@@ -570,6 +571,7 @@ async fn compaction_retry_status_returns_to_compacting() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             will_retry: true,
+            retry_at: None,
             error: codex_app_server_protocol::TurnError {
                 message: "Reconnecting".to_string(),
                 codex_error_info: None,
