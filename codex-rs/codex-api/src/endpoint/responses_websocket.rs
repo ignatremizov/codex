@@ -361,9 +361,16 @@ impl ResponsesWebsocketConnection {
                 };
 
                 if let Err(err) = result {
+                    // Capacity rejects this request, not the connection. Keep the socket for
+                    // the turn-owned retry policy instead of forcing a reconnect.
+                    let capacity_error = matches!(&err, ApiError::ServerOverloaded { .. })
+                        || matches!(
+                            &err,
+                            ApiError::Transport(error) if crate::error::is_model_capacity_error(error)
+                        );
                     // A terminal stream error should reach the caller immediately. Waiting for a
                     // graceful close handshake here can stall indefinitely and mask the error.
-                    let failed_stream = guard.take();
+                    let failed_stream = if capacity_error { None } else { guard.take() };
                     drop(guard);
                     drop(failed_stream);
                     // Failed cancellation retires the socket while preserving any received

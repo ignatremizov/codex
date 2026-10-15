@@ -1634,6 +1634,15 @@
         "error": {
           "$ref": "#/definitions/TurnError"
         },
+        "retryAt": {
+          "default": null,
+          "description": "Unix seconds at which the next automatic retry is scheduled.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         },

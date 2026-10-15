@@ -1803,7 +1803,8 @@ async fn run_auto_compact(
                 reason,
                 phase,
             )
-            .await?;
+            .or_cancel(run.cancellation)
+            .await??;
             Ok(true)
         }
     }
@@ -1975,12 +1976,6 @@ async fn run_sampling_request(
         };
         let mut prompt_input = prompt_input;
         sess.project_child_developer_instructions(&turn_context, &mut prompt_input);
-        sess.services
-            .local_agent_runtime
-            .control(sess.session_id())
-            .messaging_context_snapshot(sess.presentation_id())
-            .await?
-            .reconcile(&mut prompt_input);
         if let Some(identities) = &agent_identities {
             crate::context::world_state::prepare_v1_agent_model_input(
                 &mut prompt_input,

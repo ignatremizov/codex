@@ -362,7 +362,7 @@ async fn review_restores_context_window_indicator() {
 
 #[tokio::test]
 async fn failed_turn_completion_preserves_queued_review_start() {
-    const ERROR: &str = "Selected model is at capacity. Please try a different model.";
+    const ERROR: &str = "Tool execution failed.";
 
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -372,7 +372,7 @@ async fn failed_turn_completion_preserves_queued_review_start() {
         QueuedInputAction::ParseSlash,
         Vec::new(),
     ));
-    handle_error(&mut chat, ERROR, Some(CodexErrorInfo::ServerOverloaded));
+    handle_error(&mut chat, ERROR, Some(CodexErrorInfo::Other));
     assert_matches!(op_rx.try_recv(), Ok(Op::Review { .. }));
     assert!(chat.input_queue.user_turn_pending_start);
     assert!(chat.bottom_pane.is_task_running());
@@ -386,7 +386,7 @@ async fn failed_turn_completion_preserves_queued_review_start() {
                 /*duration_ms*/ None,
                 Some(AppServerTurnError {
                     message: ERROR.to_string(),
-                    codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
+                    codex_error_info: Some(CodexErrorInfo::Other),
                     additional_details: None,
                     misalignment: None,
                 }),

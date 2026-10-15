@@ -64,6 +64,10 @@ pub struct ErrorNotification {
     // Set to true if the error is transient and the app-server process will automatically retry.
     // If true, this will not interrupt a turn.
     pub will_retry: bool,
+    /// Unix seconds at which the next automatic retry is scheduled.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub retry_at: Option<i64>,
     pub thread_id: String,
     pub turn_id: String,
 }
@@ -75,3 +79,7 @@ pub struct ServerRequestResolvedNotification {
     pub thread_id: String,
     pub request_id: RequestId,
 }
+
+#[cfg(test)]
+#[path = "notification_tests.rs"]
+mod tests;
