@@ -347,6 +347,10 @@ pub(crate) async fn handle_output_item_done(
 
             record_completed_response_item(ctx.sess.as_ref(), ctx.step_context.as_ref(), &item)
                 .await;
+            // Publication awaits the canonical append+flush and quarantines every failed
+            // receipt, even though the convenience recorder only logs the error. Never
+            // execute an operation whose call may be absent from crash-recovery history.
+            ctx.sess.check_history_publication()?;
 
             let cancellation_token = ctx.cancellation_token.child_token();
             let runtime = ctx.tool_runtime.clone();

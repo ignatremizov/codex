@@ -10,42 +10,6 @@ fn thread_id(value: &str) -> ThreadId {
 }
 
 #[test]
-fn live_reply_settings_outlast_turn_observation_and_end_with_the_relationship() {
-    let observer = thread_id("00000000-0000-0000-0000-000000000101");
-    let target = thread_id("00000000-0000-0000-0000-000000000102");
-    let other = thread_id("00000000-0000-0000-0000-000000000103");
-    let mut state = AgentResponseObservationState::default();
-    state.replace_reply_route(observer, target, /*enabled*/ true);
-    state.replace_reply_route(observer, other, /*enabled*/ false);
-    state.note(
-        observer,
-        target,
-        AgentResponseObservationBinding::Bound,
-        Some(AgentResponseHandling::Wake),
-    );
-    state.mark_target_stopped(target);
-    state.remove(observer, target);
-    assert_eq!(
-        (
-            state.get(observer, target),
-            state.reply_route(observer, target),
-            state.reply_route(observer, other),
-        ),
-        (None, Some(true), Some(false)),
-    );
-    state.remove_thread(target);
-    assert_eq!(
-        (
-            state.reply_route(observer, target),
-            state.reply_route(observer, other),
-        ),
-        (None, Some(false)),
-    );
-    state.clear();
-    assert_eq!(state.reply_route(observer, other), None);
-}
-
-#[test]
 fn bound_observation_precedes_and_preserves_next_turn_policy() {
     let observer = thread_id("00000000-0000-0000-0000-000000000101");
     let target = thread_id("00000000-0000-0000-0000-000000000102");

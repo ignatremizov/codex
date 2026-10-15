@@ -427,6 +427,28 @@ configuration changes alone do not invalidate existing threads.
 
 When an auth profile is explicitly selected, shared-server connections use its profile-scoped socket and verify the captured profile identity on the same connection. Older explicit remote servers that lack `server/read` retain method-not-found compatibility. Implicit startup connects to an existing matching server when available and otherwise uses embedded operation; it does not silently start or replace an admitted shared-server session.
 
+## In-process recovery after local server death
+
+An embedder that has confirmed its connected local server exited can initialize a
+replacement with its captured launch configuration, then call
+`prepare_local_tree_recovery(thread_id)`. Preparation restores the selected thread,
+unfinished agents and required owners under ordinary writer exclusion. It leaves
+other historical agents unloaded and does not start model work.
+
+After adopting the replacement event stream, consume the returned server-bound plan
+with `continue_local_tree_recovery(plan)`. Eligible turns retain their original IDs
+and recorded constraints; changed or uncertain work stays paused. The returned
+`paused_threads` includes restored threads paused during preparation or admission,
+so an embedder must not treat them as confirmed idle. A missing tool
+result becomes an ordinary prompt placeholder, not proof of completion or an
+instruction to redispatch the tool. Unconfirmed inputs are not resent; known-unsent
+input in the displayed TUI thread can resume after the recovered turn completes or
+the thread is confirmed idle, preserving existing recovery holds and message ordering.
+
+These Rust embedding methods have no JSON-RPC equivalents. Socket failure alone
+does not authorize recovery, and remote connections cannot fall back locally.
+See [the recovery contract](../../docs/tui-local-daemon-handoff.md).
+
 # Amazon Bedrock authentication
 
 If `model_providers.amazon-bedrock.aws.credential_export` is configured, Bedrock setup and
