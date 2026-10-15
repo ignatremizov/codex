@@ -121,7 +121,6 @@ struct ThreadRevertRuntimeSnapshot {
     config: Config,
     settings: CodexThreadSettingsOverrides,
     client_mcp_extensions: ClientMcpExtensions,
-    agent_messaging: Option<codex_core::LiveRevertMessagingSnapshot>,
 }
 
 #[derive(Clone, Copy)]
@@ -489,10 +488,11 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
 }
 
-/// Whether resume attaches a client or restores a cold runtime during daemon startup.
+/// Whether resume attaches a client or restores a runtime for a server recovery.
 pub(crate) enum ThreadResumeTarget {
     Client(ConnectionRequestId),
     DaemonRecovery(Option<codex_app_server_transport::daemon_recovery::InterruptedTurn>),
+    LocalTreeRecovery(ConnectionId),
 }
 
 /// Outcome of trying to satisfy a resume request from an already loaded thread.
@@ -2276,14 +2276,6 @@ impl ThreadRequestProcessor {
             config,
             settings: thread.restorable_thread_settings().await,
             client_mcp_extensions: thread.client_mcp_extensions(),
-            agent_messaging: thread
-                .snapshot_agent_messaging_for_revert()
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to snapshot live agent messaging before revert: {err}"
-                    ))
-                })?,
         };
 
         // Subscribe before shutdown so a pending idle unload either rejects this request or can
@@ -2468,7 +2460,6 @@ impl ThreadRequestProcessor {
             mut config,
             settings,
             client_mcp_extensions,
-            agent_messaging,
         } = runtime_snapshot;
         if let Some(collaboration_mode) = settings.collaboration_mode.as_ref() {
             config.model = Some(collaboration_mode.model().to_string());
@@ -2500,13 +2491,12 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .resume_thread_after_live_revert(
+            .resume_thread_with_history(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
                 self.request_trace_context(request_id).await,
                 client_mcp_extensions,
-                agent_messaging,
             )
             .await
             .map_err(|err| internal_error(format!("error reloading thread after revert: {err}")))?;
@@ -4015,6 +4005,24 @@ impl ThreadRequestProcessor {
                 }
                 None
             }
+            ThreadResumeTarget::LocalTreeRecovery(connection_id) => {
+                let thread_id = ThreadId::from_string(&params.thread_id)
+                    .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+                if !self
+                    .thread_state_manager
+                    .try_add_connection_to_thread(thread_id, *connection_id)
+                    .await
+                {
+                    return Err(invalid_request("recovery connection is no longer live"));
+                }
+                if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
+                    let state = self.thread_state_manager.thread_state(thread_id).await;
+                    self.ensure_listener_task_running(thread_id, thread, state)
+                        .await?;
+                    return Ok(ControlFlow::Break(()));
+                }
+                None
+            }
         };
 
         let ThreadResumeParams {
@@ -4305,6 +4313,22 @@ impl ThreadRequestProcessor {
                 config.personality = settings.personality;
             }
         }
+        if matches!(target, ThreadResumeTarget::LocalTreeRecovery(_))
+            && let InitialHistory::Resumed(resumed) = &thread_history
+            && let Some(summary) = resumed.history.iter().rev().find_map(|item| match item {
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
+                    if event.thread_id == Some(resumed.conversation_id) =>
+                {
+                    Some(event.thread_settings.reasoning_summary)
+                }
+                _ => None,
+            })
+        {
+            // Spawned children can inherit an explicit summary absent from config.toml.
+            // Restore the latest thread-owned selection, not the unfinished turn's older
+            // preference, so updates made during that turn still prevent automatic recovery.
+            config.model_reasoning_summary = summary;
+        }
         config.developer_instructions_explicit = has_explicit_developer_instructions;
         if has_explicit_workspace_override {
             config.workspace_roots_explicit = true;
@@ -4323,7 +4347,8 @@ impl ThreadRequestProcessor {
                     ThreadResumeTarget::Client(request_id) => {
                         self.request_trace_context(request_id).await
                     }
-                    ThreadResumeTarget::DaemonRecovery(_) => None,
+                    ThreadResumeTarget::DaemonRecovery(_)
+                    | ThreadResumeTarget::LocalTreeRecovery(_) => None,
                 },
                 client_mcp_extensions,
                 ..StartThreadOptions::new(config)
@@ -4337,14 +4362,18 @@ impl ThreadRequestProcessor {
                 ..
             }) => {
                 let ThreadResumeTarget::Client(request_id) = target else {
-                    // Observe lifecycle events without attaching a client subscription.
+                    // Local recovery attached its client before initialization; managed daemon
+                    // restoration observes lifecycle events without a client subscription.
                     self.thread_watch_manager
                         .upsert_thread(&thread_id.to_string())
                         .await;
-                    // Invoke idle work before arming subscriber-based unloading.
-                    codex_thread
-                        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
-                        .await;
+                    // Only managed daemon restoration invokes idle work here. Local tree
+                    // recovery defers all continuation until the caller adopts the prepared tree.
+                    if matches!(target, ThreadResumeTarget::DaemonRecovery(_)) {
+                        codex_thread
+                            .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+                            .await;
+                    }
                     if let ThreadResumeTarget::DaemonRecovery(Some(saved)) = target {
                         self.continue_daemon_turn(&thread_id.to_string(), saved.clone())
                             .await;

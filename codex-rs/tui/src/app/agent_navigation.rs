@@ -79,7 +79,6 @@ pub(crate) struct AgentNavigationState {
     picker_excluded_threads: HashSet<ThreadId>,
     /// Live response observation keyed by observer, target, and exact/next-turn binding.
     response_observations: AgentResponseObservationState,
-    subtree_messaging: HashMap<ThreadId, bool>,
     /// Source threads holding response handling for the target's next user-authored turn.
     pending_reserved_prompt_sources: HashMap<ThreadId, ThreadId>,
     /// Durable root-scoped identities keyed by canonical thread UUID.
@@ -533,38 +532,6 @@ impl AgentNavigationState {
         );
     }
 
-    pub(crate) fn replace_user_reply_route(
-        &mut self,
-        observer: ThreadId,
-        target: ThreadId,
-        enabled: bool,
-    ) {
-        self.response_observations
-            .replace_reply_route(observer, target, enabled);
-    }
-
-    pub(crate) fn reply_route(&self, observer: ThreadId, target: ThreadId) -> Option<bool> {
-        self.response_observations.reply_route(observer, target)
-    }
-
-    pub(crate) fn set_subtree_messaging(&mut self, root: ThreadId, enabled: bool) {
-        self.subtree_messaging.insert(root, enabled);
-    }
-
-    pub(crate) fn subtree_messaging(&self, root: ThreadId) -> Option<bool> {
-        self.subtree_messaging.get(&root).copied()
-    }
-
-    pub(crate) fn inherited_messaging(
-        &self,
-        sender: ThreadId,
-        recipient: ThreadId,
-    ) -> Option<bool> {
-        codex_protocol::inherited_subtree_policy(sender, recipient, &self.parent_threads, |id| {
-            self.subtree_messaging(id)
-        })
-    }
-
     #[cfg(test)]
     pub(crate) fn has_wake_subscription(&self, observer: ThreadId, target: ThreadId) -> bool {
         self.response_observations.has_wake(observer, target)
@@ -610,7 +577,6 @@ impl AgentNavigationState {
     /// reopening a thread restores its original traversal position. Keyboard shortcuts skip closed
     /// entries; explicit picker selection can still inspect their history.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
-        self.subtree_messaging.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
@@ -630,7 +596,6 @@ impl AgentNavigationState {
     /// to a pristine single-session state.
     pub(crate) fn clear(&mut self) {
         self.subagent_threads.clear();
-        self.subtree_messaging.clear();
         self.threads.clear();
         self.order.clear();
         self.parent_threads.clear();
@@ -639,6 +604,17 @@ impl AgentNavigationState {
         self.response_observations.clear();
         self.pending_reserved_prompt_sources.clear();
         self.aliases.clear();
+        self.picker_refresh = None;
+    }
+
+    /// Retains durable identities but retires activity and process-local response routes.
+    pub(crate) fn clear_runtime_state(&mut self) {
+        self.stopped_threads.extend(self.threads.keys().copied());
+        for entry in self.threads.values_mut() {
+            entry.is_running = false;
+        }
+        self.response_observations.clear();
+        self.pending_reserved_prompt_sources.clear();
         self.picker_refresh = None;
     }
 
@@ -1086,7 +1062,3 @@ mod regression_tests {
 #[cfg(test)]
 #[path = "agent_navigation_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "agent_subtree_policy_tests.rs"]
-mod subtree_policy_tests;

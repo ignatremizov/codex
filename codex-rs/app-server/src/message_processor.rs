@@ -792,6 +792,29 @@ impl MessageProcessor {
         self.thread_processor.daemon_recovery_snapshot().await
     }
 
+    pub(crate) async fn prepare_local_tree_recovery(
+        &self,
+        selected: ThreadId,
+        connection_id: ConnectionId,
+    ) -> std::io::Result<crate::PreparedLocalTreeRecovery> {
+        self.thread_processor
+            .prepare_local_tree_recovery(selected, connection_id)
+            .await
+    }
+
+    pub(crate) async fn continue_local_tree_recovery(
+        &self,
+        plan: crate::PreparedLocalTreeRecovery,
+    ) -> std::io::Result<crate::LocalTreeRecoveryOutcome> {
+        let _permit = self
+            .turn_admission
+            .admit()
+            .map_err(|err| std::io::Error::other(err.message))?;
+        self.thread_processor
+            .continue_local_tree_recovery(plan)
+            .await
+    }
+
     pub(crate) async fn restore_daemon_threads(
         &self,
         mut snapshot: codex_app_server_transport::daemon_recovery::RecoverySnapshot,

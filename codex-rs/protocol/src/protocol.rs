@@ -755,6 +755,7 @@ pub enum Op {
     RecoverTurn {
         thread_settings: ThreadSettingsOverrides,
         start_options: TurnStartOptions,
+        expected_previous_turn_id: Option<String>,
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
@@ -3725,6 +3726,32 @@ pub struct AgentResponseCommentaryDelivery {
     pub response_item_id: ResponseItemId,
 }
 
+/// Recorded start-only options and configured defaults needed for automatic crash recovery.
+///
+/// Presence certifies that optional values were captured, including a known absent output
+/// schema. Older contexts without this snapshot remain eligible for explicit retry only.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+pub struct TurnRecoveryStartOptions {
+    pub final_output_json_schema: Option<Value>,
+    /// Personality captured for recovery independently of the World State projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub personality: Option<Personality>,
+    /// Exact workspace roots; absence means older snapshots cannot certify their scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_roots: Option<Vec<PathUri>>,
+    /// Effective service tier used by the original turn, not a later thread preference.
+    pub service_tier: Option<String>,
+    pub parent_turn_id: Option<String>,
+    /// Configured preference captured independently of the model-resolved summary.
+    pub configured_reasoning_summary: Option<ReasoningSummaryConfig>,
+    /// Resolved summary for recovery. Older fork contexts retain it in the legacy summary field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning_summary: Option<ReasoningSummaryConfig>,
+}
+
 /// Persist once per real user turn after computing that turn's model-visible
 /// context updates, and again after mid-turn compaction when replacement
 /// history re-establishes full context, so resume/fork replay can recover the
@@ -3733,6 +3760,9 @@ pub struct AgentResponseCommentaryDelivery {
 pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recovery_start_options: Option<TurnRecoveryStartOptions>,
     /// Root turn that owns this turn's attribution, retained across recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_turn_id: Option<String>,
@@ -6698,6 +6728,7 @@ mod tests {
             turn_id: None,
             root_turn_id: None,
             disabled_plugin_ids: None,
+            recovery_start_options: None,
             cwd: test_path_buf("/tmp").abs(),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,

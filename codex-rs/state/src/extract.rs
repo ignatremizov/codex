@@ -570,6 +570,7 @@ mod tests {
                 turn_id: Some("turn-1".to_string()),
                 root_turn_id: None,
                 disabled_plugin_ids: None,
+                recovery_start_options: None,
                 cwd: serde_json::from_value(serde_json::json!(
                     std::env::current_dir()
                         .expect("current directory")
@@ -614,6 +615,7 @@ mod tests {
                 turn_id: Some("turn-1".to_string()),
                 root_turn_id: None,
                 disabled_plugin_ids: None,
+                recovery_start_options: None,
                 cwd: serde_json::from_value(serde_json::json!(
                     std::env::current_dir()
                         .expect("current directory")
@@ -658,6 +660,7 @@ mod tests {
                 turn_id: Some("turn-1".to_string()),
                 root_turn_id: None,
                 disabled_plugin_ids: None,
+                recovery_start_options: None,
                 cwd: serde_json::from_value(serde_json::json!(&fallback_cwd))
                     .expect("absolute fallback cwd"),
                 approval_policy: AskForApproval::OnRequest,
@@ -691,6 +694,7 @@ mod tests {
                 turn_id: Some("turn-1".to_string()),
                 root_turn_id: None,
                 disabled_plugin_ids: None,
+                recovery_start_options: None,
                 cwd: serde_json::from_value(serde_json::json!(
                     std::env::current_dir()
                         .expect("current directory")

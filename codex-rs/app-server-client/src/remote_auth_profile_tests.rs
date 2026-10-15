@@ -34,6 +34,7 @@ fn client(home: &str, response: RequestResult) -> RemoteAppServerClient {
             ..Default::default()
         },
         auth_profile: None,
+        local_peer_process: None,
         worker_handle,
     }
 }
