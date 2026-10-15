@@ -852,6 +852,7 @@ mod tests {
                     root_turn_id: None,
                     direct_only_tool_namespaces: None,
                     disabled_plugin_ids: None,
+                    recovery_start_options: None,
                     cwd: AbsolutePathBuf::from_absolute_path(tempdir.path())
                         .expect("absolute feedback rollout directory"),
                     approval_policy: codex_protocol::protocol::AskForApproval::Never,

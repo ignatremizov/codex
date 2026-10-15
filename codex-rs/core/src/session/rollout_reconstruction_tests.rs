@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol_test_support::ContentItemTestExt;
 
 use super::tests::build_world_state_from_turn_context;
 use super::tests::make_session_and_context;
@@ -1847,6 +1848,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         root_turn_id: None,
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy(),
@@ -1893,6 +1895,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         root_turn_id: None,
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy(),
@@ -3744,6 +3747,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         root_turn_id: Some("root-turn".to_string()),
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy(),
@@ -3845,6 +3849,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             root_turn_id: Some("root-turn".to_string()),
             direct_only_tool_namespaces: None,
             disabled_plugin_ids: None,
+            recovery_start_options: None,
             #[allow(deprecated)]
             cwd: turn_context.cwd.clone(),
             approval_policy: turn_context.approval_policy(),
@@ -3874,6 +3879,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         root_turn_id: None,
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy(),
@@ -4021,6 +4027,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         root_turn_id: None,
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy(),
@@ -4158,6 +4165,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         root_turn_id: None,
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy(),
@@ -4349,6 +4357,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         root_turn_id: None,
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy(),

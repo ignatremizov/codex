@@ -1451,6 +1451,7 @@ mod tests {
                 root_turn_id: None,
                 direct_only_tool_namespaces: None,
                 disabled_plugin_ids: None,
+                recovery_start_options: None,
                 cwd: serde_json::from_value(serde_json::json!(cwd)).expect("absolute cwd"),
                 approval_policy,
                 approvals_reviewer: None,

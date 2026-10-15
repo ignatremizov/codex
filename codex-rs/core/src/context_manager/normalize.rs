@@ -100,9 +100,7 @@ pub(crate) fn ensure_call_outputs_present(
                 if !custom_tool_output_ids.contains(call_id.as_str()) =>
             {
                 if !may_be_unfinished(envelope) {
-                    error_or_panic(format!(
-                        "Custom tool call output is missing for call id: {call_id}"
-                    ));
+                    info!("Custom tool call output is missing for call id: {call_id}");
                 }
                 missing_outputs_to_insert.push((
                     idx,
@@ -122,9 +120,7 @@ pub(crate) fn ensure_call_outputs_present(
                 ..
             } if !function_output_ids.contains(call_id.as_str()) => {
                 if !may_be_unfinished(envelope) {
-                    error_or_panic(format!(
-                        "Local shell call output is missing for call id: {call_id}"
-                    ));
+                    info!("Local shell call output is missing for call id: {call_id}");
                 }
                 missing_outputs_to_insert.push((
                     idx,

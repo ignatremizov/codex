@@ -1022,6 +1022,7 @@ fn turn_context(root: &Path, turn_id: &str) -> RolloutItem {
         root_turn_id: None,
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         cwd: serde_json::from_value(serde_json::json!(root)).expect("absolute cwd"),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: None,

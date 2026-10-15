@@ -2449,6 +2449,7 @@ async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenari
                 root_turn_id: None,
                 direct_only_tool_namespaces: None,
                 disabled_plugin_ids: None,
+                recovery_start_options: None,
                 cwd: serde_json::from_value(json!(home.path())).expect("absolute cwd"),
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: None,

@@ -58,6 +58,7 @@ pub(super) async fn run_startup_for_test(
         crate::startup_draft::tests::quiet_startup_test_pump(),
         /*managed_worktree*/ None,
         /*daemon_cli_executable*/ None,
+        /*embedded_recovery*/ None,
     ))
     .await
 }

@@ -11,6 +11,7 @@ mod events;
 mod external_agent_config;
 pub(crate) mod fs;
 mod history;
+mod local_tree_recovery;
 mod mcp;
 mod models;
 pub(crate) mod provider_selection;
@@ -830,6 +831,10 @@ impl AppServerSession {
 
     pub(crate) fn uses_embedded_app_server(&self) -> bool {
         matches!(&self.request_handle, AppServerRequestHandle::InProcess(_))
+    }
+
+    pub(crate) fn local_peer_process(&self) -> Option<codex_uds::PeerProcess> {
+        self.connection_owner.as_ref()?.local_peer_process()
     }
 
     /// Carry capabilities that may exist only in memory when the optional cache is unwritable.

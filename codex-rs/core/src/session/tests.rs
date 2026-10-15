@@ -5295,6 +5295,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         root_turn_id: None,
         direct_only_tool_namespaces: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy(),
