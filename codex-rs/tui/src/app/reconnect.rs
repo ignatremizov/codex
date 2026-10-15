@@ -2,6 +2,8 @@
 //! threads using ordinary resume/history semantics. Confirmed submissions are reconciled before
 //! unsent queues resume; uncertain submissions and old async completions remain quarantined.
 
+use super::local_daemon_fallback::LocalDaemonFallback;
+use super::local_daemon_fallback::RecoveredLocalTree;
 use super::*;
 use crate::app_server_session::ResumeModelSettings;
 use crate::dynamic_tools_mcp::ThreadToolTransport;
@@ -18,14 +20,16 @@ pub(super) enum ReconnectPresentation {
 pub(super) struct ReconnectState {
     pub(super) offline: bool,
     pub(super) failed: bool,
+    pub(super) expected_daemon_restart: bool,
     pub(super) presentation: ReconnectPresentation,
     pub(super) seen_version_notice: Option<String>,
 }
 
 pub(super) struct Reconnected {
-    session: AppServerSession,
-    bootstrap: AppServerBootstrap,
-    thread: Option<AppServerStartedThread>,
+    pub(super) session: AppServerSession,
+    pub(super) bootstrap: AppServerBootstrap,
+    pub(super) thread: Option<AppServerStartedThread>,
+    pub(super) local_recovery: Option<RecoveredLocalTree>,
 }
 
 #[expect(
@@ -41,6 +45,7 @@ pub(super) async fn reconnect(
     remote_cwd: Option<PathBuf>,
     task_tools: ThreadToolTransport,
     presentation: ReconnectPresentation,
+    fallback: Option<LocalDaemonFallback>,
 ) -> Result<Reconnected> {
     let mode = target.thread_params_mode();
     if matches!(target, AppServerTarget::Embedded) {
@@ -63,6 +68,22 @@ pub(super) async fn reconnect(
         }
     };
     for delay in [0, 1, 2, 4].into_iter().chain(std::iter::repeat(/*elt*/ 8)) {
+        if matches!(
+            target,
+            AppServerTarget::LocalDaemon {
+                endpoint: crate::RemoteAppServerEndpoint::UnixSocket { .. },
+                ..
+            }
+        ) && let Some(fallback) = &fallback
+            && let Some(thread_id) = thread_id
+            && fallback.peer.has_exited().unwrap_or(false)
+        {
+            // An unsuccessful cold resume is not retried: it may have acquired ownership
+            // before history hydration failed. Never turn it into a second live admission.
+            return fallback
+                .recover(backend_id, &local_settings, thread_id, deadline)
+                .await;
+        }
         let attempt = async {
             tokio::time::sleep(Duration::from_secs(delay)).await;
             let client = crate::auth_profile_connection::connect(&target, &config).await?;
@@ -119,6 +140,7 @@ pub(super) async fn reconnect(
                 session,
                 bootstrap,
                 thread,
+                local_recovery: None,
             })
         };
         let result = tokio::time::timeout_at(deadline, attempt).await;
@@ -318,7 +340,24 @@ impl App {
             mut session,
             bootstrap,
             thread,
+            mut local_recovery,
         } = connected;
+        let recovered_locally = local_recovery.is_some();
+        if let Some(recovery) = &local_recovery {
+            self.state_db = Some(recovery.state_db.clone());
+            self.app_server_target = AppServerTarget::Embedded;
+            self.primary_thread_id = Some(recovery.plan.root_thread_id());
+            self.reconnect.presentation = ReconnectPresentation::Conversation;
+            self.chat_widget.set_agents_navigation_enabled(false);
+            self.agent_navigation.clear_runtime_state();
+            // A cold resume reconstructs authorization from the launch context and
+            // durable thread state. Unconfirmed profile writes and cached runtime
+            // overrides belong to the dead server, not the new writer.
+            self.pending_server_profiles.clear();
+            self.runtime_approval_policy_override = None;
+            self.runtime_approvals_reviewer_override = None;
+            self.runtime_permission_profile_override = None;
+        }
         session.model_provider_override = self.harness_overrides.model_provider.clone();
         let selected = self
             .chat_widget
@@ -328,6 +367,10 @@ impl App {
         let mut input = self.chat_widget.capture_thread_input_state();
         if let Some(input) = input.as_mut() {
             input.reconnect_pending = true;
+            if recovered_locally {
+                input.questions = None;
+                input.pending_thread_settings = None;
+            }
         }
         self.store_active_thread_receiver().await;
         // Old request handles stay attached to the dead connection. Rotating the event channel
@@ -353,7 +396,9 @@ impl App {
         self.last_subagent_backfill_attempt = None;
         self.rate_limit_refresh_state.invalidate_recovery();
         session.worktree_source_config_builder = app_server.worktree_source_config_builder.clone();
-        session.inherit_task_tool_capabilities(app_server);
+        if !recovered_locally {
+            session.inherit_task_tool_capabilities(app_server);
+        }
         *app_server = session;
         self.chat_widget.auth_profile_label = app_server.auth_profile_label(&self.config);
         #[cfg(any(target_os = "windows", test))]
@@ -431,6 +476,11 @@ impl App {
         self.agents_overview.refresh_pending = false;
         for input in self.agents_overview.input_states.values_mut() {
             input.reconnect_pending = true;
+            if recovered_locally {
+                input.recovered_queue = true;
+                input.questions = None;
+                input.pending_thread_settings = None;
+            }
         }
         self.pending_startup_thread_start = matches!(
             self.reconnect.presentation,
@@ -455,11 +505,38 @@ impl App {
             store
                 .buffer
                 .retain(|event| matches!(event, ThreadBufferedEvent::Notification(_)));
+            if recovered_locally {
+                // Cached live events cannot revive dead approvals, process handles or turns.
+                // Threads outside the recovered owning tree remain replay-only.
+                let mut turns = std::mem::take(&mut store.turns);
+                for turn in &mut turns {
+                    if turn.status == TurnStatus::InProgress {
+                        turn.status = TurnStatus::Interrupted;
+                    }
+                }
+                let saved_input = store.input_state.take();
+                let saved_session = store.session.take();
+                store = ThreadEventStore::new(THREAD_EVENT_CHANNEL_CAPACITY);
+                store.session = saved_session;
+                store.turns = turns;
+                store.input_state = saved_input;
+            }
             if let Some(input) = store.input_state.as_mut() {
                 input.reconnect_pending = true;
+                if recovered_locally {
+                    input.recovered_queue = true;
+                    input.questions = None;
+                    input.pending_thread_settings = None;
+                }
             }
             *replacement.store.lock().await = store;
             *channel = replacement;
+        }
+        if let Some(recovery) = &mut local_recovery {
+            self.adopt_recovered_background_threads(std::mem::take(
+                &mut recovery.background_threads,
+            ))
+            .await;
         }
         if let Some(id) = self.current_displayed_thread_id()
             && let Some(mut input) = input.clone()
@@ -472,7 +549,8 @@ impl App {
             if started.is_subagent {
                 self.agent_navigation.mark_subagent(id);
             }
-            if pending_displayed_profile.is_none()
+            if !recovered_locally
+                && pending_displayed_profile.is_none()
                 && let Some(channel) = self.thread_event_channels.get(&id)
                 && let Some(cached) = channel.store.lock().await.session.as_ref()
             {
@@ -578,6 +656,26 @@ impl App {
             server.reconnect(app_server.request_handle(), self.app_event_tx.clone());
         }
         self.reconnect.offline = false;
+        self.reconnect.expected_daemon_restart = false;
+        let mut resume_unsent_queue = !recovered_locally;
+        if let Some(recovery) = local_recovery {
+            let outcome = self
+                .continue_recovered_local_tree(app_server, recovery.plan)
+                .await;
+            // Continuation is admitted before its TurnStarted notification is rendered. Do not
+            // start a queued follow-up until that turn completes; an idle restored thread can
+            // resume known-unsent input now. Existing recovery holds and uncertain receipts
+            // remain owned by the chat widget.
+            resume_unsent_queue = outcome.is_some_and(|outcome| {
+                displayed.is_some_and(|id| {
+                    !outcome.resumed_turns.contains(&id)
+                        && !outcome
+                            .paused_threads
+                            .iter()
+                            .any(|(paused_id, _)| *paused_id == id)
+                })
+            });
+        }
         self.chat_widget.update_account_state(
             bootstrap.status_account_display,
             bootstrap.plan_type,
@@ -593,7 +691,7 @@ impl App {
             );
         }
         self.feedback_audience = bootstrap.feedback_audience;
-        if displayed.is_some_and(|id| !self.thread_unavailable(id)) {
+        if resume_unsent_queue && displayed.is_some_and(|id| !self.thread_unavailable(id)) {
             self.chat_widget.maybe_send_next_queued_input();
         }
         let connected_notice_key = crate::status::remote_connection::server_version_notice_key(

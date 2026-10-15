@@ -255,6 +255,7 @@ impl App {
         mut startup_draft: StartupDraftPump,
         managed_worktree: Option<crate::ManagedTuiWorktree>,
         daemon_cli_executable: Option<AbsolutePathBuf>,
+        embedded_recovery: Option<EmbeddedAppServerRecovery>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
 
@@ -1386,6 +1387,22 @@ See the Codex keymap documentation for supported actions and examples."
                             .session_at(displayed_session)
                             .thread_tool_transport(),
                         presentation,
+                        if matches!(app.app_server_target, AppServerTarget::LocalDaemon { .. })
+                            && !app.reconnect.expected_daemon_restart
+                        {
+                            backends
+                                .session_at(displayed_session)
+                                .local_peer_process()
+                                .zip(embedded_recovery.clone())
+                                .map(|(peer, startup)| {
+                                    super::local_daemon_fallback::LocalDaemonFallback {
+                                        startup,
+                                        peer,
+                                    }
+                                })
+                        } else {
+                            None
+                        },
                     );
                     reconnect = Some(Box::pin(async move {
                         if let reconnect::ReconnectPresentation::Startup(deadline) = presentation
@@ -1442,6 +1459,7 @@ See the Codex keymap documentation for supported actions and examples."
                     }, if app.daemon_restart.is_some() => {
                         app.daemon_restart = None;
                         if let Err(err) = result.unwrap_or_else(|err| Err(err.into())) {
+                            app.reconnect.expected_daemon_restart = false;
                             app.chat_widget.add_error_message(format!("Could not restart the background server: {err:#}"));
                         }
                         AppRunControl::Continue

@@ -17,6 +17,9 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
+mod peer_process;
+pub use peer_process::PeerProcess;
+
 /// Creates `socket_dir` if needed and restricts it to the current user as
 /// supported by the platform (0700 on Unix, a protected user-only DACL on Windows).
 /// Windows rejects existing directories unless they already have that owner and DACL;
@@ -59,6 +62,21 @@ pub struct UnixStream {
 }
 
 impl UnixStream {
+    /// Captures a native monitor for this socket's peer before an application handshake.
+    ///
+    /// Failure means process death cannot be proven; socket closure alone is not proof.
+    pub fn peer_process(&self) -> IoResult<PeerProcess> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            peer_process::capture(self.inner.as_raw_fd())
+        }
+        #[cfg(windows)]
+        {
+            self.inner.peer_process()
+        }
+    }
+
     /// Requires the Windows peer to belong to the current user, with neither
     /// process elevated. Call before sending any application data.
     #[cfg(windows)]
@@ -208,6 +226,10 @@ mod platform {
     pub(super) struct Stream(Compat<Async<WindowsUnixStream>>);
 
     impl Stream {
+        pub(super) fn peer_process(&self) -> IoResult<crate::PeerProcess> {
+            crate::peer_process::capture(self.0.get_ref().get_ref().as_raw_socket())
+        }
+
         pub(super) fn ensure_non_elevated_peer(&self) -> IoResult<()> {
             crate::windows_peer::ensure_non_elevated_peer(
                 self.0.get_ref().get_ref().as_raw_socket(),
