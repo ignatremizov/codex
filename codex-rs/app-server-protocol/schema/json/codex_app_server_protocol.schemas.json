@@ -1844,6 +1844,30 @@
             },
             "method": {
               "enum": [
+                "turn/continue"
+              ],
+              "title": "Turn/continueRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/TurnContinueParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Turn/continueRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "turn/interrupt"
               ],
               "title": "Turn/interruptRequestMethod",
@@ -28461,6 +28485,34 @@
           "turn"
         ],
         "title": "TurnCompletedNotification",
+        "type": "object"
+      },
+      "TurnContinueParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Continue the latest eligible unfinished regular turn without adding user input.",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "TurnContinueParams",
+        "type": "object"
+      },
+      "TurnContinueResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "turnId": {
+            "description": "The original turn ID, retained across continuation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turnId"
+        ],
+        "title": "TurnContinueResponse",
         "type": "object"
       },
       "TurnDiffUpdatedNotification": {

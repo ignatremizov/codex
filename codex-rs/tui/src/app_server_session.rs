@@ -20,6 +20,7 @@ mod rollback;
 mod rollout_history;
 mod startup_launch;
 mod thread_list;
+mod turn_continue;
 mod web_search;
 
 #[cfg(test)]
