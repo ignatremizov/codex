@@ -590,6 +590,16 @@ impl App {
             return Ok(());
         }
 
+        // A queued continuation can outlive the displayed thread's input authority.
+        if matches!(&op, AppCommand::Continue)
+            && let Err(error) = self
+                .ensure_agent_control_admission(thread_id, /*target*/ None)
+                .await
+        {
+            self.chat_widget.add_error_message(error.to_string());
+            return Ok(());
+        }
+
         if !self
             .prepare_replay_only_thread_op(app_server, thread_id, &op)
             .await
@@ -844,6 +854,27 @@ impl App {
                         .await,
                     "failed to refresh skills",
                 );
+                Ok(true)
+            }
+            AppCommand::Continue => {
+                // Revalidate at the RPC boundary, including direct callers of this router.
+                if let Err(error) = self
+                    .ensure_agent_control_admission(thread_id, /*target*/ None)
+                    .await
+                {
+                    self.chat_widget.add_error_message(error.to_string());
+                    return Ok(true);
+                }
+                if let Err(error) = app_server.turn_continue(thread_id).await {
+                    if !matches!(
+                        error.downcast_ref::<TypedRequestError>(),
+                        Some(TypedRequestError::Server { .. })
+                    ) {
+                        return Err(error);
+                    }
+                    self.chat_widget
+                        .add_error_message(format!("Failed to continue turn: {error:#}"));
+                }
                 Ok(true)
             }
             AppCommand::Compact => {

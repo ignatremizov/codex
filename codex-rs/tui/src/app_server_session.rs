@@ -22,6 +22,7 @@ mod rollout_history;
 pub(crate) use read_state::unread_revision;
 mod startup_launch;
 mod thread_list;
+mod turn_continue;
 mod web_search;
 
 #[cfg(test)]

@@ -19,6 +19,9 @@ use codex_protocol::turn_input::ResponseItemAnnotations;
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
 
+#[path = "turn_continue.rs"]
+mod turn_continue;
+
 pub(super) fn validate_user_input_image_urls(
     input: &[V2UserInput],
 ) -> Result<(), JSONRPCErrorError> {

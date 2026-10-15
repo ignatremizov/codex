@@ -11,8 +11,11 @@
 //! sources recovered from legacy Guardian checkpoints before their raw history is dropped.
 //! Prompt projections replace unavailable file images without changing retained history.
 
+#[path = "history_continuation.rs"]
+mod continuation;
 #[path = "history_user_authorization.rs"]
 mod user_authorization;
+pub(crate) use continuation::is_turn_interrupt_notice;
 
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;

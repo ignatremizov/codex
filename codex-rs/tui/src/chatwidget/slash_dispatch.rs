@@ -62,7 +62,8 @@ impl ChatWidget {
     /// that staged entry after dispatch so slash-command recall follows the same "submitted input"
     /// rule as normal text.
     pub(super) fn handle_slash_command_dispatch(&mut self, cmd: SlashCommand) {
-        if cmd == SlashCommand::Mail && self.reject_blocked_input() {
+        if matches!(cmd, SlashCommand::Mail | SlashCommand::Continue) && self.reject_blocked_input()
+        {
             return;
         }
         self.dispatch_command(cmd);
@@ -98,6 +99,9 @@ impl ChatWidget {
         args: String,
         text_elements: Vec<TextElement>,
     ) {
+        if cmd == SlashCommand::Continue && self.reject_blocked_input() {
+            return;
+        }
         if cmd == SlashCommand::Mail {
             if self.reject_blocked_input() {
                 return;
@@ -176,9 +180,11 @@ impl ChatWidget {
                 || (self.bottom_pane.is_task_running()
                     && (self.mcp_startup_status.is_none()
                         || self.input_queue.user_turn_pending_start))))
-            || (matches!(cmd, SlashCommand::Resume | SlashCommand::Cd)
-                && (self.input_queue.user_turn_pending_start
-                    || self.turn_lifecycle.agent_turn_running))
+            || (matches!(
+                cmd,
+                SlashCommand::Resume | SlashCommand::Cd | SlashCommand::Continue
+            ) && (self.input_queue.user_turn_pending_start
+                || self.turn_lifecycle.agent_turn_running))
             || (cmd == SlashCommand::Export && self.input_queue.suppress_queue_autosend)
             || (cmd == SlashCommand::Review
                 && source == SlashCommandDispatchSource::Live
@@ -211,7 +217,7 @@ impl ChatWidget {
             );
             self.add_to_history(history_cell::new_error_event(message));
             // Retain attachments when the composer has deferred consuming the draft.
-            if self.bottom_pane.composer_text().is_empty() {
+            if cmd != SlashCommand::Continue && self.bottom_pane.composer_text().is_empty() {
                 self.bottom_pane.drain_pending_submission_state();
             }
             self.request_redraw();
@@ -354,6 +360,22 @@ impl ChatWidget {
             SlashCommand::Init => {
                 const INIT_PROMPT: &str = include_str!("../../assets/prompt_for_init_command.md");
                 self.submit_user_message(INIT_PROMPT.to_string().into());
+            }
+            SlashCommand::Continue => {
+                if self.reject_blocked_input() {
+                    return;
+                }
+                // Consume only the bare control token. An unrelated draft or staged attachment
+                // remains user input, not part of this control operation.
+                if self.bottom_pane.composer_text().trim() == "/continue"
+                    && self.bottom_pane.composer_text_elements().is_empty()
+                    && self.bottom_pane.composer_local_images().is_empty()
+                    && self.bottom_pane.composer_pending_pastes().is_empty()
+                {
+                    self.bottom_pane.apply_external_edit(String::new());
+                }
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(AppCommand::Continue));
             }
             SlashCommand::Compact => {
                 if self.reject_blocked_input() {
@@ -1675,6 +1697,7 @@ impl ChatWidget {
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::Continue
             | SlashCommand::Review
             | SlashCommand::Model
             | SlashCommand::Presets

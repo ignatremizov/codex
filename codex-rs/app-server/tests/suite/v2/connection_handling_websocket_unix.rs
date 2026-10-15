@@ -87,6 +87,7 @@ async fn websocket_transport_ctrl_c_waits_for_running_turn_before_exit() -> Resu
             "turn/steer",
             json!({"threadId": thread_id, "expectedTurnId": turn_id, "input": []}),
         ),
+        ("turn/continue", json!({"threadId": thread_id})),
         ("thread/queue/start", json!({"threadId": thread_id})),
         ("thread/start", json!({})),
         ("thread/fork", json!({"threadId": thread_id})),

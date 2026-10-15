@@ -1063,6 +1063,7 @@ impl MessageProcessor {
             | ClientRequest::ThreadGuardianReview { .. }
             | ClientRequest::TurnStart { .. }
             | ClientRequest::TurnSteer { .. }
+            | ClientRequest::TurnContinue { .. }
             | ClientRequest::ReviewStart { .. }
             | ClientRequest::ThreadCompactStart { .. }
             | ClientRequest::ThreadShellCommand { .. }
@@ -1800,6 +1801,9 @@ impl MessageProcessor {
                 self.turn_processor
                     .turn_settings_update(&request_id, params)
                     .await
+            }
+            ClientRequest::TurnContinue { params, .. } => {
+                self.turn_processor.turn_continue(&request_id, params).await
             }
             ClientRequest::TurnInterrupt { params, .. } => {
                 self.turn_processor
