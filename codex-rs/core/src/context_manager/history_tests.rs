@@ -763,6 +763,7 @@ fn reference_context_item() -> TurnContextItem {
         turn_id: Some("reference-turn".to_string()),
         root_turn_id: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         cwd: AbsolutePathBuf::try_from(
             std::env::current_dir()
                 .expect("current directory")

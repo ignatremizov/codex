@@ -64,6 +64,7 @@ enum TurnStartKind {
     User,
     Automatic,
     Recovery,
+    GuardedRecovery,
 }
 
 enum IdleContext {
@@ -82,7 +83,7 @@ struct IdleStart {
 impl TurnStartKind {
     fn permits_mode(self, mode: ModeKind) -> bool {
         match self {
-            Self::User | Self::Recovery => true,
+            Self::User | Self::Recovery | Self::GuardedRecovery => true,
             Self::Automatic => mode != ModeKind::Plan,
         }
     }
@@ -145,6 +146,26 @@ impl PreparedTurnInputSettings {
         submission_id: String,
         kind: TurnStartKind,
     ) -> CodexResult<Option<Arc<TurnContext>>> {
+        if kind == TurnStartKind::GuardedRecovery && self.thread_settings_update.is_some() {
+            return Err(CodexErr::InvalidRequest(
+                "automatic recovery cannot rewrite persistent thread settings".to_string(),
+            ));
+        }
+        let expected_recovery_context = if kind == TurnStartKind::GuardedRecovery {
+            Some(
+                session
+                    .reference_context_item()
+                    .await
+                    .filter(|context| context.turn_id.as_ref() == Some(&submission_id))
+                    .ok_or_else(|| {
+                        CodexErr::InvalidRequest(
+                            "automatic recovery lost its original turn context".to_string(),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let TurnStartOptions {
             turn_trigger,
             final_output_json_schema,
@@ -177,6 +198,52 @@ impl PreparedTurnInputSettings {
         let Some((turn_context, settings_snapshot)) = turn_context else {
             return Ok(None);
         };
+        if let Some(expected) = expected_recovery_context {
+            let saved = expected.recovery_start_options.as_ref().ok_or_else(|| {
+                CodexErr::InvalidRequest(
+                    "automatic recovery requires recorded turn start options".to_string(),
+                )
+            })?;
+            if let Some(field) = [
+                ("model", expected.model != turn_context.model_info().slug),
+                (
+                    "collaboration mode",
+                    expected.collaboration_mode != Some(turn_context.collaboration_mode()),
+                ),
+                (
+                    "reasoning effort",
+                    expected.effort.as_ref() != turn_context.reasoning_effort(),
+                ),
+                (
+                    "reasoning summary",
+                    expected.summary != turn_context.reasoning_summary(),
+                ),
+                (
+                    "personality",
+                    expected.personality != turn_context.personality(),
+                ),
+                (
+                    "disabled plugins",
+                    expected.disabled_plugin_ids.as_ref()
+                        != Some(&turn_context.disabled_plugin_ids),
+                ),
+                (
+                    "service tier",
+                    saved.service_tier != turn_context.initial_settings.service_tier,
+                ),
+                (
+                    "output schema",
+                    saved.final_output_json_schema != turn_context.final_output_json_schema,
+                ),
+            ]
+            .into_iter()
+            .find_map(|(field, changed)| changed.then_some(field))
+            {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "automatic recovery cannot reproduce the original turn settings ({field})"
+                )));
+            }
+        }
         if let Some(turn_trigger) = turn_trigger {
             turn_context
                 .turn_metadata_state
@@ -294,6 +361,7 @@ pub(super) async fn handle_recovery(
     thread_settings: ThreadSettingsOverrides,
     start_options: TurnStartOptions,
     submission_id: String,
+    expected_previous_turn_id: Option<String>,
 ) -> CodexResult<TurnInputSubmission> {
     let request = TurnInputRequest::user_input(Vec::new())
         .with_thread_settings(thread_settings)
@@ -305,8 +373,12 @@ pub(super) async fn handle_recovery(
         session,
         request,
         submission_id,
-        TurnStartKind::Recovery,
-        /*expected_previous_turn_id*/ None,
+        if expected_previous_turn_id.is_some() {
+            TurnStartKind::GuardedRecovery
+        } else {
+            TurnStartKind::Recovery
+        },
+        expected_previous_turn_id,
     )
     .await
 }
@@ -615,6 +687,20 @@ async fn start_if_idle_with_lease(
                 reason: NotSubmittedReason::NotIdle,
             });
         }
+        if kind == TurnStartKind::GuardedRecovery
+            && matches!(
+                *session.agent_status.borrow(),
+                codex_protocol::protocol::AgentStatus::Completed(_)
+                    | codex_protocol::protocol::AgentStatus::Interrupted
+                    | codex_protocol::protocol::AgentStatus::Errored(_)
+                    | codex_protocol::protocol::AgentStatus::Shutdown
+                    | codex_protocol::protocol::AgentStatus::NotFound
+            )
+        {
+            return Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::Superseded,
+            });
+        }
         if let Some(expected) = expected_previous_turn_id
             && session.state.lock().await.last_started_turn_id.as_ref() != Some(&expected)
         {
@@ -689,7 +775,7 @@ async fn start_if_idle_with_lease(
             }
             task_input.push(pending_turn_input(session, input, &turn_context.sub_id, origin).await);
         }
-        TurnStartKind::Automatic | TurnStartKind::Recovery => {
+        TurnStartKind::Automatic | TurnStartKind::Recovery | TurnStartKind::GuardedRecovery => {
             // Empty automatic user input resumes sampling without a new message.
             if !matches!(&input, SubmittedTurnInput::UserInput { .. }) {
                 session

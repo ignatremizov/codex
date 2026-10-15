@@ -325,6 +325,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             /*remote_cwd*/ None,
             session.thread_tool_transport(),
             ReconnectPresentation::Overview,
+            /*fallback*/ None,
         )
         .await?;
         // Keep the mismatch footer stable when the workspace release version changes.

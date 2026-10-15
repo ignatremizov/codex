@@ -671,6 +671,7 @@ pub enum Op {
     RecoverTurn {
         thread_settings: ThreadSettingsOverrides,
         start_options: TurnStartOptions,
+        expected_previous_turn_id: Option<String>,
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
@@ -3594,6 +3595,20 @@ pub struct AgentResponseCommentaryDelivery {
     pub response_item_id: ResponseItemId,
 }
 
+/// Recorded start-only options and configured defaults needed for automatic crash recovery.
+///
+/// Presence certifies that optional values were captured, including a known absent output
+/// schema. Older contexts without this snapshot remain eligible for explicit retry only.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+pub struct TurnRecoveryStartOptions {
+    pub final_output_json_schema: Option<Value>,
+    /// Effective service tier used by the original turn, not a later thread preference.
+    pub service_tier: Option<String>,
+    pub parent_turn_id: Option<String>,
+    /// Configured preference; `TurnContextItem::summary` retains the resolved summary.
+    pub configured_reasoning_summary: Option<ReasoningSummaryConfig>,
+}
+
 /// Persist once per real user turn after computing that turn's model-visible
 /// context updates, and again after mid-turn compaction when replacement
 /// history re-establishes full context, so resume/fork replay can recover the
@@ -3602,6 +3617,9 @@ pub struct AgentResponseCommentaryDelivery {
 pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recovery_start_options: Option<TurnRecoveryStartOptions>,
     /// Root turn that owns this subagent turn's attribution.
     /// Only set for subagent turns; persisted so resume keeps the scope frozen at turn start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3651,10 +3669,8 @@ pub struct TurnContextItem {
     pub cyber_access_program: Option<CyberAccessProgram>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
-    // Compatibility-only field written with a default value so older Codex
-    // versions can deserialize turn-context rollout items. It is no longer
-    // read by context reconstruction and should be removed in a future schema
-    // cleanup.
+    /// Effective reasoning summary captured for the request. Ordinary context reconstruction
+    /// does not restore it, but automatic recovery checks it against the rebuilt turn.
     pub summary: ReasoningSummaryConfig,
 }
 
@@ -6565,6 +6581,7 @@ mod tests {
             turn_id: None,
             root_turn_id: None,
             disabled_plugin_ids: None,
+            recovery_start_options: None,
             cwd: test_path_buf("/tmp").abs(),
             workspace_roots: None,
             current_date: None,

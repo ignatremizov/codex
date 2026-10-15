@@ -597,6 +597,17 @@ impl AgentNavigationState {
         self.picker_refresh = None;
     }
 
+    /// Retains durable identities but retires activity and process-local response routes.
+    pub(crate) fn clear_runtime_state(&mut self) {
+        self.stopped_threads.extend(self.threads.keys().copied());
+        for entry in self.threads.values_mut() {
+            entry.is_running = false;
+        }
+        self.response_observations.clear();
+        self.pending_reserved_prompt_sources.clear();
+        self.picker_refresh = None;
+    }
+
     /// Removes a tracked thread entirely from picker metadata and traversal order.
     ///
     /// This is reserved for entries that were only discovered opportunistically and never became

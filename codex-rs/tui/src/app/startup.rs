@@ -200,6 +200,7 @@ impl App {
         mut startup_draft: StartupDraftPump,
         managed_worktree: Option<crate::ManagedTuiWorktree>,
         daemon_cli_executable: Option<AbsolutePathBuf>,
+        embedded_recovery: Option<EmbeddedAppServerRecovery>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
 
@@ -1140,6 +1141,19 @@ See the Codex keymap documentation for supported actions and examples."
                         app_server.remote_cwd_override().map(Path::to_path_buf),
                         app_server.thread_tool_transport(),
                         app.reconnect.presentation,
+                        if matches!(app.app_server_target, AppServerTarget::LocalDaemon { .. }) {
+                            app_server
+                                .local_peer_process()
+                                .zip(embedded_recovery.clone())
+                                .map(|(peer, startup)| {
+                                    super::local_daemon_fallback::LocalDaemonFallback {
+                                        startup,
+                                        peer,
+                                    }
+                                })
+                        } else {
+                            None
+                        },
                     )));
                 }
                 // Replay queues history and operations. A buffered closure must not switch

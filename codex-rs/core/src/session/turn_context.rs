@@ -32,6 +32,7 @@ use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use codex_protocol::protocol::TurnRecoveryStartOptions;
 use codex_protocol::turn_input::CyberAccessProgram;
 use codex_sandboxing::policy_transforms::effective_permission_profile;
 use codex_skills_extension::HostSkillsSnapshot;
@@ -780,6 +781,12 @@ impl TurnContext {
         let cwd = self.cwd.clone();
         TurnContextItem {
             turn_id: Some(self.sub_id.clone()),
+            recovery_start_options: Some(TurnRecoveryStartOptions {
+                final_output_json_schema: self.final_output_json_schema.clone(),
+                service_tier: self.initial_settings.service_tier.clone(),
+                parent_turn_id: self.turn_metadata_state.parent_turn_id(),
+                configured_reasoning_summary: self.initial_settings.selected().reasoning_summary,
+            }),
             root_turn_id: self.turn_metadata_state.root_turn_id(),
             disabled_plugin_ids: Some(self.disabled_plugin_ids.clone()),
             cwd,

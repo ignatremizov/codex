@@ -101,6 +101,7 @@ use tracing::warn;
 
 #[path = "in_process_bootstrap.rs"]
 mod bootstrap;
+mod local_tree_recovery;
 mod request_completion;
 use request_completion::PendingClientResponse;
 
@@ -197,6 +198,14 @@ pub enum InProcessServerEvent {
 /// replies are fire-and-forget from the caller's perspective (transport errors are
 /// caught by `try_send` on the outer channel).
 enum InProcessClientMessage {
+    PrepareLocalTreeRecovery {
+        thread_id: codex_protocol::ThreadId,
+        response_tx: oneshot::Sender<IoResult<crate::PreparedLocalTreeRecovery>>,
+    },
+    ContinueLocalTreeRecovery {
+        plan: Box<crate::PreparedLocalTreeRecovery>,
+        response_tx: oneshot::Sender<IoResult<crate::LocalTreeRecoveryOutcome>>,
+    },
     Request {
         request: Box<ClientRequest>,
         response_tx: oneshot::Sender<PendingClientRequestResponse>,
@@ -219,6 +228,14 @@ enum InProcessClientMessage {
 }
 
 enum ProcessorCommand {
+    PrepareLocalTreeRecovery {
+        thread_id: codex_protocol::ThreadId,
+        response_tx: oneshot::Sender<IoResult<crate::PreparedLocalTreeRecovery>>,
+    },
+    ContinueLocalTreeRecovery {
+        plan: Box<crate::PreparedLocalTreeRecovery>,
+        response_tx: oneshot::Sender<IoResult<crate::LocalTreeRecoveryOutcome>>,
+    },
     Request(Box<ClientRequest>, tokio_util::sync::CancellationToken),
     Notification(ClientNotification),
 }
@@ -528,11 +545,35 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 crate::transport::ConnectionOrigin::InProcess,
             ));
             let mut listen_for_threads = true;
+            let mut local_tree_recovery_prepared = false;
 
             loop {
                 tokio::select! {
                     command = processor_rx.recv() => {
                         match command {
+                            Some(ProcessorCommand::PrepareLocalTreeRecovery { thread_id, response_tx }) => {
+                                if !response_tx.is_closed() {
+                                    let result = if !session.initialized() {
+                                        Err(IoError::new(ErrorKind::PermissionDenied, "initialize before local recovery"))
+                                    } else if local_tree_recovery_prepared {
+                                        Err(IoError::new(ErrorKind::AlreadyExists, "local recovery was already attempted"))
+                                    } else {
+                                        // A failed preparation may already own writers. Do not
+                                        // admit another plan into the same embedded generation.
+                                        local_tree_recovery_prepared = true;
+                                        processor
+                                            .prepare_local_tree_recovery(thread_id, IN_PROCESS_CONNECTION_ID)
+                                            .await
+                                    };
+                                    let _ = response_tx.send(result);
+                                }
+                            }
+                            Some(ProcessorCommand::ContinueLocalTreeRecovery { plan, response_tx }) => {
+                                if !response_tx.is_closed() {
+                                    let result = processor.continue_local_tree_recovery(*plan).await;
+                                    let _ = response_tx.send(result);
+                                }
+                            }
                             Some(ProcessorCommand::Request(request, cancellation)) => {
                                 let was_initialized = session.initialized();
                                 processor
@@ -612,6 +653,32 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
             tokio::select! {
                 message = client_rx.recv() => {
                     match message {
+                        Some(InProcessClientMessage::PrepareLocalTreeRecovery { thread_id, response_tx }) => {
+                            if let Err(error) = processor_tx.try_send(
+                                ProcessorCommand::PrepareLocalTreeRecovery { thread_id, response_tx },
+                            ) {
+                                let kind = match &error {
+                                    mpsc::error::TrySendError::Full(_) => ErrorKind::WouldBlock,
+                                    mpsc::error::TrySendError::Closed(_) => ErrorKind::BrokenPipe,
+                                };
+                                if let ProcessorCommand::PrepareLocalTreeRecovery { response_tx, .. } = error.into_inner() {
+                                    let _ = response_tx.send(Err(IoError::new(kind, "local recovery processor unavailable")));
+                                }
+                            }
+                        }
+                        Some(InProcessClientMessage::ContinueLocalTreeRecovery { plan, response_tx }) => {
+                            if let Err(error) = processor_tx.try_send(
+                                ProcessorCommand::ContinueLocalTreeRecovery { plan, response_tx },
+                            ) {
+                                let kind = match &error {
+                                    mpsc::error::TrySendError::Full(_) => ErrorKind::WouldBlock,
+                                    mpsc::error::TrySendError::Closed(_) => ErrorKind::BrokenPipe,
+                                };
+                                if let ProcessorCommand::ContinueLocalTreeRecovery { response_tx, .. } = error.into_inner() {
+                                    let _ = response_tx.send(Err(IoError::new(kind, "local recovery processor unavailable")));
+                                }
+                            }
+                        }
                         Some(InProcessClientMessage::Request { request, response_tx, cancellation }) => {
                             let request = *request;
                             let request_id = request.id().clone();

@@ -170,6 +170,7 @@ pub struct RemoteAppServerClient {
     pending_events: VecDeque<AppServerEvent>,
     metadata: RemoteServerMetadata,
     auth_profile: Option<codex_app_server_protocol::ServerAuthProfile>,
+    local_peer_process: Option<codex_uds::PeerProcess>,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -219,16 +220,29 @@ impl RemoteAppServerClient {
                     .await
             }
             RemoteAppServerEndpoint::UnixSocket { socket_path } => {
-                let (endpoint, stream) =
+                let (endpoint, stream, peer_process) =
                     connect_unix_socket_endpoint(socket_path, peer_policy).await?;
-                Self::connect_with_stream(channel_capacity, endpoint, stream, initialize_params)
-                    .await
+                let mut client = Self::connect_with_stream(
+                    channel_capacity,
+                    endpoint,
+                    stream,
+                    initialize_params,
+                )
+                .await?;
+                client.local_peer_process = peer_process;
+                Ok(client)
             }
         }
     }
 
     pub fn server_version(&self) -> Option<&str> {
         self.metadata.server_version.as_deref()
+    }
+
+    /// Native process monitor captured before this local connection's handshake.
+    /// Remote TCP endpoints and unavailable native evidence return `None`.
+    pub fn local_peer_process(&self) -> Option<codex_uds::PeerProcess> {
+        self.local_peer_process.clone()
     }
 
     pub fn codex_home(&self) -> Option<&str> {
@@ -542,6 +556,7 @@ impl RemoteAppServerClient {
             pending_events: pending_events.into(),
             metadata,
             auth_profile: None,
+            local_peer_process: None,
             worker_handle,
         })
     }
@@ -655,6 +670,7 @@ impl RemoteAppServerClient {
             pending_events: _pending_events,
             metadata: _,
             auth_profile: _,
+            local_peer_process: _,
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
@@ -781,7 +797,11 @@ async fn connect_websocket_endpoint(
 async fn connect_unix_socket_endpoint(
     socket_path: AbsolutePathBuf,
     peer_policy: SocketPeerPolicy,
-) -> IoResult<(String, WebSocketStream<UnixStream>)> {
+) -> IoResult<(
+    String,
+    WebSocketStream<UnixStream>,
+    Option<codex_uds::PeerProcess>,
+)> {
     let endpoint = format!("unix://{}", socket_path.display());
     let request = UDS_WEBSOCKET_HANDSHAKE_URL
         .into_client_request()
@@ -809,6 +829,10 @@ async fn connect_unix_socket_endpoint(
         #[cfg(windows)]
         SocketPeerPolicy::NonElevatedCurrentUser => stream.ensure_non_elevated_peer()?,
     }
+    // Capture before either handshake: successful initialization binds this
+    // retained native identity to the peer that actually answered the client.
+    // Missing/denied monitoring must leave ordinary reconnect available.
+    let peer_process = stream.peer_process().ok();
     let websocket_config = remote_websocket_config();
     let stream = timeout(
         CONNECT_TIMEOUT,
@@ -828,7 +852,7 @@ async fn connect_unix_socket_endpoint(
         ))
     })?;
 
-    Ok((endpoint, stream))
+    Ok((endpoint, stream, peer_process))
 }
 
 fn remote_websocket_config() -> WebSocketConfig {
@@ -1058,6 +1082,10 @@ fn websocket_close_error_is_already_closed(err: &TungsteniteError) -> bool {
     }
 }
 #[cfg(test)]
+#[path = "remote_peer_process_tests.rs"]
+mod peer_process_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1074,6 +1102,7 @@ mod tests {
             pending_events: VecDeque::new(),
             metadata: RemoteServerMetadata::default(),
             auth_profile: None,
+            local_peer_process: None,
             worker_handle,
         };
 

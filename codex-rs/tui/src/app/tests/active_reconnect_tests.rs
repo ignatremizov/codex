@@ -290,6 +290,7 @@ async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Re
             /*remote_cwd*/ None,
             transport,
             ReconnectPresentation::Conversation,
+            /*fallback*/ None,
         )
         .await?;
         let paused = call_mcp().send().await?.text().await?;
@@ -560,6 +561,7 @@ async fn reconnect_reconciles_offscreen_pending_profile_before_restoring_permiss
         /*remote_cwd*/ None,
         session.thread_tool_transport(),
         ReconnectPresentation::Conversation,
+        /*fallback*/ None,
     )
     .await?;
     app.finish_reconnect(
@@ -632,7 +634,8 @@ async fn reconnect_exhaustion_and_unknown_initial_thread_stay_offline() -> Resul
                 id,
                 /*remote_cwd*/ None,
                 crate::dynamic_tools_mcp::ThreadToolTransport::Dynamic,
-                ReconnectPresentation::Conversation
+                ReconnectPresentation::Conversation,
+                /*fallback*/ None,
             )
             .await
             .is_err()
@@ -685,6 +688,7 @@ async fn reconnect_allows_slow_hydration_but_bounds_a_stalled_server() -> Result
             /*remote_cwd*/ None,
             crate::dynamic_tools_mcp::ThreadToolTransport::Dynamic,
             ReconnectPresentation::Conversation,
+            /*fallback*/ None,
         )
         .await;
         let elapsed = start.elapsed().as_secs();

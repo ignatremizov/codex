@@ -274,6 +274,7 @@ async fn recovery_rejects_active_turn_without_injecting_or_applying_settings() {
         },
         TurnStartOptions::default(),
         "recovered-turn".to_string(),
+        /*expected_previous_turn_id*/ None,
     )
     .await
     .expect("recovery should return a typed rejection");
@@ -303,6 +304,133 @@ async fn recovery_rejects_active_turn_without_injecting_or_applying_settings() {
     );
 
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[test_case(codex_protocol::protocol::AgentStatus::Completed(None); "completed original turn")]
+#[test_case(codex_protocol::protocol::AgentStatus::Interrupted; "aborted original turn")]
+#[test_case(codex_protocol::protocol::AgentStatus::Errored("failure".to_string()); "failed original turn")]
+#[tokio::test]
+async fn guarded_recovery_rejects_terminal_original_turn(
+    status: codex_protocol::protocol::AgentStatus,
+) {
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    session.state.lock().await.last_started_turn_id = Some("original".to_string());
+    session.agent_status.send_replace(status);
+
+    let submission = handle_recovery(
+        &session,
+        ThreadSettingsOverrides::default(),
+        TurnStartOptions::default(),
+        "original".to_string(),
+        Some("original".to_string()),
+    )
+    .await
+    .expect("guarded recovery returns typed refusal");
+
+    assert_eq!(
+        submission,
+        TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::Superseded,
+        }
+    );
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn guarded_recovery_rejects_newer_work() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
+    session.state.lock().await.last_started_turn_id = Some("newer".to_string());
+    let submission = handle_recovery(
+        &session,
+        ThreadSettingsOverrides::default(),
+        TurnStartOptions::default(),
+        "original".to_string(),
+        Some("original".to_string()),
+    )
+    .await
+    .expect("guarded recovery returns typed refusal");
+    assert_eq!(
+        submission,
+        TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::Superseded,
+        }
+    );
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn recovery_snapshot_records_schema_effective_tier_and_parent_lineage() {
+    let (_session, mut context) = make_session_and_context().await;
+    let schema = serde_json::json!({"type": "object", "required": ["answer"]});
+    context.final_output_json_schema = Some(schema.clone());
+    Arc::make_mut(&mut context.initial_settings).service_tier = Some("flex".to_string());
+    context
+        .turn_metadata_state
+        .set_parent_turn_id("parent-turn".to_string());
+    assert_eq!(
+        context.to_turn_context_item().recovery_start_options,
+        Some(codex_protocol::protocol::TurnRecoveryStartOptions {
+            final_output_json_schema: Some(schema),
+            service_tier: Some("flex".to_string()),
+            parent_turn_id: Some("parent-turn".to_string()),
+            configured_reasoning_summary: context.initial_settings.selected().reasoning_summary,
+        })
+    );
+}
+
+#[test_case("mode"; "preserves old plan turn")]
+#[test_case("model"; "rejects newer model")]
+#[test_case("plugins"; "rejects newer plugin selection")]
+#[test_case("summary"; "rejects changed effective default summary")]
+#[test_case("start_options"; "old context requires explicit retry")]
+#[tokio::test]
+async fn guarded_recovery_rejects_incompatible_original_context(field: &str) {
+    let (session, _context, _rx) = make_session_and_context_with_rx().await;
+    // Capture the same resolved model defaults that recovery uses, rather than the
+    // helper's offline metadata, before introducing the incompatible saved value.
+    let context = session
+        .new_turn_with_default_settings("original".to_string(), Default::default())
+        .await;
+    let original_settings = session.thread_settings_snapshot().await;
+    let mut saved = context.to_turn_context_item();
+    saved.turn_id = Some("original".to_string());
+    match field {
+        "mode" => {
+            saved.collaboration_mode.as_mut().expect("mode").mode = ModeKind::Plan;
+        }
+        "model" => saved.model = "different-original-model".to_string(),
+        "plugins" => saved.disabled_plugin_ids = Some(vec!["original-plugin".to_string()]),
+        "summary" => {
+            saved.summary = if saved.summary == codex_protocol::config_types::ReasoningSummary::None
+            {
+                codex_protocol::config_types::ReasoningSummary::Detailed
+            } else {
+                codex_protocol::config_types::ReasoningSummary::None
+            };
+        }
+        "start_options" => saved.recovery_start_options = None,
+        _ => unreachable!("test case"),
+    }
+    {
+        let mut state = session.state.lock().await;
+        state.last_started_turn_id = Some("original".to_string());
+        state.set_reference_context_item(Some(saved));
+    }
+    let error = handle_recovery(
+        &session,
+        ThreadSettingsOverrides::default(),
+        TurnStartOptions::default(),
+        "original".to_string(),
+        Some("original".to_string()),
+    )
+    .await
+    .expect_err("incompatible automatic recovery must fail closed");
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(session.thread_settings_snapshot().await, original_settings);
 }
 
 #[tokio::test]

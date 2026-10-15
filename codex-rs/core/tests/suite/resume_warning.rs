@@ -32,6 +32,7 @@ fn resume_history(
         turn_id: Some(turn_id.clone()),
         root_turn_id: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         cwd: config.cwd.clone(),
         workspace_roots: None,
         current_date: None,

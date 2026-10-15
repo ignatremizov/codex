@@ -469,6 +469,28 @@ impl CodexThread {
         &self,
         request: RecoverTurnRequest,
     ) -> CodexResult<StartIfIdleSubmission> {
+        self.recover_turn(request, /*expected_previous_turn_id*/ None)
+            .await
+    }
+
+    /// Recovers only if the original turn is still current and the runtime remains idle.
+    ///
+    /// The caller must first verify durable unfinished regular-turn history. Unlike ordinary
+    /// retry, a terminal status observed in this runtime or a newer admitted turn invalidates
+    /// that verification atomically with the idle reservation.
+    pub async fn recover_turn_if_still_current(
+        &self,
+        request: RecoverTurnRequest,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        let expected_previous_turn_id = Some(request.turn_id.clone());
+        self.recover_turn(request, expected_previous_turn_id).await
+    }
+
+    async fn recover_turn(
+        &self,
+        request: RecoverTurnRequest,
+        expected_previous_turn_id: Option<String>,
+    ) -> CodexResult<StartIfIdleSubmission> {
         self.ensure_execution_capacity_for_turn_start(self.session.services.agent_control.as_ref())
             .await?;
         let RecoverTurnRequest {
@@ -477,20 +499,45 @@ impl CodexThread {
             trace,
             cyber_access_program,
         } = request;
-        let root_turn_id = self
+        let reference_context = self
             .session
             .reference_context_item()
             .await
-            .filter(|context| context.turn_id.as_deref() == Some(turn_id.as_str()))
-            .and_then(|context| context.root_turn_id);
-        let start_options = TurnStartOptions {
+            .filter(|context| context.turn_id.as_deref() == Some(turn_id.as_str()));
+        let mut start_options = TurnStartOptions {
             cyber_access_program,
-            root_turn_id,
+            root_turn_id: reference_context
+                .as_ref()
+                .and_then(|context| context.root_turn_id.clone()),
             ..Default::default()
         };
+        if expected_previous_turn_id.is_some() {
+            let saved = reference_context
+                .as_ref()
+                .and_then(|context| context.recovery_start_options.as_ref())
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest(
+                        "automatic recovery requires recorded turn start options".to_string(),
+                    )
+                })?;
+            if saved.service_tier.is_none() && self.config_snapshot().await.service_tier.is_some() {
+                return Err(CodexErr::InvalidRequest(
+                    "automatic recovery cannot replace an absent original service tier".to_string(),
+                ));
+            }
+            start_options.final_output_json_schema = saved.final_output_json_schema.clone();
+            start_options.service_tier = saved.service_tier.clone();
+            start_options.parent_turn_id = saved.parent_turn_id.clone();
+        }
         match self
             .io
-            .submit_recover_turn(thread_settings, start_options, trace, turn_id)
+            .submit_recover_turn(
+                thread_settings,
+                start_options,
+                trace,
+                turn_id,
+                expected_previous_turn_id,
+            )
             .await?
         {
             TurnInputSubmission::Started { turn_id } => {

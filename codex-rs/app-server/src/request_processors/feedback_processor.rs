@@ -756,6 +756,7 @@ mod tests {
                     turn_id: Some((*turn_id).to_string()),
                     root_turn_id: None,
                     disabled_plugin_ids: None,
+                    recovery_start_options: None,
                     cwd: AbsolutePathBuf::from_absolute_path(tempdir.path())
                         .expect("absolute feedback rollout directory"),
                     workspace_roots: None,
