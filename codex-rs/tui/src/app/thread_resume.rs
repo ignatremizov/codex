@@ -18,6 +18,7 @@ impl App {
         let needs_live_thread = match op {
             AppCommand::UserTurn { .. }
             | AppCommand::Compact
+            | AppCommand::Continue
             | AppCommand::Review { .. }
             | AppCommand::RunUserShellCommand { .. }
             | AppCommand::ActivateMcpServer { .. }

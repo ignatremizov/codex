@@ -10,12 +10,12 @@ use codex_app_server_protocol::ThreadResumeParams;
 use codex_core::StartIfIdleSubmission;
 use codex_core::ThreadManager;
 use codex_protocol::ThreadId;
-use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_rollout::RolloutItem;
+use codex_rollout::TurnRecoveryMode;
+use codex_rollout::select_recoverable_turn;
 use codex_state::AgentAliasState;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_thread_store::ListTurnsParams;
@@ -28,11 +28,8 @@ use std::io;
 use std::sync::Arc;
 use std::sync::Weak;
 
-#[path = "local_tree_recovery_calls.rs"]
-mod calls;
 #[path = "local_tree_recovery_settings.rs"]
 mod settings;
-use calls::validate_call_outcomes;
 use settings::validate_recovery_settings;
 
 /// A single-use recovery plan bound to the replacement server that prepared it.
@@ -282,7 +279,9 @@ impl ThreadRequestProcessor {
         let Some(own_segment) = segments.segments.last() else {
             return Ok(None);
         };
-        let Some(context) = select_unfinished_own_turn(thread_id, own_segment)? else {
+        let Some(context) =
+            select_recoverable_turn(thread_id, own_segment, TurnRecoveryMode::Automatic)?
+        else {
             return Ok(None);
         };
         if own_segment.iter().any(|item| matches!(item,
@@ -353,139 +352,6 @@ impl ThreadRequestProcessor {
             fingerprint,
         }))
     }
-}
-
-fn select_unfinished_own_turn(
-    thread_id: ThreadId,
-    segment: &[RolloutItem],
-) -> io::Result<Option<TurnContextItem>> {
-    let meta = segment
-        .iter()
-        .find_map(|item| match item {
-            RolloutItem::SessionMeta(meta) => Some(&meta.meta),
-            _ => None,
-        })
-        .ok_or_else(|| io::Error::other("canonical history lacks ownership metadata"))?;
-    if meta.id != thread_id {
-        return Err(io::Error::other(
-            "canonical history belongs to another thread",
-        ));
-    }
-    let own_start = match meta.subagent_history_start_ordinal {
-        Some(ordinal) => usize::try_from(
-            ordinal.saturating_sub(
-                meta.history_base
-                    .map_or(0, |base| base.end_ordinal_exclusive),
-            ),
-        )
-        .map_err(io::Error::other)?,
-        None if meta.parent_thread_id.is_some() || meta.forked_from_id.is_some() => segment
-            .iter()
-            .position(|item| {
-                matches!(item,
-                        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(settings))
-                            if settings.thread_id == Some(thread_id))
-            })
-            .ok_or_else(|| {
-                io::Error::other("inherited history has no trustworthy own-turn boundary")
-            })?,
-        None => 0,
-    };
-    let own = segment
-        .get(own_start..)
-        .ok_or_else(|| io::Error::other("invalid own-turn boundary"))?;
-    let Some(mut start) = own
-        .iter()
-        .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
-    else {
-        return Ok(None);
-    };
-    let RolloutItem::EventMsg(EventMsg::TurnStarted(started)) = &own[start] else {
-        unreachable!("turn start selected above");
-    };
-    // Recovery records another start for the same logical turn, without another user message.
-    // Retain that turn's original durable input, but never cross a different turn's boundary.
-    while let Some(previous) = own[..start]
-        .iter()
-        .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
-    {
-        if !matches!(&own[previous], RolloutItem::EventMsg(EventMsg::TurnStarted(event))
-            if event.turn_id == started.turn_id)
-        {
-            break;
-        }
-        start = previous;
-    }
-    let tail = &own[start..];
-    if tail.iter().any(|item| match item {
-        RolloutItem::EventMsg(EventMsg::TurnComplete(event)) => event.turn_id == started.turn_id,
-        RolloutItem::EventMsg(EventMsg::TurnAborted(event)) => event
-            .turn_id
-            .as_ref()
-            .is_none_or(|id| id == &started.turn_id),
-        RolloutItem::EventMsg(EventMsg::Error(event)) => event.affects_turn_status(),
-        _ => false,
-    }) {
-        return Ok(None);
-    }
-    if tail.iter().any(|item| {
-        matches!(
-            item,
-            RolloutItem::EventMsg(EventMsg::EnteredReviewMode(_))
-                | RolloutItem::EventMsg(EventMsg::ExitedReviewMode(_))
-                | RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))
-                | RolloutItem::RealtimeItem(_)
-        )
-    }) {
-        return Err(io::Error::other(
-            "non-regular or rolled-back work requires explicit recovery",
-        ));
-    }
-    let context = tail
-        .iter()
-        .rev()
-        .find_map(|item| match item {
-            RolloutItem::TurnContext(context)
-                if context.turn_id.as_ref() == Some(&started.turn_id) =>
-            {
-                Some(context.clone())
-            }
-            _ => None,
-        })
-        .ok_or_else(|| io::Error::other("unfinished turn lacks its original settings"))?;
-    if context.recovery_start_options.is_none() {
-        return Err(io::Error::other(
-            "original turn start options were not recorded; explicit retry is required",
-        ));
-    }
-    let recipient = meta.agent_path.as_deref().or_else(|| {
-        meta.parent_thread_id
-            .is_none()
-            .then_some(codex_protocol::AgentPath::ROOT)
-    });
-    let has_input = tail.iter().any(|item| match item {
-        RolloutItem::ResponseItem(envelope) => match &envelope.item {
-            ResponseItem::Message { role, content, .. } => role == "user" && !content.is_empty(),
-            ResponseItem::AgentMessage {
-                recipient: target,
-                content,
-                ..
-            } => recipient == Some(target.as_str()) && !content.is_empty(),
-            _ => false,
-        },
-        RolloutItem::InterAgentCommunication(message) => {
-            recipient == Some(message.recipient.as_str())
-                && (!message.content.is_empty() || message.encrypted_content.is_some())
-        }
-        _ => false,
-    });
-    if context.realtime_active == Some(true) || !has_input {
-        return Err(io::Error::other(
-            "unfinished turn lacks durable regular input",
-        ));
-    }
-    validate_call_outcomes(tail)?;
-    Ok(Some(context))
 }
 
 #[cfg(test)]

@@ -237,6 +237,7 @@ mod durable_shutdown;
 mod request_command_approval;
 pub(crate) mod rollback;
 mod submission_admission;
+pub(crate) mod turn_continuation;
 pub(crate) use submission_admission::SubmissionAdmission;
 mod environment;
 mod extension_interruption;
@@ -1171,6 +1172,12 @@ impl SessionIo {
         })
         .await?;
         reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))
+    }
+
+    pub(crate) async fn submit_continue_turn(&self) -> CodexResult<TurnInputSubmission> {
+        let (reply, result) = oneshot::channel();
+        self.submit(Op::ContinueTurn { reply }).await?;
+        result.await.unwrap_or(Err(CodexErr::InternalAgentDied))
     }
 
     pub(crate) async fn shutdown_and_wait(&self) -> CodexResult<()> {

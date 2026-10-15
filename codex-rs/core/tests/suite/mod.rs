@@ -239,6 +239,7 @@ mod tool_lifecycle;
 mod tool_parallelism;
 mod tools;
 mod truncation;
+mod turn_continuation;
 #[path = "turn_error_details_tests.rs"]
 mod turn_error_details;
 mod turn_input_submission;

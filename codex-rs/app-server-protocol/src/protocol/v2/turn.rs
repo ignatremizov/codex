@@ -334,6 +334,22 @@ pub struct TurnInterruptParams {
 #[ts(export_to = "v2/")]
 pub struct TurnInterruptResponse {}
 
+/// Continue the latest eligible unfinished regular turn without adding user input.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnContinueParams {
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnContinueResponse {
+    /// The original turn ID, retained across continuation.
+    pub turn_id: String,
+}
+
 // User input types
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

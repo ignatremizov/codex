@@ -17,6 +17,7 @@ mod realtime;
 mod rollback;
 mod rollout_history;
 mod thread_list;
+mod turn_continue;
 
 #[cfg(test)]
 #[path = "app_server_session/collaboration_catalog_tests.rs"]

@@ -637,6 +637,11 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     false
                 }
+                Op::ContinueTurn { reply } => {
+                    let result = turn_input::handle_user_continuation(&sess).await;
+                    let _ = reply.send(result);
+                    false
+                }
                 Op::SuspendTurnAndShutdown { reply } => {
                     let result =
                         super::turn_suspension::suspend_turn_and_shutdown(&sess, sub.id.clone())

@@ -675,6 +675,12 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
+    /// Explicitly continue the latest interrupted or unfinished receiver-owned regular turn.
+    /// No new user input is recorded.
+    ContinueTurn {
+        reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
+    },
+
     /// Stop the active root turn without recording a terminal turn event.
     SuspendTurnAndShutdown {
         reply: oneshot::Sender<CodexResult<SuspendTurnOutcome>>,
@@ -1033,6 +1039,7 @@ impl Op {
             Self::RealtimeConversationListVoices => "realtime_conversation_list_voices",
             Self::TurnInput { .. } => "turn_input",
             Self::RecoverTurn { .. } => "recover_turn",
+            Self::ContinueTurn { .. } => "continue_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
             Self::ShutdownDurably { .. } => "shutdown_durably",
             Self::ThreadSettings { .. } => "thread_settings",
@@ -3595,10 +3602,11 @@ pub struct AgentResponseCommentaryDelivery {
     pub response_item_id: ResponseItemId,
 }
 
-/// Recorded start-only options and configured defaults needed for automatic crash recovery.
+/// Recorded start-only options and configured defaults needed for same-turn continuation.
 ///
 /// Presence certifies that optional values were captured, including a known absent output
-/// schema. Older contexts without this snapshot remain eligible for explicit retry only.
+/// schema. Older contexts without this snapshot require new user input; neither automatic
+/// crash recovery nor `/continue` can safely infer their original start options.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
 pub struct TurnRecoveryStartOptions {
     pub final_output_json_schema: Option<Value>,
@@ -3607,6 +3615,11 @@ pub struct TurnRecoveryStartOptions {
     pub parent_turn_id: Option<String>,
     /// Configured preference; `TurnContextItem::summary` retains the resolved summary.
     pub configured_reasoning_summary: Option<ReasoningSummaryConfig>,
+    /// Harness interrupt notices omitted by an explicit same-turn continuation.
+    /// This is a model-context edit, not deletion of the original audit records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub cleared_interrupt_message_ids: Vec<String>,
 }
 
 /// Persist once per real user turn after computing that turn's model-visible

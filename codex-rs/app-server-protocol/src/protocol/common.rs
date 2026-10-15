@@ -1098,6 +1098,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnSteerResponse,
     },
+    TurnContinue => "turn/continue" {
+        params: v2::TurnContinueParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnContinueResponse,
+    },
     TurnInterrupt => "turn/interrupt" {
         params: v2::TurnInterruptParams,
         serialization: thread_id(params.thread_id),

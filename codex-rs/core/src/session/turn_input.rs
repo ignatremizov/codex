@@ -65,6 +65,7 @@ enum TurnStartKind {
     Automatic,
     Recovery,
     GuardedRecovery,
+    UserContinuation,
 }
 
 enum IdleContext {
@@ -83,7 +84,7 @@ struct IdleStart {
 impl TurnStartKind {
     fn permits_mode(self, mode: ModeKind) -> bool {
         match self {
-            Self::User | Self::Recovery | Self::GuardedRecovery => true,
+            Self::User | Self::Recovery | Self::GuardedRecovery | Self::UserContinuation => true,
             Self::Automatic => mode != ModeKind::Plan,
         }
     }
@@ -146,12 +147,16 @@ impl PreparedTurnInputSettings {
         submission_id: String,
         kind: TurnStartKind,
     ) -> CodexResult<Option<Arc<TurnContext>>> {
-        if kind == TurnStartKind::GuardedRecovery && self.thread_settings_update.is_some() {
+        let guarded = matches!(
+            kind,
+            TurnStartKind::GuardedRecovery | TurnStartKind::UserContinuation
+        );
+        if guarded && self.thread_settings_update.is_some() {
             return Err(CodexErr::InvalidRequest(
                 "automatic recovery cannot rewrite persistent thread settings".to_string(),
             ));
         }
-        let expected_recovery_context = if kind == TurnStartKind::GuardedRecovery {
+        let expected_recovery_context = if guarded {
             Some(
                 session
                     .reference_context_item()
@@ -198,7 +203,7 @@ impl PreparedTurnInputSettings {
         let Some((turn_context, settings_snapshot)) = turn_context else {
             return Ok(None);
         };
-        if let Some(expected) = expected_recovery_context {
+        let context_edit = if let Some(expected) = expected_recovery_context {
             let saved = expected.recovery_start_options.as_ref().ok_or_else(|| {
                 CodexErr::InvalidRequest(
                     "automatic recovery requires recorded turn start options".to_string(),
@@ -243,7 +248,24 @@ impl PreparedTurnInputSettings {
                     "automatic recovery cannot reproduce the original turn settings ({field})"
                 )));
             }
-        }
+            let mut cleared = saved.cleared_interrupt_message_ids.clone();
+            if kind == TurnStartKind::UserContinuation {
+                for item in session.state.lock().await.history.annotated_items() {
+                    if crate::context_manager::is_turn_interrupt_notice(item, &submission_id)
+                        && let Some(id) = item.id()
+                        && !cleared.iter().any(|value| value == id.as_str())
+                    {
+                        cleared.push(id.to_string());
+                    }
+                }
+            }
+            turn_context
+                .extension_data
+                .insert(super::turn_continuation::ClearedInterrupts(cleared.clone()));
+            (kind == TurnStartKind::UserContinuation).then_some((expected, cleared))
+        } else {
+            None
+        };
         if let Some(turn_trigger) = turn_trigger {
             turn_context
                 .turn_metadata_state
@@ -260,6 +282,9 @@ impl PreparedTurnInputSettings {
             .await?;
         } else {
             drop(settings_guard);
+        }
+        if let Some((original, cleared)) = context_edit {
+            super::turn_continuation::record_context_edit(session, &original, &cleared).await?;
         }
         if let Some(parent_turn_id) = parent_turn_id {
             turn_context
@@ -379,6 +404,38 @@ pub(super) async fn handle_recovery(
             TurnStartKind::Recovery
         },
         expected_previous_turn_id,
+    )
+    .await
+}
+
+pub(super) async fn handle_user_continuation(
+    session: &Arc<Session>,
+) -> CodexResult<TurnInputSubmission> {
+    if session.active_turn.lock().await.is_some() {
+        return Ok(TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::NotIdle,
+        });
+    }
+    let context = super::turn_continuation::prepare(session).await?;
+    let turn_id = context.turn_id.clone().ok_or_else(|| {
+        CodexErr::InvalidRequest("The interrupted turn has no identity.".to_string())
+    })?;
+    let saved = context.recovery_start_options.ok_or_else(|| {
+        CodexErr::InvalidRequest("The original turn settings were not recorded.".to_string())
+    })?;
+    start_if_idle(
+        session,
+        TurnInputRequest::user_input(Vec::new()).on_start(TurnStartOptions {
+            turn_trigger: Some("retry".to_string()),
+            final_output_json_schema: saved.final_output_json_schema,
+            service_tier: saved.service_tier,
+            parent_turn_id: saved.parent_turn_id,
+            root_turn_id: context.root_turn_id,
+            cyber_access_program: context.cyber_access_program,
+        }),
+        turn_id.clone(),
+        TurnStartKind::UserContinuation,
+        Some(turn_id),
     )
     .await
 }
@@ -604,7 +661,10 @@ async fn start_if_idle_with_lease(
         ..
     } = request;
     let origin = UserInputOrigin::from_turn_trigger(start.turn_trigger.as_deref());
-    if session.input_queue.has_trigger_turn_mailbox_items().await {
+    if session.input_queue.has_trigger_turn_mailbox_items().await
+        || (kind == TurnStartKind::UserContinuation
+            && session.input_queue.has_queued_turn_trigger().await)
+    {
         return Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::PendingTriggerTurn,
         });
@@ -716,7 +776,10 @@ async fn start_if_idle_with_lease(
     // The reserved turn now owns admission. Lifecycle callbacks may reacquire the goal lease.
     drop(lease);
 
-    if session.input_queue.has_trigger_turn_mailbox_items().await {
+    if session.input_queue.has_trigger_turn_mailbox_items().await
+        || (kind == TurnStartKind::UserContinuation
+            && session.input_queue.has_queued_turn_trigger().await)
+    {
         session.clear_reserved_idle_turn(&turn_state).await;
         session.maybe_start_turn_for_pending_work().await;
         return Ok(TurnInputSubmission::NotSubmitted {
@@ -775,7 +838,10 @@ async fn start_if_idle_with_lease(
             }
             task_input.push(pending_turn_input(session, input, &turn_context.sub_id, origin).await);
         }
-        TurnStartKind::Automatic | TurnStartKind::Recovery | TurnStartKind::GuardedRecovery => {
+        TurnStartKind::Automatic
+        | TurnStartKind::Recovery
+        | TurnStartKind::GuardedRecovery
+        | TurnStartKind::UserContinuation => {
             // Empty automatic user input resumes sampling without a new message.
             if !matches!(&input, SubmittedTurnInput::UserInput { .. }) {
                 session

@@ -1,3 +1,7 @@
+# Continue an unfinished turn
+
+`turn/continue` accepts `{ "threadId": "..." }` and returns `{ "turnId": "..." }`. It resumes the latest eligible interrupted or unfinished regular turn owned by that thread under its original turn ID, without adding a user prompt. Normal turn and item notifications report the resumed work. Active, completed, or unsafe turns are rejected; clients must display the RPC error rather than falling back to `turn/start`. Core admission is authoritative even when a client's displayed idle state is stale. See [turn continuation](../../docs/turn-continuation.md) for context cleanup, recovery constraints, and tool-outcome safety.
+
 # Guardian circuit-breaker errors
 
 Set `auto_review.circuit_break_action = "strict"` to include `TooManyDenials` in

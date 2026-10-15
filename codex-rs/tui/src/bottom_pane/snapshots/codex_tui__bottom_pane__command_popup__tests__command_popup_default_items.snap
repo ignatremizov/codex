@@ -24,6 +24,7 @@ expression: commands
 /app - continue this session in the Desktop app
 /init - create an AGENTS.md file with instructions for Codex
 /compact - summarize conversation to prevent hitting the context limit
+/continue - continue the last unfinished turn without a new prompt
 /recap - summarize the current conversation now
 /agents - open the agent command center
 /side - start a side conversation in an ephemeral fork

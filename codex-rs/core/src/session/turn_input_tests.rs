@@ -374,6 +374,7 @@ async fn recovery_snapshot_records_schema_effective_tier_and_parent_lineage() {
             service_tier: Some("flex".to_string()),
             parent_turn_id: Some("parent-turn".to_string()),
             configured_reasoning_summary: context.initial_settings.selected().reasoning_summary,
+            cleared_interrupt_message_ids: Vec::new(),
         })
     );
 }

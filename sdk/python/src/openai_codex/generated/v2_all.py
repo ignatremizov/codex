@@ -6649,6 +6649,23 @@ class ToolExposureSurface(Enum):
     direct = "direct"
 
 
+class TurnContinueParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class TurnContinueResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    turn_id: Annotated[
+        str,
+        Field(alias="turnId", description="The original turn ID, retained across continuation."),
+    ]
+
+
 class TurnDiffUpdatedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -8173,6 +8190,15 @@ class PluginUninstallRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["plugin/uninstall"], Field(title="Plugin/uninstallRequestMethod")]
     params: PluginUninstallParams
+
+
+class TurnContinueRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["turn/continue"], Field(title="Turn/continueRequestMethod")]
+    params: TurnContinueParams
 
 
 class TurnInterruptRequest(BaseModel):
@@ -13717,6 +13743,7 @@ class ClientRequest(
         | PluginUninstallRequest
         | TurnStartRequest
         | TurnSteerRequest
+        | TurnContinueRequest
         | TurnInterruptRequest
         | ReviewStartRequest
         | ModelListRequest
@@ -13831,6 +13858,7 @@ class ClientRequest(
         | PluginUninstallRequest
         | TurnStartRequest
         | TurnSteerRequest
+        | TurnContinueRequest
         | TurnInterruptRequest
         | ReviewStartRequest
         | ModelListRequest
