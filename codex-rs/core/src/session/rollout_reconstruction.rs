@@ -939,8 +939,12 @@ impl ContextManager {
                         );
                     }
                 }
+                RolloutItem::TurnContext(context) => {
+                    history.set_compacted_prefix_len(Some(repaired_prefix_len));
+                    let removed_prefix = history.apply_turn_continuation(context);
+                    repaired_prefix_len = repaired_prefix_len.saturating_sub(removed_prefix);
+                }
                 RolloutItem::EventMsg(_)
-                | RolloutItem::TurnContext(_)
                 | RolloutItem::RealtimeItem(_)
                 | RolloutItem::WorldState(_)
                 | RolloutItem::SecurityRiskScore(_)

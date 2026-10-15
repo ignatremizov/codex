@@ -40,9 +40,11 @@ pub use codex_history::RetainedContextEvent;
 pub use codex_history::RetainedInputSource;
 pub use codex_history::RolloutItem;
 pub use codex_history::RolloutLine;
+pub use codex_history::TurnRecoveryMode;
 pub use codex_history::exact_rollback_removed_items;
 pub use codex_history::resume_multi_agent_version;
 pub use codex_history::rollout_without_exact_rollback_ranges;
+pub use codex_history::select_recoverable_turn;
 pub(crate) use codex_protocol::protocol;
 
 /// Decodes a persisted rollout record without Serde's flattened-envelope buffering.

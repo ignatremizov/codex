@@ -463,6 +463,23 @@ mod tests {
     }
 
     #[test]
+    fn continue_prefix_selects_the_turn_control() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/cont".to_string());
+        let commands = popup
+            .filtered_items()
+            .iter()
+            .map(|item| format!("/{} - {}", item.command(), item.description()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(commands, @"/continue - continue the last unfinished turn without a new prompt");
+        assert_eq!(
+            popup.selected_item(),
+            Some(CommandItem::Builtin(SlashCommand::Continue))
+        );
+    }
+
+    #[test]
     fn unavailable_side_conversation_command_is_shown_only_when_searched() {
         let mut popup = CommandPopup::new(
             CommandPopupFlags {

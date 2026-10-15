@@ -90,6 +90,8 @@ Key effects when disabled:
 
 Built-in slash command availability is centralized in `codex-rs/tui/src/bottom_pane/slash_commands.rs` and reused by both the composer and the command popup so gating stays in sync.
 
+`/continue` is a control command: it calls `turn/continue` to resume the latest eligible interrupted or unfinished regular turn under its original ID, without submitting a new user message. It is unavailable during an active or pending turn and in side conversations. Dispatch consumes a bare `/continue` control token locally but preserves unrelated composer drafts, attachments, and pending message queues, including when the server rejects continuation.
+
 ## Submission flow (Enter/Tab)
 
 There are multiple submission paths, but they share the same core rules:
