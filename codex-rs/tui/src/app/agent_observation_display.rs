@@ -116,24 +116,9 @@ pub(super) struct AgentResponseObservationState {
         (ThreadId, ThreadId, AgentResponseObservationBinding),
         AgentResponseObservationDisplay,
     >,
-    /// Acknowledged live relationship settings, independent of turn observation.
-    reply_routes: HashMap<(ThreadId, ThreadId), bool>,
 }
 
 impl AgentResponseObservationState {
-    pub(super) fn replace_reply_route(
-        &mut self,
-        observer: ThreadId,
-        target: ThreadId,
-        enabled: bool,
-    ) {
-        self.reply_routes.insert((observer, target), enabled);
-    }
-
-    pub(super) fn reply_route(&self, observer: ThreadId, target: ThreadId) -> Option<bool> {
-        self.reply_routes.get(&(observer, target)).copied()
-    }
-
     pub(super) fn mark_target_running(&mut self, target_thread_id: ThreadId) {
         let pending = self
             .observations
@@ -257,13 +242,10 @@ impl AgentResponseObservationState {
     pub(super) fn remove_thread(&mut self, thread_id: ThreadId) {
         self.observations
             .retain(|(observer, target, _), _| *observer != thread_id && *target != thread_id);
-        self.reply_routes
-            .retain(|(observer, target), _| *observer != thread_id && *target != thread_id);
     }
 
     pub(super) fn clear(&mut self) {
         self.observations.clear();
-        self.reply_routes.clear();
     }
 }
 

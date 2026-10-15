@@ -22,7 +22,7 @@ use windows_sys::Win32::System::Threading::OpenProcess;
 use windows_sys::Win32::System::Threading::OpenProcessToken;
 use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
 
-pub(super) fn ensure_non_elevated_peer(socket: RawSocket) -> io::Result<()> {
+pub(super) fn peer_pid(socket: RawSocket) -> io::Result<u32> {
     let mut pid = 0u32;
     let mut returned = 0;
     if unsafe {
@@ -48,6 +48,12 @@ pub(super) fn ensure_non_elevated_peer(socket: RawSocket) -> io::Result<()> {
             "socket peer PID unavailable",
         ));
     }
+    Ok(pid)
+}
+
+pub(super) fn ensure_non_elevated_peer(socket: RawSocket) -> io::Result<()> {
+    let pid = peer_pid(socket)?;
+    let mut returned = 0;
     let process = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION,

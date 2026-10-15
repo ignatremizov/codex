@@ -622,6 +622,7 @@ async fn rejected_initial_thread_start_reconnects_and_submits_prompt_once() -> R
             /*remote_cwd*/ None,
             crate::dynamic_tools_mcp::ThreadToolTransport::Dynamic,
             app.reconnect.presentation,
+            /*fallback*/ None,
         )
         .await?;
         app.finish_reconnect(

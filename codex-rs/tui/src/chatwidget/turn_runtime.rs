@@ -74,6 +74,17 @@ impl ChatWidget {
 
     // Raw reasoning uses the same flow as summarized reasoning
 
+    /// Hold follow-up input between a successful admission and its TurnStarted notification.
+    pub(crate) fn mark_turn_start_pending(&mut self) {
+        self.input_queue.user_turn_pending_start = true;
+    }
+
+    /// Preserve queued input for review when recovery cannot establish a safe turn boundary.
+    pub(crate) fn hold_queued_input_for_recovery(&mut self) {
+        self.input_queue.recovered_queue |= self.input_queue.has_queued_follow_up_messages()
+            || !self.input_queue.pending_steers.is_empty();
+    }
+
     pub(super) fn on_task_started(&mut self) {
         self.status_state.program_status_after_turn =
             crate::terminal_program_status::ProgramStatus::Idle;
@@ -394,6 +405,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
+        self.hold_queued_input_for_recovery();
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.finalize_turn();
 

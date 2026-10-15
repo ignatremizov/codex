@@ -185,6 +185,7 @@ impl App {
                         self.config.auth_file_selection.clone(),
                         self.config.cli_auth_credentials_store_mode,
                     )?;
+                    self.reconnect.expected_daemon_restart = true;
                     self.daemon_restart = Some(tokio::spawn(async move {
                         codex_app_server_daemon::run(
                             &launch,

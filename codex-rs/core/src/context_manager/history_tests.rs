@@ -904,6 +904,7 @@ fn reference_context_item() -> TurnContextItem {
         turn_id: Some("reference-turn".to_string()),
         root_turn_id: None,
         disabled_plugin_ids: None,
+        recovery_start_options: None,
         cwd: AbsolutePathBuf::try_from(
             std::env::current_dir()
                 .expect("current directory")
@@ -2560,7 +2561,7 @@ fn format_exec_output_prefers_line_marker_when_both_limits_exceeded() {
     assert_truncated_message_matches(&truncated, "line-0-", /*expected_removed*/ 17_423);
 }
 
-#[cfg_attr(not(debug_assertions), test_case::test_case(false; "local"))]
+#[test_case::test_case(false; "local")]
 #[test_case::test_case(true; "inherited")]
 fn normalize_adds_missing_output_for_custom_tool_call(inherited: bool) {
     let items = vec![ResponseItem::CustomToolCall {
@@ -2605,7 +2606,7 @@ fn normalize_adds_missing_output_for_custom_tool_call(inherited: bool) {
     );
 }
 
-#[cfg_attr(not(debug_assertions), test_case::test_case(false; "local"))]
+#[test_case::test_case(false; "local")]
 #[test_case::test_case(true; "inherited")]
 fn normalize_adds_missing_output_for_local_shell_call_with_id(inherited: bool) {
     let items = vec![ResponseItem::LocalShellCall {
@@ -2956,46 +2957,6 @@ fn normalize_adds_missing_output_for_tool_search_call() {
             },
         ]
     );
-}
-
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic]
-fn normalize_adds_missing_output_for_custom_tool_call_panics_in_debug() {
-    let items = vec![ResponseItem::CustomToolCall {
-        encrypted_content: None,
-        id: None,
-        status: None,
-        call_id: "tool-x".to_string(),
-        name: "custom".to_string(),
-        namespace: None,
-        input: "{}".to_string(),
-        internal_chat_message_metadata_passthrough: None,
-    }];
-    let mut h = create_history_with_items(items);
-    h.normalize_history(&default_input_modalities());
-}
-
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic]
-fn normalize_adds_missing_output_for_local_shell_call_with_id_panics_in_debug() {
-    let items = vec![ResponseItem::LocalShellCall {
-        encrypted_content: None,
-        id: None,
-        call_id: Some("shell-1".to_string()),
-        status: LocalShellStatus::Completed,
-        action: LocalShellAction::Exec(LocalShellExecAction {
-            command: vec!["echo".to_string(), "hi".to_string()],
-            timeout_ms: None,
-            working_directory: None,
-            env: None,
-            user: None,
-        }),
-        internal_chat_message_metadata_passthrough: None,
-    }];
-    let mut h = create_history_with_items(items);
-    h.normalize_history(&default_input_modalities());
 }
 
 #[cfg(debug_assertions)]

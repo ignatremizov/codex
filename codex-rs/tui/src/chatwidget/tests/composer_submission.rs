@@ -2505,6 +2505,62 @@ async fn reconnect_resumes_unsent_input_and_reconciles_confirmed_submissions() {
 }
 
 #[tokio::test]
+async fn reconnect_keeps_unsent_tab_messages_until_the_recovered_turn_finishes() {
+    let (mut previous, _events, _operations) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    previous.thread_id = Some(ThreadId::new());
+    handle_turn_started(&mut previous, "recovered-turn");
+    previous.apply_external_edit("queued before disconnect".into());
+    previous.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let mut input = previous.capture_thread_input_state().expect("queued input");
+    input.reconnect_pending = true;
+
+    let (mut chat, _events, mut operations) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = previous.thread_id;
+    chat.restore_reconnected_input(Some(input), &[]);
+    assert!(!chat.is_user_turn_pending_or_running());
+    // A successful recovery admission must guard the queue before TurnStarted is rendered.
+    chat.mark_turn_start_pending();
+    chat.apply_external_edit("queued after reconnect".into());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    assert!(!chat.maybe_send_next_queued_input());
+    assert_no_submit_op(&mut operations);
+    handle_turn_started(&mut chat, "recovered-turn");
+    assert_no_submit_op(&mut operations);
+    handle_turn_completed(&mut chat, "recovered-turn", /*duration_ms*/ None);
+    let Op::UserTurn { items, .. } = next_submit_op(&mut operations) else {
+        panic!("expected first queued user turn");
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "queued before disconnect".into(),
+            text_elements: Vec::new(),
+        }]
+    );
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["queued after reconnect"]
+    );
+
+    handle_turn_started(&mut chat, "next-turn");
+    handle_turn_completed(&mut chat, "next-turn", /*duration_ms*/ None);
+    let Op::UserTurn { items, .. } = next_submit_op(&mut operations) else {
+        panic!("expected second queued user turn");
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "queued after reconnect".into(),
+            text_elements: Vec::new(),
+        }]
+    );
+    assert!(!chat.has_queued_follow_up_messages());
+    assert_no_submit_op(&mut operations);
+}
+
+#[tokio::test]
 async fn reconnect_preserves_replayed_clock_and_uncertain_input_without_resending() {
     for running in [false, true] {
         let (mut previous, _events, _operations) =
