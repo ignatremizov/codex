@@ -75,6 +75,10 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use wiremock::MockServer;
+
+#[path = "compact_capacity_tests.rs"]
+mod capacity_tests;
+
 // --- Test helpers -----------------------------------------------------------
 
 pub(super) const FIRST_REPLY: &str = "FIRST_REPLY";
@@ -3634,19 +3638,20 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
         },
     )
     .await;
-    let overload = wiremock::ResponseTemplate::new(/*s*/ 503)
+    // Structured model-capacity errors have a separate turn-wide retry owner.
+    let unavailable = wiremock::ResponseTemplate::new(/*s*/ 503)
         .insert_header("Retry-After", "0")
-        .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }));
+        .set_body_json(json!({ "error": { "code": "service_unavailable" } }));
     let mut responses = vec![
         sse_response(sse(vec![
             ev_assistant_message("m1", "before switch"),
             ev_completed_with_tokens("r1", /*total_tokens*/ 120_000),
         ])),
-        overload.clone(), // Old model: initial attempt and two retries.
-        overload.clone(),
-        overload.clone(),
+        unavailable.clone(), // Old model: initial attempt and two retries.
+        unavailable.clone(),
+        unavailable.clone(),
     ];
-    responses.extend(vec![overload; selected_model_failures]);
+    responses.extend(vec![unavailable; selected_model_failures]);
     if selected_model_failures < 3 {
         responses.extend([
             sse_response(remote_v2_compaction_response()),
@@ -3700,14 +3705,21 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
                 EventMsg::TurnComplete(event) => {
                     assert_eq!(
                         event.error.and_then(|error| error.codex_error_info),
-                        Some(CodexErrorInfo::ServerOverloaded)
+                        Some(CodexErrorInfo::HttpConnectionFailed {
+                            http_status_code: Some(503),
+                        })
                     );
                     break;
                 }
                 _ => {}
             }
         }
-        assert_eq!(errors, vec![Some(CodexErrorInfo::ServerOverloaded)]);
+        assert_eq!(
+            errors,
+            vec![Some(CodexErrorInfo::HttpConnectionFailed {
+                http_status_code: Some(503),
+            })],
+        );
     }
     let actual_models = request_log
         .requests()
@@ -3742,11 +3754,11 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
-    let overload = wiremock::ResponseTemplate::new(/*s*/ 503)
+    let unavailable = wiremock::ResponseTemplate::new(/*s*/ 503)
         .insert_header("Retry-After", "0")
-        .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }));
+        .set_body_json(json!({ "error": { "code": "service_unavailable" } }));
     let request_log =
-        mount_response_sequence(&server, vec![overload; (max_retries + 1) as usize]).await;
+        mount_response_sequence(&server, vec![unavailable; (max_retries + 1) as usize]).await;
     let mut model_provider = openai_model_provider(&server);
     model_provider.request_max_retries = Some(0);
     model_provider.stream_max_retries = Some(max_retries);
@@ -3771,14 +3783,21 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
             EventMsg::TurnComplete(event) => {
                 assert_eq!(
                     event.error.and_then(|error| error.codex_error_info),
-                    Some(CodexErrorInfo::ServerOverloaded)
+                    Some(CodexErrorInfo::HttpConnectionFailed {
+                        http_status_code: Some(503),
+                    })
                 );
                 break;
             }
             _ => {}
         }
     }
-    assert_eq!(errors, vec![Some(CodexErrorInfo::ServerOverloaded)]);
+    assert_eq!(
+        errors,
+        vec![Some(CodexErrorInfo::HttpConnectionFailed {
+            http_status_code: Some(503),
+        })],
+    );
     assert_eq!(
         reconnect_messages,
         (1..=max_retries)

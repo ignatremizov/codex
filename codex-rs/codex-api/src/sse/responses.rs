@@ -11,6 +11,7 @@ use crate::safety_buffering::treatment_from_headers;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
+use codex_http_client::RetryAfter;
 use codex_protocol::ResponseUsageMetadata;
 use codex_protocol::error::ResponseIncompleteError;
 use codex_protocol::models::ResponseItem;
@@ -42,6 +43,7 @@ pub fn spawn_response_stream(
     telemetry: Option<Arc<dyn SseTelemetry>>,
     turn_state: Option<Arc<OnceLock<String>>>,
 ) -> ResponseStream {
+    let retry_after = RetryAfter::from_headers(&stream_response.headers);
     let rate_limit_snapshots = parse_all_rate_limits(&stream_response.headers);
     let models_etag = stream_response
         .headers
@@ -94,6 +96,7 @@ pub fn spawn_response_stream(
             idle_timeout,
             telemetry,
             safety_buffering_treatment,
+            retry_after,
         )
         .await;
     });
@@ -575,6 +578,7 @@ pub async fn process_sse(
         idle_timeout,
         telemetry,
         SafetyBufferingTreatment::default(),
+        /*retry_after*/ None,
     )
     .await;
 }
@@ -585,6 +589,7 @@ async fn process_sse_with_treatment(
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     safety_buffering_treatment: SafetyBufferingTreatment,
+    retry_after: Option<RetryAfter>,
 ) {
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
@@ -681,7 +686,17 @@ async fn process_sse_with_treatment(
             }
             Ok(None) => {}
             Err(error) => {
-                let error = error.into_api_error();
+                let mut error = error.into_api_error();
+                if let Some(header) = retry_after {
+                    match &mut error {
+                        ApiError::Retryable { retry_after, .. }
+                        | ApiError::RateLimitExceeded { retry_after, .. }
+                        | ApiError::ServerOverloaded { retry_after } => {
+                            *retry_after = Some(header);
+                        }
+                        _ => {}
+                    }
+                }
                 if matches!(
                     error,
                     ApiError::FlexUnavailable | ApiError::ResponseIncomplete(_)

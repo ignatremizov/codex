@@ -5369,13 +5369,19 @@ impl Session {
         codex_error: CodexErr,
     ) {
         let additional_details = codex_error.to_string();
-        let codex_error_info = CodexErrorInfo::ResponseStreamDisconnected {
-            http_status_code: codex_error.http_status_code_value(),
+        let codex_error_info = match codex_error.details() {
+            CodexErrorDetails::PolicyCapacityUnavailable => {
+                CodexErrorInfo::PolicyCapacityUnavailable
+            }
+            _ => CodexErrorInfo::ResponseStreamDisconnected {
+                http_status_code: codex_error.http_status_code_value(),
+            },
         };
         let event = EventMsg::StreamError(StreamErrorEvent {
             message: message.into(),
             codex_error_info: Some(codex_error_info),
             additional_details: Some(additional_details),
+            retry_at: None,
         });
         self.send_event(turn_context, event).await;
     }

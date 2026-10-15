@@ -840,6 +840,7 @@ async fn misalignment_buffered_replay_preserves_input_after_continuation() {
             turn_id: "failed-turn".to_string(),
             error,
             will_retry: false,
+            retry_at: None,
         }),
         ServerNotification::TurnCompleted(TurnCompletedNotification {
             thread_id: thread_id.to_string(),
@@ -905,6 +906,7 @@ async fn misalignment_replay_blocks_when_turn_start_was_evicted() {
                 turn_id: "new-turn".into(),
                 error: error.clone(),
                 will_retry: false,
+                retry_at: None,
             }),
         ),
         (
@@ -925,6 +927,7 @@ async fn misalignment_replay_blocks_when_turn_start_was_evicted() {
                     ..error
                 },
                 will_retry: false,
+                retry_at: None,
             }),
         ),
     ] {

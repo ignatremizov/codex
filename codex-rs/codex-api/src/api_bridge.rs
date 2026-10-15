@@ -1,5 +1,6 @@
 use crate::TransportError;
 use crate::error::ApiError;
+use crate::error::is_model_capacity_error;
 use crate::error::parse_terminal_provider_error;
 use crate::rate_limits::parse_promo_message;
 use crate::rate_limits::parse_rate_limit_for_limit;
@@ -104,6 +105,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             message,
             misalignment,
         }),
+        ApiError::Transport(transport) if is_model_capacity_error(&transport) => {
+            CodexErr::ServerOverloaded
+        }
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
@@ -126,7 +130,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                         Some("policy_capacity_unavailable") => {
                             return CodexErr::new(CodexErrorDetails::PolicyCapacityUnavailable);
                         }
-                        Some("server_is_overloaded") => return CodexErr::ServerOverloaded,
                         Some("slow_down") => {
                             return CodexErr::new(CodexErrorDetails::RateLimitExceeded(
                                 error

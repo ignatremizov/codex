@@ -3,6 +3,33 @@ use pretty_assertions::assert_eq;
 use tokio::sync::mpsc::unbounded_channel;
 
 #[test]
+fn capacity_retry_status_displays_deadline_and_zero_after_expiry() {
+    let now = Instant::now();
+    let (tx, _rx) = unbounded_channel();
+    let mut row = StatusIndicatorWidget::new(
+        AppEventSender::new(tx),
+        FrameRequester::test_dummy(),
+        /*animations_enabled*/ false,
+        Default::default(),
+    );
+    row.update_header("Model at capacity. Retrying... 1/5".into());
+    let timer = StatusTimer {
+        countdown_deadline: Some(now + Duration::from_secs(/*secs*/ 30)),
+        ..StatusTimer::default()
+    };
+    let render = |at| {
+        StatusIndicator {
+            row: &row,
+            timer: &timer,
+        }
+        .lines_at(/*width*/ 100, at)[0]
+            .to_string()
+    };
+    insta::assert_snapshot!(render(now), @"Model at capacity. Retrying... 1/5 (30s left • esc to interrupt)");
+    insta::assert_snapshot!(render(now + Duration::from_secs(/*secs*/ 31)), @"Model at capacity. Retrying... 1/5 (0s left • esc to interrupt)");
+}
+
+#[test]
 fn hiding_aggregate_timer_preserves_its_deadline_and_remapped_interrupt() {
     let now = Instant::now();
     let (tx, _rx) = unbounded_channel();
