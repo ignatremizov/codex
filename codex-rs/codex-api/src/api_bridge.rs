@@ -1,5 +1,6 @@
 use crate::TransportError;
 use crate::error::ApiError;
+use crate::error::is_model_capacity_error;
 use crate::error::parse_terminal_provider_error;
 use crate::rate_limits::parse_promo_message;
 use crate::rate_limits::parse_rate_limit_for_limit;
@@ -96,6 +97,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             message,
             misalignment,
         }),
+        ApiError::Transport(transport) if is_model_capacity_error(&transport) => {
+            CodexErr::ServerOverloaded
+        }
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
@@ -113,20 +117,15 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
 
                 if status == http::StatusCode::SERVICE_UNAVAILABLE
                     && let Some(error) = provider_error
+                    && error.get("code").and_then(Value::as_str) == Some("slow_down")
                 {
-                    match error.get("code").and_then(Value::as_str) {
-                        Some("server_is_overloaded") => return CodexErr::ServerOverloaded,
-                        Some("slow_down") => {
-                            return CodexErr::new(CodexErrorDetails::RateLimitExceeded(
-                                error
-                                    .get("message")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_owned(),
-                            ));
-                        }
-                        _ => {}
-                    }
+                    return CodexErr::new(CodexErrorDetails::RateLimitExceeded(
+                        error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    ));
                 }
 
                 if (status == http::StatusCode::BAD_REQUEST

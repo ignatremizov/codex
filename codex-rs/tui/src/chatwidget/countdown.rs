@@ -7,13 +7,73 @@
 use super::*;
 
 impl ChatWidget {
+    pub(super) fn restore_retry_status_header_if_present(
+        &mut self,
+        notification: &ServerNotification,
+    ) {
+        if let Some(StatusCountdownOwner::ModelRetry { turn_id }) =
+            &self.status_state.countdown_owner
+        {
+            // Background notifications (account limits, names, completed shell jobs) do not
+            // establish that this model request recovered. Keep its countdown until progress
+            // or a lifecycle transition for the owning turn.
+            let (event_thread, event_turn) = match notification {
+                ServerNotification::AgentMessageDelta(event) => (&event.thread_id, &event.turn_id),
+                ServerNotification::PlanDelta(event) => (&event.thread_id, &event.turn_id),
+                ServerNotification::ReasoningSummaryTextDelta(event) => {
+                    (&event.thread_id, &event.turn_id)
+                }
+                ServerNotification::ReasoningTextDelta(event) => (&event.thread_id, &event.turn_id),
+                ServerNotification::ReasoningSummaryPartAdded(event) => {
+                    (&event.thread_id, &event.turn_id)
+                }
+                ServerNotification::ModelVerification(event) => (&event.thread_id, &event.turn_id),
+                ServerNotification::ContextCompactionStatus(event) => {
+                    (&event.thread_id, &event.turn_id)
+                }
+                ServerNotification::ItemStarted(event) => (&event.thread_id, &event.turn_id),
+                ServerNotification::ItemCompleted(event)
+                    if matches!(
+                        &event.item,
+                        ThreadItem::AgentMessage { .. }
+                            | ThreadItem::Reasoning { .. }
+                            | ThreadItem::Plan { .. }
+                            | ThreadItem::ContextCompaction { .. }
+                    ) =>
+                {
+                    (&event.thread_id, &event.turn_id)
+                }
+                ServerNotification::TurnCompleted(event) => (&event.thread_id, &event.turn.id),
+                ServerNotification::Error(event) => (&event.thread_id, &event.turn_id),
+                _ => return,
+            };
+            if event_turn != turn_id
+                || self
+                    .thread_id()
+                    .is_some_and(|id| id.to_string() != *event_thread)
+            {
+                return;
+            }
+        }
+        if let Some(header) = self.status_state.take_retry_status_header() {
+            if matches!(
+                self.status_state.countdown_owner,
+                Some(StatusCountdownOwner::ModelRetry { .. })
+            ) {
+                self.clear_status_countdown();
+            }
+            self.set_status_header(header);
+        }
+    }
+
     pub(super) fn set_status_countdown_deadline_at_ms(
         &mut self,
         owner: StatusCountdownOwner,
         deadline_at_ms: i64,
     ) {
         let turn_id = match &owner {
-            StatusCountdownOwner::CollabWait { turn_id, .. }
+            StatusCountdownOwner::ModelRetry { turn_id }
+            | StatusCountdownOwner::CollabWait { turn_id, .. }
             | StatusCountdownOwner::UnifiedExec { turn_id, .. }
             | StatusCountdownOwner::UnifiedExecWaitInvocation { turn_id, .. }
             | StatusCountdownOwner::Sleep { turn_id, .. } => turn_id,
@@ -26,9 +86,11 @@ impl ChatWidget {
         {
             return;
         }
-        if self.status_state.compaction.is_some()
-            || self.status_state.retry_status_header.is_some()
-            || !self.status_state.pending_guardian_review_status.is_empty()
+        let is_model_retry = matches!(owner, StatusCountdownOwner::ModelRetry { .. });
+        if (!is_model_retry
+            && (self.status_state.compaction.is_some()
+                || self.status_state.retry_status_header.is_some()
+                || !self.status_state.pending_guardian_review_status.is_empty()))
             || !self.bottom_pane.is_task_running()
             || !self.turn_lifecycle.agent_turn_running
         {
