@@ -98,6 +98,7 @@ fn deliver_usage_limit_error(app: &mut App) {
                 additional_details: None,
             },
             will_retry: false,
+            retry_at: None,
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
         }),

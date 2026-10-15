@@ -371,6 +371,8 @@ impl ChatWidget {
     }
 
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
+        self.input_queue.recovered_queue |= self.input_queue.has_queued_follow_up_messages()
+            || !self.input_queue.pending_steers.is_empty();
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.finalize_turn();
 
@@ -382,7 +384,6 @@ impl ChatWidget {
 
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
-        self.maybe_send_next_queued_input();
     }
 
     fn on_error(&mut self, message: String) {

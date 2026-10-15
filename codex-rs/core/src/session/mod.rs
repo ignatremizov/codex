@@ -4858,6 +4858,7 @@ impl Session {
             message: message.into(),
             codex_error_info: Some(codex_error_info),
             additional_details: Some(additional_details),
+            retry_at: None,
         });
         self.send_event(turn_context, event).await;
     }

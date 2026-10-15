@@ -57,6 +57,7 @@ mod async_question_refs;
 mod audio_truncation;
 mod auth_recovery_policy;
 mod auto_review;
+mod capacity_retry;
 mod catalog_permission_messages;
 mod cli_stream;
 mod client;

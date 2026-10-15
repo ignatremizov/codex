@@ -7,6 +7,7 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
+use codex_async_utils::OrCancelExt;
 use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::error::CodexErrorDetails;
@@ -74,7 +75,9 @@ impl SessionTask for CompactTask {
                     // Compaction prompt is synthesized; no UI element ranges to preserve.
                     text_elements: Vec::new(),
                 }];
-                crate::compact::run_compact_task(session.clone(), Arc::clone(&ctx), input).await
+                crate::compact::run_compact_task(session.clone(), Arc::clone(&ctx), input)
+                    .or_cancel(&cancellation_token)
+                    .await?
             }
         };
         if let Err(err) = result {

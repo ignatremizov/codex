@@ -1700,7 +1700,8 @@ async fn run_auto_compact(
                 run.reason,
                 run.phase,
             )
-            .await?;
+            .or_cancel(run.cancellation)
+            .await??;
         }
     }
     Ok(())

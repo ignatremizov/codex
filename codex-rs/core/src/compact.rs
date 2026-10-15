@@ -9,9 +9,9 @@ use crate::compacted_history_retention::RetainedMessageTruncation;
 use crate::compacted_history_retention::contains_atomic_compacted_media;
 use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
 use crate::compacted_history_retention::truncate_text_to_approx_token_budget;
-use crate::context::LegacyAgentReplyRoute;
 use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
+use crate::context::LegacyAgentReplyRoute;
 use crate::context::McpServerUseInstructions;
 use crate::context::compacted_image_omission_text;
 use crate::context::standalone_compacted_image_omission_message;
@@ -421,6 +421,15 @@ async fn run_compact_task_inner_impl(
             }
             Err(e) if matches!(e.details(), CodexErrorDetails::SessionBudgetExceeded) => {
                 return Err(e);
+            }
+            Err(e) if matches!(e.details(), CodexErrorDetails::ServerOverloaded) => {
+                crate::responses_retry::retry_capacity_error(
+                    &sess,
+                    &turn_context,
+                    e,
+                    codex_client::RetryOperation::Sampling,
+                )
+                .await?;
             }
             Err(e)
                 if matches!(

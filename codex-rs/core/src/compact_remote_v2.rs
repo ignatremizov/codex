@@ -46,6 +46,7 @@ use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_analytics::CompactionTrigger;
+use codex_async_utils::OrCancelExt;
 use codex_features::Feature;
 #[cfg(test)]
 use codex_history::CodexHarnessMetadata;
@@ -271,14 +272,19 @@ async fn run_remote_compact_task_inner_impl(
         compaction_metadata,
         analytics_details,
     )
-    .await;
+    .or_cancel(cancellation)
+    .await?;
     let (attempt, compaction_turn_context) = match attempt {
         Ok(attempt) => (attempt, turn_context),
         Err(error) => {
             let Some(fallback_step_context) = fallback_step_context else {
                 return Err(error);
             };
-            if !should_retry_with_current_model(&error) {
+            // Capacity retries already exhausted the turn-owned budget on the previous model.
+            // Switching models here would issue another request outside that retry policy.
+            if matches!(error.details(), CodexErrorDetails::ServerOverloaded)
+                || !should_retry_with_current_model(&error)
+            {
                 return Err(error);
             }
             sess.set_last_known_step_context(fallback_step_context)
@@ -299,7 +305,8 @@ async fn run_remote_compact_task_inner_impl(
                 compaction_metadata,
                 analytics_details,
             )
-            .await;
+            .or_cancel(cancellation)
+            .await?;
             record_model_fallback(
                 &sess.services.session_telemetry,
                 turn_context.model_info().slug.as_str(),
@@ -310,6 +317,14 @@ async fn run_remote_compact_task_inner_impl(
             );
             match fallback_result {
                 Ok(attempt) => (attempt, fallback_turn_context),
+                Err(fallback_error)
+                    if matches!(
+                        fallback_error.details(),
+                        CodexErrorDetails::ServerOverloaded | CodexErrorDetails::TurnAborted
+                    ) =>
+                {
+                    return Err(fallback_error);
+                }
                 Err(_) => return Err(error),
             }
         }

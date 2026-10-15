@@ -9,6 +9,16 @@ denial limit, and interrupted status; neither emits a separate `Error` event.
 
 # Advisory wait countdowns
 
+Retryable `error` notifications include nullable `retryAt` metadata in Unix
+seconds. `willRetry` remains authoritative: the deadline is only an advisory
+countdown, not permission for a client to resubmit. Clients retain zero after
+expiry until recovery or another retry notification, clear the countdown on
+completion or interruption, and do not restore replayed or stale-turn timers.
+Older notifications without `retryAt` remain valid and untimed.
+Structured model-capacity failures use a five-retry, same-turn budget; see
+[model-capacity retries](../../docs/model-capacity-retries.md) for timing,
+cancellation, and exhaustion behavior.
+
 `item/started` and `item/commandExecution/terminalInteraction` include nullable
 `deadlineAtMs` metadata, expressed as Unix milliseconds. It estimates the current
 initial command wait, empty terminal poll, or agent wait—not the lifetime of a

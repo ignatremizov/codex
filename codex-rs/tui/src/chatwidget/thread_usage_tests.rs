@@ -330,6 +330,7 @@ async fn replayed_errors_do_not_start_live_billing_refreshes() {
                 additional_details: None,
             },
             will_retry: false,
+            retry_at: None,
             thread_id: thread_id.to_string(),
             turn_id: "replayed-turn".to_string(),
         });

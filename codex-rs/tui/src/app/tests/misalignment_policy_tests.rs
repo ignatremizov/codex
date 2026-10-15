@@ -32,6 +32,7 @@ fn error_notification(
         turn_id: turn_id.into(),
         error,
         will_retry: false,
+        retry_at: None,
     })
 }
 

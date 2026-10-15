@@ -63,3 +63,18 @@ pub(crate) fn parse_flex_unavailable(error: &Value) -> Option<ApiError> {
     (error.get("code").and_then(Value::as_str) == Some("flex_unavailable"))
         .then_some(ApiError::FlexUnavailable)
 }
+
+/// Model capacity has a same-turn retry owner; do not multiply its budget with HTTP retries.
+pub(crate) fn is_model_capacity_error(error: &TransportError) -> bool {
+    matches!(error,
+        TransportError::Http { status, body: Some(body), .. }
+        if *status == StatusCode::SERVICE_UNAVAILABLE
+            && serde_json::from_str::<Value>(body).is_ok_and(|value|
+            value.get("error").and_then(|error| error.get("code")).and_then(Value::as_str)
+                == Some("server_is_overloaded"))
+    )
+}
+
+#[cfg(test)]
+#[path = "capacity_error_tests.rs"]
+mod capacity_tests;

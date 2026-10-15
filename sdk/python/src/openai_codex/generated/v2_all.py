@@ -11685,6 +11685,13 @@ class ErrorNotification(BaseModel):
         populate_by_name=True,
     )
     error: TurnError
+    retry_at: Annotated[
+        int | None,
+        Field(
+            alias="retryAt",
+            description="Unix seconds at which the next automatic retry is scheduled.",
+        ),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
     will_retry: Annotated[bool, Field(alias="willRetry")]
