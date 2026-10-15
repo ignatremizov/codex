@@ -256,6 +256,7 @@ mod durable_shutdown;
 mod request_command_approval;
 pub(crate) mod rollback;
 mod submission_admission;
+pub(crate) mod turn_continuation;
 pub(crate) use submission_admission::SubmissionAdmission;
 mod environment;
 mod extension_interruption;
@@ -284,7 +285,9 @@ mod response_observation;
 pub(crate) use observed_input::ObservedTurnInputSubmission;
 mod agent_identity;
 mod async_questions;
-mod messaging_context_publication;
+#[cfg(test)]
+#[path = "legacy_messaging_checkpoint_tests.rs"]
+mod legacy_messaging_checkpoint_tests;
 mod user_agent_publication;
 pub(crate) use agent_identity::AgentSessionOwnershipOverride;
 pub(crate) use response_observation::AgentResponseEvent;
@@ -1304,6 +1307,12 @@ impl SessionIo {
         })
         .await?;
         reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))
+    }
+
+    pub(crate) async fn submit_continue_turn(&self) -> CodexResult<TurnInputSubmission> {
+        let (reply, result) = oneshot::channel();
+        self.submit(Op::ContinueTurn { reply }).await?;
+        result.await.unwrap_or(Err(CodexErr::InternalAgentDied))
     }
 
     pub(crate) async fn shutdown_and_wait(&self) -> CodexResult<()> {

@@ -125,6 +125,25 @@ impl ThreadConfigSnapshot {
         &self.environments.environments
     }
 
+    /// Ordered runtime and permission-profile roots, matching the turn's context projection.
+    pub fn effective_workspace_roots(&self) -> Vec<PathUri> {
+        let mut roots = self
+            .environment_selections()
+            .first()
+            .map(|environment| environment.workspace_roots.clone())
+            .unwrap_or_default();
+        for root in &self.profile_workspace_roots {
+            let root = root.as_uri();
+            if !roots
+                .iter()
+                .any(|existing| existing.to_string() == root.to_string())
+            {
+                roots.push(root.clone());
+            }
+        }
+        roots
+    }
+
     /// Whether the primary environment has resolved configuration, if one is selected.
     pub fn is_primary_environment_configured(&self) -> bool {
         self.environment_selections()
@@ -530,6 +549,30 @@ impl CodexThread {
     ) -> CodexResult<StartIfIdleSubmission> {
         self.recover_turn(request, /*expected_previous_turn_id*/ None)
             .await
+    }
+
+    /// Continue the latest interrupted or unfinished own turn without adding a user prompt.
+    ///
+    /// Core validates durable history and original settings in the ordered submission loop.
+    /// Completed work and calls with unknown outcomes are not replayed.
+    pub async fn continue_turn(&self) -> CodexResult<StartIfIdleSubmission> {
+        self.ensure_execution_capacity_for_turn_start(self.session.services.agent_control.as_ref())
+            .await?;
+        match self.io.submit_continue_turn().await? {
+            TurnInputSubmission::Started {
+                turn_id,
+                root_turn_id,
+            } => Ok(StartIfIdleSubmission::Started {
+                turn_id,
+                root_turn_id,
+            }),
+            TurnInputSubmission::NotSubmitted { reason } => {
+                Ok(StartIfIdleSubmission::NotSubmitted { reason })
+            }
+            TurnInputSubmission::Steered { .. } => {
+                unreachable!("explicit continuation cannot steer")
+            }
+        }
     }
 
     /// Recovers only if the original turn is still current and the runtime remains idle.

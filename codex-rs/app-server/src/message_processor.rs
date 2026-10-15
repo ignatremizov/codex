@@ -1763,6 +1763,9 @@ impl MessageProcessor {
                     .turn_settings_update(&request_id, params)
                     .await
             }
+            ClientRequest::TurnContinue { params, .. } => {
+                self.turn_processor.turn_continue(&request_id, params).await
+            }
             ClientRequest::TurnInterrupt { params, .. } => {
                 self.turn_processor
                     .turn_interrupt(&request_id, params)
