@@ -7,7 +7,7 @@ use super::model::CommandOutput;
 use super::model::ExecCall;
 use super::model::ExecCell;
 use super::render_cache::RenderMode;
-use crate::exec_command::strip_bash_lc_and_escape;
+use crate::exec_command::command_display;
 use crate::history_cell::ActivityDisclosure;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::HistoryRenderMode;
@@ -523,7 +523,7 @@ impl ExecCell {
         let cmd_display = if call.is_unified_exec_interaction() {
             format_unified_exec_interaction(&call.command, call.interaction_input.as_deref())
         } else {
-            strip_bash_lc_and_escape(&call.command)
+            command_display(&call.command, &call.parsed)
         };
         let mut highlighted_lines = highlight_bash_to_lines(&cmd_display);
         if let Some(output) = call.output.as_ref()
