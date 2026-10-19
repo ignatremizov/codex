@@ -29,6 +29,19 @@ current selection without gutters. Codex releases the opt-in before handing
 input to an editor or exiting. It does not opt in through tmux or Zellij,
 whose mouse handling remains unchanged.
 
+## Patch edit previews
+
+To show applied patch diffs fully expanded in the fullscreen transcript:
+
+```toml
+[tui]
+expand_patch_edits = true
+```
+
+This defaults to `false`. You can still collapse and expand individual patches
+with their disclosure controls. The preference applies to newly applied edits
+and loaded history; command output keeps its own preview limits.
+
 ## Multi-agent V2 message delivery
 
 Select the representation for new V2 task and message payloads with:
