@@ -875,13 +875,9 @@ impl MessageProcessor {
             .await;
     }
 
-    pub(crate) async fn try_attach_thread_listener(
-        &self,
-        thread_id: ThreadId,
-        connection_ids: Vec<ConnectionId>,
-    ) {
+    pub(crate) async fn try_attach_created_thread_listener(&self, thread_id: ThreadId) {
         self.thread_processor
-            .try_attach_thread_listener(thread_id, connection_ids)
+            .try_attach_created_thread_listener(thread_id)
             .await;
     }
 

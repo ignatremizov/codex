@@ -1370,20 +1370,11 @@ pub async fn run_main_with_transport_options(
                     created = thread_created_rx.recv(), if listen_for_threads && !ready_to_exit => {
                         match created {
                             Ok(thread_id) => {
-                                let mut initialized_connection_ids = Vec::new();
-                                for (connection_id, connection_state) in &connections {
-                                    if connection_state.session.initialized() {
-                                        initialized_connection_ids.push(*connection_id);
-                                    }
-                                }
                                 let processor = Arc::clone(&processor);
                                 // Attachment can wait on snapshot locks; keep force shutdown responsive.
                                 thread_listener_tasks.spawn(async move {
                                     processor
-                                        .try_attach_thread_listener(
-                                            thread_id,
-                                            initialized_connection_ids,
-                                        )
+                                        .try_attach_created_thread_listener(thread_id)
                                         .await;
                                 });
                             }
