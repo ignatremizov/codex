@@ -160,6 +160,9 @@ mod thread_queue;
 mod thread_read;
 mod thread_read_state;
 mod thread_resume;
+#[cfg(unix)]
+#[path = "thread_resume_terminal_wait_tests.rs"]
+mod thread_resume_terminal_wait;
 mod thread_revert;
 #[path = "thread_rollback.rs"]
 mod thread_rollback;

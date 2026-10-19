@@ -118,6 +118,8 @@ mod startup_warnings_tests;
 mod stream_animation_tests;
 #[path = "tests/terminal_history_tests.rs"]
 mod terminal_history_tests;
+#[path = "tests/terminal_wait_resume_tests.rs"]
+mod terminal_wait_resume_tests;
 #[path = "tests/thread_resume_tests.rs"]
 mod thread_resume_tests;
 #[path = "tests/thread_usage.rs"]

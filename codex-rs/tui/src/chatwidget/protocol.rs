@@ -203,7 +203,13 @@ impl ChatWidget {
                 }
             }
             ServerNotification::TerminalInteraction(notification) => {
-                if replay_kind.is_none() {
+                if replay_kind.is_none()
+                    || replay_kind.is_some_and(ReplayKind::preserves_live_processes)
+                        && matches!(
+                            &notification.wait,
+                            Some(codex_app_server_protocol::TerminalWait::Started { .. })
+                        )
+                {
                     self.on_terminal_interaction(notification);
                 } else if !notification.stdin.is_empty() {
                     // Replay may retain authored stdin history, but cannot mutate a live wait.
