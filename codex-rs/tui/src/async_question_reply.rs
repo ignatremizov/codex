@@ -1,7 +1,9 @@
 //! Recognize the desktop's existing async-question reply envelope for display and dismissal.
 //! Only complete envelopes, optionally following the standard IDE context prefix, are interpreted.
+//! Numbered replies display the host-assigned reference; legacy replies retain their question.
 
 use codex_app_server_protocol::UserInput;
+use codex_context_fragments::async_question_number;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -40,7 +42,18 @@ pub(crate) fn display_text(text: &str) -> Option<String> {
     Some(
         parse(text)?
             .iter()
-            .map(|reply| format!("> {}\n\n{}", reply.question, reply.answer))
+            .map(|reply| {
+                let number = serde_json::from_str::<(String, String, u64)>(&reply.question_item_id)
+                    .ok()
+                    .filter(|(tool, _, _)| tool == "request_user_input_async")
+                    .and_then(|(_, item_id, index)| {
+                        async_question_number(&item_id)?.checked_add(index)
+                    });
+                match number {
+                    Some(number) => format!("q{number}: {}", reply.answer),
+                    None => format!("> {}\n\n{}", reply.question, reply.answer),
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n\n"),
     )
