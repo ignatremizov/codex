@@ -349,7 +349,7 @@ impl HistoryCell for UserHistoryCell {
 }
 
 /// Wrap a prompt body before the user-message gutter and background padding are added.
-fn wrap_user_message(
+pub(super) fn wrap_user_message(
     message: &str,
     text_elements: &[TextElement],
     style: Style,
