@@ -261,18 +261,8 @@ impl HistoryCell for PlanUpdateCell {
         use super::activity_preview::DETAIL_PREVIEW_LINES;
         use super::activity_preview::clipped_line;
 
-        let completed = self
-            .plan
-            .iter()
-            .filter(|item| matches!(item.status, StepStatus::Completed))
-            .count();
-        let total = self.plan.len();
         let mut lines = vec![clipped_line(
-            Line::from(vec![
-                "• ".dim(),
-                "Updated Plan".bold(),
-                format!(" · {completed}/{total} complete").dim(),
-            ]),
+            Line::from(vec!["• ".dim(), "Updated Plan".bold()]),
             width,
         )];
         let mut steps: Vec<_> = self.plan.iter().collect();
