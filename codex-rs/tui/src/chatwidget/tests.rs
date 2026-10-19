@@ -356,6 +356,8 @@ mod list_spacing_tests;
 mod mailbox_read_tests;
 #[path = "tests/question_notifications_tests.rs"]
 mod question_notifications_tests;
+#[path = "tests/question_reply_reference_tests.rs"]
+mod question_reply_reference_tests;
 
 #[path = "tests/security_setup_tests.rs"]
 mod security_setup_tests;
