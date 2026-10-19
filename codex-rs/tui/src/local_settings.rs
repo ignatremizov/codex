@@ -84,6 +84,7 @@ impl LocalSettings {
                 collapse_turn_details: config.tui_collapse_turn_details,
                 sidebar_width_percent: config.tui_sidebar_width_percent,
                 mouse_scroll_speed: config.tui_mouse_scroll_speed,
+                expand_patch_edits: config.tui_expand_patch_edits,
                 copy_on_select: config.tui_copy_on_select,
                 copy_on_select_clear_selection: config.tui_copy_on_select_clear_selection,
                 right_click_paste: config.tui_right_click_paste,

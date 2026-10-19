@@ -90,6 +90,39 @@ async fn command_preview_preferences_load_and_reload_locally() -> anyhow::Result
 }
 
 #[tokio::test]
+async fn patch_expansion_preference_loads_and_reloads_locally() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let cwd = tempfile::tempdir()?;
+    let mut previous: Option<LocalSettings> = None;
+    for (toml, expected) in [
+        ("", false),
+        ("[tui]\nexpand_patch_edits = true\n", true),
+        ("[tui]\nexpand_patch_edits = false\n", false),
+    ] {
+        std::fs::write(home.path().join("config.toml"), toml)?;
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .fallback_cwd(Some(cwd.path().to_path_buf()))
+            .loader_overrides(LoaderOverrides {
+                ignore_project_config: true,
+                ..LoaderOverrides::without_managed_config_for_tests()
+            })
+            .build()
+            .await?;
+        let local = previous.as_ref().map_or_else(
+            || LocalSettings::from(&config),
+            |previous| previous.reloaded(&config),
+        );
+        assert_eq!(
+            (config.tui_expand_patch_edits, local.tui.expand_patch_edits),
+            (expected, expected)
+        );
+        previous = Some(local);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn dictation_preference_changes_only_on_local_reload() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     let mut config = ConfigBuilder::default()
