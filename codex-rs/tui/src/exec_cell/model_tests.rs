@@ -4,6 +4,31 @@ use crate::history_cell::PlainHistoryCell;
 use crate::terminal_hyperlinks::lines_with_sources_eq;
 use pretty_assertions::assert_eq;
 
+#[test]
+fn legacy_replayed_scripts_match_live_command_text_styles_and_copy_source() {
+    let script = "env GOWORK=off go test -run '^TestPricing$' > /tmp/test.log 2>&1";
+    let mut live = cell();
+    live.group.calls[0].command = vec!["bash".into(), "-lc".into(), script.into()];
+    live.group.calls[0].parsed = vec![ParsedCommand::Unknown { cmd: script.into() }];
+    let mut replayed = cell();
+    replayed.group.calls[0].command =
+        crate::exec_command::split_command_string(&crate::exec_command::escape_command(&[
+            script.into()
+        ]));
+    replayed.group.calls[0].parsed = live.group.calls[0].parsed.clone();
+    let live_compact = live.display_hyperlink_lines(/*width*/ 100);
+    let replayed_compact = replayed.display_hyperlink_lines(/*width*/ 100);
+    assert!(lines_with_sources_eq(&replayed_compact, &live_compact));
+    assert!(lines_with_sources_eq(
+        &replayed.transcript_hyperlink_lines(/*width*/ 100),
+        &live.transcript_hyperlink_lines(/*width*/ 100),
+    ));
+    insta::assert_snapshot!(
+        replayed_compact.iter().map(|line| line.line.to_string()).collect::<Vec<_>>().join("\n"),
+        @"• Running env GOWORK=off go test -run '^TestPricing$' > /tmp/test.log 2>&1"
+    );
+}
+
 fn cell() -> ExecCell {
     ExecCell::new(
         ExecCall {
