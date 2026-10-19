@@ -3,6 +3,7 @@
 #![cfg(unix)]
 
 use super::*;
+use codex_terminal_detection::Multiplexer;
 use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use pretty_assertions::assert_eq;
@@ -12,6 +13,83 @@ struct KeyboardScreens {
     main: Vec<u8>,
     alternate: Vec<u8>,
     alternate_active: bool,
+}
+
+#[test]
+fn ghostty_selection_opt_in_is_direct_and_released_before_editor_handoff() {
+    for multiplexer in [
+        None,
+        Some(Multiplexer::Tmux { version: None }),
+        Some(Multiplexer::Zellij { version: None }),
+    ] {
+        for name in [TerminalName::Ghostty, TerminalName::Kitty] {
+            let screen = AlternateScreen::default();
+            let terminal = TerminalInfo {
+                name,
+                term_program: None,
+                version: None,
+                term: None,
+                multiplexer: multiplexer.clone(),
+            };
+            let mut output = Vec::new();
+            screen
+                .configure_input_for_terminal(&mut output, /*capture_mouse*/ true, &terminal)
+                .unwrap();
+            let enabled = "\x1b]1337;SetUserVar=codex_selection=MQ==\x07";
+            let disabled = "\x1b]1337;SetUserVar=codex_selection=MA==\x07";
+            let expected = name == TerminalName::Ghostty && multiplexer.is_none();
+            assert_eq!(
+                (
+                    String::from_utf8_lossy(&output).contains(enabled),
+                    screen.codex_selection_active.load(Ordering::Relaxed),
+                ),
+                (expected, expected),
+            );
+            output.clear();
+            screen.release_input(&mut output).unwrap();
+            assert_eq!(
+                (
+                    String::from_utf8_lossy(&output).contains(disabled),
+                    screen.codex_selection_active.load(Ordering::Relaxed),
+                ),
+                (expected, false),
+            );
+            if expected {
+                assert!(output.starts_with(disabled.as_bytes()));
+            }
+        }
+    }
+}
+
+#[test]
+fn failed_ghostty_selection_release_is_retried_after_mouse_cleanup() {
+    let screen = AlternateScreen::default();
+    let terminal = TerminalInfo {
+        name: TerminalName::Ghostty,
+        term_program: None,
+        version: None,
+        term: None,
+        multiplexer: None,
+    };
+    let mut output = Vec::new();
+    screen
+        .configure_input_for_terminal(&mut output, /*capture_mouse*/ true, &terminal)
+        .unwrap();
+    let mut writer = FailOnce {
+        output,
+        sequence: b"\x1b]1337;SetUserVar=codex_selection=MA==\x07",
+        failed: false,
+    };
+    assert!(screen.release_input(&mut writer).is_err());
+    assert_eq!(
+        (
+            screen.codex_selection_active.load(Ordering::Relaxed),
+            screen.mouse_active.load(Ordering::Relaxed),
+        ),
+        (true, false),
+    );
+    screen.release_input(&mut writer).unwrap();
+    assert!(!screen.codex_selection_active.load(Ordering::Relaxed));
 }
 
 #[test]

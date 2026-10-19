@@ -224,7 +224,7 @@ fn right_click_copy_uses_the_refreshed_editor_bounds() {
         None
     );
     assert_eq!(composer.draft.textarea.mouse_selection_range(), selection);
-    let key = TuiEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    let key = TuiEvent::Key(KeyEvent::new(KeyCode::Insert, KeyModifiers::CONTROL));
     composer.copy_selection(&key, |_| Ok(CopyStatus::Pending(2)));
     let paste_target = composer.clipboard_paste_target(Some(KeyCode::Insert));
     assert_eq!(
