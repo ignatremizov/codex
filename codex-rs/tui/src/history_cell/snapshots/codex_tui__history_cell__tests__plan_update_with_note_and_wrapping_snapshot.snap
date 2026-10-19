@@ -3,13 +3,6 @@ source: tui/src/history_cell/tests.rs
 assertion_line: 2632
 expression: rendered
 ---
-Compact
-• Updated Plan
-  └ □ Harden Grafana client err…
-    □ Add tests for transient f…
-    □ Document the retry behavi…
-
-Full
 • Updated Plan
   └ I’ll update Grafana call
     error handling by adding
