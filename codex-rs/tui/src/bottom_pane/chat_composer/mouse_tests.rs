@@ -214,3 +214,91 @@ fn right_click_copy_uses_the_refreshed_editor_bounds() {
         paste_target
     );
 }
+
+#[test]
+fn status_selection_preserves_the_draft_and_cursor_in_both_footer_layouts() {
+    use crate::rendered_selection::RegionAction;
+    use crate::rendered_selection::RenderedSelection;
+    use crate::transcript_view::ViewAction;
+
+    for separate_status_line in [false, true] {
+        let (mut composer, _rx) = new_test_composer();
+        composer.insert_str("retained draft");
+        composer.set_status_line_enabled(/*enabled*/ true);
+        composer.set_status_line(Some("selectable status".into()));
+        let original_cursor = composer.draft.textarea.cursor();
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 8,
+        );
+        let selection = std::cell::RefCell::new(RenderedSelection::default());
+        selection.borrow_mut().view.primary_selection = true;
+        let options = ComposerRenderOptions {
+            separate_status_line,
+            rendered_selection: Some(&selection),
+            ..Default::default()
+        };
+        let mut buffer = Buffer::empty(area);
+        composer.render_with_options(area, &mut buffer, /*mask_char*/ None, options);
+        let layout = composer.layout_with_options(area, options);
+        let status_area = inset_footer_hint_area(if separate_status_line {
+            layout.status
+        } else {
+            layout.footer
+        });
+        for (kind, column) in [
+            (Down(Left), status_area.x),
+            (MouseEventKind::Drag(Left), status_area.x + 10),
+            (Up(Left), status_area.x + 10),
+        ] {
+            selection.borrow_mut().areas.clear();
+            composer.render_with_options(area, &mut buffer, /*mask_char*/ None, options);
+            selection.borrow_mut().render(&mut buffer);
+            let event = TuiEvent::Mouse(MouseEvent {
+                kind,
+                column,
+                row: status_area.y,
+                modifiers: KeyModifiers::NONE,
+            });
+            let action = selection.borrow_mut().handle_event(&event, &buffer);
+            if kind == Up(Left) {
+                let Some(RegionAction::Selection(ViewAction::PrimarySelection(text))) = action
+                else {
+                    panic!("status release must publish only PRIMARY when auto-copy is disabled");
+                };
+                assert_eq!(text, "selectable");
+            } else {
+                assert!(matches!(
+                    action,
+                    Some(RegionAction::Selection(ViewAction::Changed))
+                ));
+            }
+        }
+        assert_eq!(
+            (composer.current_text(), composer.draft.textarea.cursor()),
+            ("retained draft".to_string(), original_cursor),
+        );
+        let key = TuiEvent::Key(KeyEvent::new(KeyCode::Insert, KeyModifiers::CONTROL));
+        let mut selection = selection.borrow_mut();
+        let Some(RegionAction::Selection(ViewAction::Copy(text))) =
+            selection.handle_event(&key, &buffer)
+        else {
+            panic!("Ctrl+Insert must copy the status selection");
+        };
+        assert_eq!(text, "selectable");
+        let RenderedSelection { view, cells, .. } = &mut *selection;
+        assert_eq!(
+            view.copy_selected_text_with(
+                cells,
+                &text,
+                /*clear_selection*/ true,
+                |copied, _format| {
+                    assert_eq!(copied, "selectable");
+                    Ok(CopyStatus::Confirmed)
+                }
+            ),
+            Ok(CopyStatus::Confirmed),
+        );
+        assert!(!view.has_selection_range());
+        assert_eq!(composer.draft.textarea.cursor(), original_cursor);
+    }
+}

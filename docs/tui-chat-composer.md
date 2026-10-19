@@ -48,6 +48,10 @@ The solution is to detect paste-like _bursts_ and buffer them into a single expl
 - After handling the key, `sync_popups()` runs so popup visibility/filters stay consistent with the latest text + cursor.
 - When a slash command name is completed and the user types a space, the `/command` token is promoted into a text element so it renders distinctly and edits atomically.
 
+### Status-line text selection
+
+The configured status line supports dragging and double/triple-click word or line selection in both footer layouts. Selection freezes the displayed status revision, including changing counters, and preserves the draft text and cursor. On release it publishes plain text to PRIMARY where supported; copying to CLIPBOARD follows `tui.copy_on_select` or an explicit copy shortcut. Ctrl+Insert, Ctrl+C, Cmd+C, and a right-click copy the selected status text. Confirmed explicit copies clear the selection; pending copies only clear the selection that requested them. Hiding or moving the status row cancels its selection.
+
 ### History navigation (↑/↓)
 
 Up/Down recall is handled by `ChatComposerHistory` and merges two sources:
