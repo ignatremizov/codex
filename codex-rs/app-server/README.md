@@ -482,6 +482,12 @@ the entire network configuration.
 
 ## Live thread direct-input capability
 
+Resuming a loaded thread also sends the resuming connection
+`item/commandExecution/terminalInteraction` start notifications for waits that are still active,
+after the resume response and before subsequent lifecycle events. These retain the original
+interaction IDs, start times, modes, and deadlines so clients can restore wait status immediately.
+Completed waits and waits from unloaded history are excluded.
+
 `thread/read` projects loaded threads from their live runtime while retaining available
 stored metadata. Start, read, resume, and fork responses for loaded threads report
 `canAcceptDirectInput: true`, including spawned children. Unloaded stored threads report

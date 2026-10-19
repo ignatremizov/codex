@@ -41,7 +41,10 @@ type PendingInterruptQueue = Vec<ConnectionRequestId>;
 
 // Removing an unload entry drops its sender and wakes deferred listener attachment.
 pub(crate) type PendingThreadUnloads = Arc<Mutex<HashMap<ThreadId, watch::Sender<()>>>>;
+
+mod terminal_waits;
 mod transcript_delivery;
+pub(crate) use terminal_waits::ActiveTerminalWaits;
 pub(crate) use transcript_delivery::TranscriptResumePause;
 #[cfg(test)]
 #[path = "thread_state/transcript_tests.rs"]
@@ -163,6 +166,7 @@ pub(crate) struct ThreadState {
     last_thread_settings: Option<ThreadSettings>,
     listener_command_tx: Option<mpsc::UnboundedSender<ThreadListenerCommand>>,
     current_turn_history: ThreadHistoryBuilder,
+    pub(crate) terminal_waits: ActiveTerminalWaits,
     pub(crate) listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
 }
@@ -170,6 +174,7 @@ pub(crate) struct ThreadState {
 impl ThreadState {
     pub(crate) fn reset_after_rollback(&mut self) {
         self.current_turn_history.reset();
+        self.terminal_waits = ActiveTerminalWaits::default();
         self.turn_summary = TurnSummary::default();
         self.last_terminal_turn_id = None;
     }
@@ -188,6 +193,9 @@ impl ThreadState {
         watch_registration: WatchRegistration,
         thread_settings_baseline: ThreadSettings,
     ) -> (mpsc::UnboundedReceiver<ThreadListenerCommand>, u64) {
+        if !self.listener_matches(conversation) {
+            self.terminal_waits = ActiveTerminalWaits::default();
+        }
         if let Some(previous) = self.cancel_tx.replace(cancel_tx) {
             let _ = previous.send(());
         }
@@ -207,6 +215,7 @@ impl ThreadState {
         self.shutdown_drain_waiter = None;
         self.listener_command_tx = None;
         self.current_turn_history.reset();
+        self.terminal_waits = ActiveTerminalWaits::default();
         self.turn_summary.command_execution_started.clear();
         self.turn_summary.command_execution_receipts.clear();
         self.listener_thread = None;
@@ -259,6 +268,7 @@ impl ThreadState {
         event_turn_id: &str,
         event: &EventMsg,
     ) -> ThreadHistoryChangeSet {
+        self.terminal_waits.observe(event_turn_id, event);
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary.started_at = payload.started_at;
         }
