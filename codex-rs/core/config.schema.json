@@ -5055,6 +5055,11 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "expand_patch_edits": {
+          "default": false,
+          "description": "Start applied patch diffs expanded in the fullscreen transcript. Individual patches can still be collapsed manually. Defaults to `false`.",
+          "type": "boolean"
+        },
         "fullscreen_transcript": {
           "default": true,
           "description": "Own the fullscreen transcript, including scrolling, selection, and search. Defaults to `true`; alternate-screen restrictions take precedence.",
