@@ -71,6 +71,10 @@ pub(super) struct ThreadEventStore {
     pub(super) active_turn_id: Option<String>,
     // Retain the active item even if its start falls out of the bounded replay buffer.
     pub(super) active_reasoning_item: Option<codex_app_server_protocol::ItemStartedNotification>,
+    pub(super) terminal_waits: std::collections::BTreeMap<
+        String,
+        codex_app_server_protocol::TerminalInteractionNotification,
+    >,
     // Lifecycle identity must survive bounded replay-buffer eviction.
     pub(super) latest_turn_id: Option<String>,
     active_turn_started_at: Option<Instant>,
@@ -127,6 +131,7 @@ impl ThreadEventStore {
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
             active_reasoning_item: None,
+            terminal_waits: Default::default(),
             latest_turn_id: None,
             active_turn_started_at: None,
             pending_interrupt_turn_id: None,
@@ -216,6 +221,7 @@ impl ThreadEventStore {
         }
         self.pending_interactive_replay
             .note_server_notification(notification.as_ref());
+        self.track_terminal_wait(notification.as_ref());
         match notification.as_ref() {
             ServerNotification::TurnStarted(turn) => {
                 self.set_active_turn_id(turn.turn.id.clone());
@@ -392,8 +398,11 @@ impl ThreadEventStore {
                     ThreadBufferedEvent::Request(request) => self
                         .pending_interactive_replay
                         .should_replay_snapshot_request(request.as_ref()),
-                    ThreadBufferedEvent::Notification(_)
-                    | ThreadBufferedEvent::HistoryEntryResponse(_)
+                    ThreadBufferedEvent::Notification(notification) => !matches!(
+                        notification.as_ref(),
+                        ServerNotification::TerminalInteraction(wait) if wait.stdin.is_empty()
+                    ),
+                    ThreadBufferedEvent::HistoryEntryResponse(_)
                     | ThreadBufferedEvent::Mcp(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 })
@@ -404,6 +413,15 @@ impl ThreadEventStore {
             // Preserve timing even when bounded replay evicts the turn-start event.
             active_turn_timing: self.active_turn_timing(),
         };
+        // Restore only waits still active at this snapshot boundary, even if their start was
+        // evicted from the bounded buffer. Historical start/finish pairs remain presentation-only.
+        snapshot
+            .events
+            .extend(self.terminal_waits.values().cloned().map(|wait| {
+                ThreadBufferedEvent::Notification(Box::new(
+                    ServerNotification::TerminalInteraction(wait),
+                ))
+            }));
         // A live app-server turn snapshot can already include these transient items. Keep the
         // original buffer for later disk-only refreshes, but render each item only once.
         let hydrated_mirror_ids = {
@@ -606,6 +624,8 @@ impl ThreadEventStore {
     }
 
     pub(super) fn set_active_turn_id(&mut self, turn_id: String) {
+        self.terminal_waits
+            .retain(|_, wait| wait.turn_id == turn_id);
         self.latest_turn_id = Some(turn_id.clone());
         self.clear_pending_turn_start();
         if self.active_turn_id.as_ref() != Some(&turn_id) {
@@ -617,6 +637,7 @@ impl ThreadEventStore {
     }
 
     pub(super) fn clear_active_turn_id(&mut self) {
+        self.terminal_waits.clear();
         self.active_turn_id = None;
         self.active_turn_started_at = None;
     }

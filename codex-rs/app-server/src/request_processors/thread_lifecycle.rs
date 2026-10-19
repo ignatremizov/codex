@@ -1010,10 +1010,22 @@ pub(super) async fn handle_pending_thread_resume_request(
             .await;
         return;
     }
+    let terminal_waits = if has_live_in_progress_turn {
+        state.terminal_waits.snapshot(conversation_id)
+    } else {
+        Vec::new()
+    };
     outgoing
         .send_response_with_thread_originator(request_id, response, originator)
         .await;
     drop(state);
+    // The listener and publication permit still hold the resume boundary. Rehydrate only this
+    // connection before a matching completion can be delivered, retaining original deadlines.
+    for notification in terminal_waits {
+        outgoing
+            .send_server_notification_to_connections(&[connection_id], notification)
+            .await;
+    }
     drop(pending.transcript_pause);
     drop(pending.publication_permit);
     // Warm metadata-only resumes skip history reconstruction. Cold paginated children can replay
