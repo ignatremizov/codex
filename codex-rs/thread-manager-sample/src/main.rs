@@ -307,6 +307,7 @@ async fn new_config(
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         tui_fullscreen_transcript: false,
         tui_mouse_scroll_speed: None,
+        tui_expand_patch_edits: false,
         tui_copy_on_select: Default::default(),
         tui_copy_on_select_clear_selection: false,
         tui_right_click_paste: Default::default(),

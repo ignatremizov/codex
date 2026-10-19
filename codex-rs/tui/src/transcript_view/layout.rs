@@ -137,6 +137,8 @@ impl TranscriptView {
     fn content_presentation(
         &mut self,
         cell: &dyn HistoryCell,
+        cells: &[Arc<dyn HistoryCell>],
+        index: usize,
         full_content: bool,
         mode: HistoryRenderMode,
     ) -> CellPresentation {
@@ -147,6 +149,9 @@ impl TranscriptView {
             && !ids.is_empty();
         let manually_expanded = self.disclosure.is_expanded(&ids);
         let reveal_image = ids.is_empty() || manually_expanded || self.detailed;
+        let expanded =
+            disclosure && (full_content || self.activity_is_expanded(cells, index, &ids));
+        // Only propagate explicit expansions; defaults must follow config reloads.
         if manually_expanded {
             self.disclosure.expanded.extend(ids);
         }
@@ -154,7 +159,7 @@ impl TranscriptView {
             separated: false,
             shares_prompt_background: false,
             turn_tip_space: false,
-            expanded: disclosure && (full_content || manually_expanded),
+            expanded,
             disclosure,
             detailed: full_content,
             review: !full_content && self.review_mode() == Some(ReviewMode::Review),
@@ -238,12 +243,13 @@ impl TranscriptView {
             return Some(Arc::new(TextLayout::new(Vec::new(), width)));
         }
         let mode = self.mode;
-        let mut presentation = self.content_presentation(cell.as_ref(), full_content, mode);
+        let mut presentation =
+            self.content_presentation(cell.as_ref(), cells, index, full_content, mode);
         let shares_prompt_background = is_rich_user_prompt(cell.as_ref(), mode)
             && (0..index)
                 .rev()
-                .find(|&previous| {
-                    let previous = &cells[previous];
+                .find(|&previous_index| {
+                    let previous = &cells[previous_index];
                     let key = EntryKey::cell(previous);
                     if let Some(layout) = self.search.match_layout(key).or_else(|| {
                         self.snapshot()
@@ -252,8 +258,13 @@ impl TranscriptView {
                     }) {
                         return layout.row_count() > 0;
                     }
-                    let previous_presentation =
-                        self.content_presentation(previous.as_ref(), self.detailed, mode);
+                    let previous_presentation = self.content_presentation(
+                        previous.as_ref(),
+                        cells,
+                        previous_index,
+                        self.detailed,
+                        mode,
+                    );
                     self.cache
                         .has_visible_content(previous, width, previous_presentation, || {
                             cell_content_layout(

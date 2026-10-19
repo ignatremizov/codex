@@ -97,6 +97,7 @@ pub(crate) struct TranscriptView {
     pub(crate) copy_on_select: bool,
     pub(crate) copy_on_select_clear_selection: bool,
     pub(crate) primary_selection: bool,
+    pub(crate) expand_patch_edits: bool,
     position: Position,
     follow_control: follow_control::FollowControl,
     copy_feedback: Option<composer_gap::CopyFeedback>,
@@ -139,6 +140,7 @@ impl Default for TranscriptView {
             copy_on_select: false,
             copy_on_select_clear_selection: false,
             primary_selection: false,
+            expand_patch_edits: false,
             position: Position::Latest,
             follow_control: follow_control::FollowControl::default(),
             copy_feedback: None,
@@ -736,3 +738,7 @@ mod markdown_copy_tests;
 #[cfg(test)]
 #[path = "transcript_view/copy_on_select_tests.rs"]
 mod copy_on_select_tests;
+
+#[cfg(test)]
+#[path = "transcript_view/patch_expansion_tests.rs"]
+mod patch_expansion_tests;
