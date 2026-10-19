@@ -6,6 +6,29 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Mouse selection and clipboard
+
+To keep mouse selection separate from explicit clipboard copies:
+
+```toml
+[tui]
+copy_on_select = "never"
+right_click_paste = "off"
+```
+
+On local X11, released transcript selections still publish to PRIMARY for
+middle-click paste. They do not replace CLIPBOARD. Ctrl+Insert, Ctrl+Shift+C,
+and Ctrl+C explicitly copy the selection; Ctrl+Insert also copies selected
+composer text. `right_click_paste` disables Codex's paste fallback but does not
+disable mouse capture or its existing right-click copy gesture.
+
+When running directly in the updated Ghostty fork, Codex opts in to preserving
+Ghostty's context menu while handling left-button selection. Its Copy action
+sends Ctrl+Insert when Ghostty has no native selection, so Codex copies the
+current selection without gutters. Codex releases the opt-in before handing
+input to an editor or exiting. It does not opt in through tmux or Zellij,
+whose mouse handling remains unchanged.
+
 ## Multi-agent V2 message delivery
 
 Select the representation for new V2 task and message payloads with:
