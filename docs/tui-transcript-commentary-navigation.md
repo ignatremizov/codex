@@ -68,6 +68,10 @@ Consequences:
 
 The live tail uses the same Review representation while Review mode is active.
 
+Plan updates always show the explanation and every step in their original order,
+including completed steps. Updated and proposed plans have no Show details or
+Show less control.
+
 This slice adds no new disclosure system. Preserve normal owned-screen per-entry disclosure and its key ownership. Users who need the exact retained transcript can switch the explicitly open live browser to Full with `v`.
 
 ### Full mode

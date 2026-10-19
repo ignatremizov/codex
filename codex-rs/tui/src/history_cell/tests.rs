@@ -3014,12 +3014,7 @@ fn plan_update_with_note_and_wrapping_snapshot() {
     let cell = new_plan_update(update);
     // Narrow width to force wrapping for both the note and steps
     let lines = cell.display_lines(/*width*/ 32);
-    let compact =
-        render_lines(&visible_lines(cell.compact_hyperlink_lines(/*width*/ 32))).join("\n");
-    let rendered = format!(
-        "Compact\n{compact}\n\nFull\n{}",
-        render_lines(&lines).join("\n")
-    );
+    let rendered = render_lines(&lines).join("\n");
     insta::assert_snapshot!(rendered);
 }
 

@@ -1,4 +1,5 @@
-//! Proposed-plan and plan-update history cells, including foreground contrast on the plan fill.
+//! Proposed-plan and plan-update history cells, always shown in full without disclosure controls.
+//! Plan fills retain readable foreground contrast through Markdown reflow.
 
 use super::markdown_render_cache::MarkdownRenderCache;
 use super::*;
@@ -84,11 +85,7 @@ impl HistoryCell for StreamingPlanTailCell {
 /// Render a user‑friendly plan update styled like a checkbox todo list.
 pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
     let UpdatePlanArgs { explanation, plan } = update;
-    PlanUpdateCell {
-        activity_id: format!("plan:{}", uuid::Uuid::new_v4()),
-        explanation,
-        plan,
-    }
+    PlanUpdateCell { explanation, plan }
 }
 
 /// Create a proposed-plan cell that snapshots the session cwd for later markdown rendering.
@@ -233,69 +230,11 @@ impl HistoryCell for ProposedPlanStreamCell {
 
 #[derive(Debug)]
 pub(crate) struct PlanUpdateCell {
-    activity_id: String,
     explanation: Option<String>,
     plan: Vec<PlanItemArg>,
 }
 
 impl HistoryCell for PlanUpdateCell {
-    fn activity_ids(&self) -> Vec<String> {
-        vec![self.activity_id.clone()]
-    }
-
-    fn activity_disclosure(&self, width: u16) -> Option<super::ActivityDisclosure> {
-        (self
-            .explanation
-            .as_ref()
-            .is_some_and(|explanation| !explanation.trim().is_empty())
-            || self.plan.len() > super::activity_preview::DETAIL_PREVIEW_LINES
-            || self.plan.iter().any(|item| {
-                let step = item.step.split_whitespace().collect::<Vec<_>>().join(" ");
-                // The compact row reserves four columns for indentation and two for its marker.
-                Line::from(step).width() + 6 > usize::from(width)
-            }))
-        .then_some(super::ActivityDisclosure::Generic)
-    }
-
-    fn compact_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        use super::activity_preview::DETAIL_PREVIEW_LINES;
-        use super::activity_preview::clipped_line;
-
-        let mut lines = vec![clipped_line(
-            Line::from(vec!["• ".dim(), "Updated Plan".bold()]),
-            width,
-        )];
-        let mut steps: Vec<_> = self.plan.iter().collect();
-        steps.sort_by_key(|item| match item.status {
-            StepStatus::InProgress => 0,
-            StepStatus::Pending => 1,
-            StepStatus::Completed => 2,
-        });
-        for (index, item) in steps.into_iter().take(DETAIL_PREVIEW_LINES).enumerate() {
-            let (marker, style) = match item.status {
-                StepStatus::Completed => ("✔ ", Style::default().crossed_out().dim()),
-                StepStatus::InProgress => ("□ ", Style::default().fg(accent_color()).bold()),
-                StepStatus::Pending => ("□ ", Style::default().dim()),
-            };
-            let step = item.step.split_whitespace().collect::<Vec<_>>().join(" ");
-            lines.push(clipped_line(
-                Line::from(vec![
-                    if index == 0 { "  └ " } else { "    " }.dim(),
-                    marker.set_style(style),
-                    step.set_style(style),
-                ]),
-                width,
-            ));
-        }
-        if self.plan.is_empty() {
-            lines.push(clipped_line(
-                Line::from("  └ (no steps provided)".dim()),
-                width,
-            ));
-        }
-        lines
-    }
-
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         visible_lines(self.display_hyperlink_lines(width))
     }
