@@ -84,11 +84,14 @@ async fn replayed_background_terminals_belong_to_the_displayed_thread() {
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
     insta::assert_snapshot!(history, @r"
+    • Running sleep 100
+
     /ps
 
     Background terminals
 
       • sleep 200
+        id 43
     ");
 }
 

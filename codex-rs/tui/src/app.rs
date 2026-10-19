@@ -312,6 +312,7 @@ mod startup;
 pub(crate) mod startup_bootstrap;
 mod startup_prompts;
 mod startup_warnings;
+mod terminal_waits;
 pub(crate) mod thread_attachment;
 mod thread_event_buffer;
 mod thread_events;

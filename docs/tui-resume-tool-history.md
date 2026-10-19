@@ -14,6 +14,14 @@ rollouts contain completed `TurnItem` snapshots. On `codex resume`, app-server
 projects that history into `Turn`/`ThreadItem` values and the TUI rebuilds cells
 from those projected items.
 
+When rejoining a thread that is still running in the app-server, current terminal waits
+are restored from the live listener after the resume response. Their interaction IDs,
+start times, modes, and deadlines are retained, so the TUI shows the pending wait
+immediately instead of leaving the last reasoning summary in the status line.
+The TUI also retains active waits across thread switches and bounded event-buffer
+eviction. Finished waits, terminated turns, and unloaded historical sessions do not
+restore an active wait.
+
 Substantial reconstruction already exists in the integrated owners:
 
 - `app-server-protocol/src/protocol/thread_history/non_paginated_exec.rs` pairs Legacy `exec_command` and `write_stdin` calls with their outputs. It retains canonical call/turn identity, working-directory context, process/poll association, output and recoverable status, while preferring structured command items and respecting rollback.
