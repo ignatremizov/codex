@@ -37,6 +37,24 @@ pub(super) fn render(
         if !lines.is_empty() {
             lines.push(HyperlinkLine::default().style(surface));
         }
+        if let Some(number) = reply.number() {
+            let text = sanitize_user_text(format!("q{number}: {}", reply.answer).into());
+            let mut answer = super::messages::wrap_user_message(
+                &text,
+                &[],
+                surface,
+                u16::try_from(width).unwrap_or(u16::MAX),
+            );
+            for source in answer.iter_mut().filter_map(|row| row.source.as_mut()) {
+                source.copy_as_prose = true;
+            }
+            lines.extend(prefix_hyperlink_lines(
+                answer,
+                "› ".bold().dim(),
+                "  ".into(),
+            ));
+            continue;
+        }
         let mut question = markdown(&sanitize_user_text(reply.question.as_str().into()), None);
         if question.is_empty() {
             question.push(HyperlinkLine::default());
