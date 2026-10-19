@@ -62,6 +62,8 @@ footer hints collapse as space shrinks, with notes falling back to a single-line
 tool result includes `question_refs` in question order, for example `["q1", "q2"]`.
 Replies to these numbered questions reach model context as `q2: Tomorrow`, without
 repeating the prompt, options, transport ID, or verbose reply envelope.
+The TUI uses the same short reference in submitted answer history, queued previews,
+and recalled answers, so the question text is not repeated in each reply.
 
 Canonical transport and replay still retain the original question and stable item
 identity for clients to display and dismiss the correct question. Older desktop

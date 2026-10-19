@@ -22,6 +22,31 @@ fn desktop_question_reply_accepts_single_and_batched_envelopes() {
 }
 
 #[test]
+fn numbered_replies_use_stable_references_in_single_batched_and_ide_envelopes() {
+    let reply = json!({
+        "questionItemId": "[\"request_user_input_async\",\"async-question:q3:call-a\",1]",
+        "question": "Which environment should this lengthy question refer to?",
+        "answer": "Staging\nKeep \"blue\""
+    });
+    for payload in [reply.clone(), json!([reply])] {
+        let text = format!(
+            "<send_user_message_question_reply>{payload}</send_user_message_question_reply>"
+        );
+        for text in [
+            text.clone(),
+            format!("# Context from my IDE setup:\n\n## My request for Codex:\n{text}"),
+        ] {
+            assert_eq!(
+                display_text(&text).as_deref(),
+                Some("q4: Staging\nKeep \"blue\"")
+            );
+        }
+    }
+    let text = "<send_user_message_question_reply>[{\"questionItemId\":\"[\\\"request_user_input_async\\\",\\\"async-question:q3:call-a\\\",1]\",\"question\":\"First?\",\"answer\":\"Yes\"},{\"questionItemId\":\"[\\\"request_user_input_async\\\",\\\"async-question:q1:call-b\\\",0]\",\"question\":\"Second?\",\"answer\":\"No\"}]</send_user_message_question_reply>";
+    assert_eq!(display_text(text).as_deref(), Some("q4: Yes\n\nq1: No"));
+}
+
+#[test]
 fn malformed_or_embedded_question_envelopes_remain_ordinary_text() {
     for text in [
         "> Which environment?\n\nStaging",
