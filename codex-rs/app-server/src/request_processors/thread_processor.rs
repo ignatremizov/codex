@@ -49,6 +49,7 @@ use std::ops::ControlFlow;
 mod agent_alias;
 mod agent_control;
 mod agent_queue;
+mod thread_listeners;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 pub(super) const THREAD_LIST_MAX_LIMIT: usize = 100;
