@@ -5,6 +5,7 @@ use crate::style::accent_color;
 use std::collections::HashSet;
 
 use crate::bottom_pane::TranscriptFooter;
+use crate::history_cell::TranscriptNavigationKind;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::ListAction;
 use crate::keymap::RuntimeKeymap;
@@ -16,6 +17,7 @@ use super::*;
 
 pub(super) struct Disclosure {
     pub(super) expanded: HashSet<String>,
+    collapsed: HashSet<String>,
     pub(super) focused: Option<Vec<String>>,
     pub(super) live_ids: Vec<String>,
     pub(super) keymap: RuntimeKeymap,
@@ -25,6 +27,7 @@ impl Default for Disclosure {
     fn default() -> Self {
         Self {
             expanded: HashSet::new(),
+            collapsed: HashSet::new(),
             focused: None,
             live_ids: Vec::new(),
             keymap: RuntimeKeymap::defaults(),
@@ -83,6 +86,20 @@ impl TranscriptView {
             || self.disclosure.live_ids.clone(),
             |cell| cell.activity_ids(),
         )
+    }
+
+    pub(super) fn activity_is_expanded(
+        &self,
+        cells: &[Arc<dyn HistoryCell>],
+        index: usize,
+        ids: &[String],
+    ) -> bool {
+        self.disclosure.is_expanded(ids)
+            || (self.expand_patch_edits
+                && cells.get(index).is_some_and(|cell| {
+                    cell.transcript_navigation_kind() == Some(TranscriptNavigationKind::Patch)
+                })
+                && !ids.iter().any(|id| self.disclosure.collapsed.contains(id)))
     }
 
     /// Retired live entries and replaced groups keep the identities of their displayed revision.
@@ -209,7 +226,7 @@ impl TranscriptView {
             ListAction::Accept => self.toggle_activity(cells, focused),
             ListAction::MoveLeft | ListAction::MoveRight => {
                 let ids = self.activity_ids(cells, focused);
-                let expanded = self.disclosure.is_expanded(&ids)
+                let expanded = self.activity_is_expanded(cells, focused, &ids)
                     || self.is_search_expanded(self.entry_key(cells, focused));
                 if expanded != (action == ListAction::MoveRight) {
                     self.toggle_activity(cells, focused);
@@ -356,9 +373,11 @@ impl TranscriptView {
                 offset: 0,
                 row_bias: 0,
             });
-        if matched || self.disclosure.is_expanded(&ids) {
+        if matched || self.activity_is_expanded(cells, index, &ids) {
             self.disclosure.expanded.retain(|id| !ids.contains(id));
+            self.disclosure.collapsed.extend(ids.iter().cloned());
         } else {
+            self.disclosure.collapsed.retain(|id| !ids.contains(id));
             self.disclosure.expanded.extend(ids.iter().cloned());
         }
         self.disclosure.focused = Some(ids);
