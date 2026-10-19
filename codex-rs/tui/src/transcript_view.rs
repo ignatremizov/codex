@@ -728,3 +728,7 @@ mod copy_on_select_tests;
 #[cfg(test)]
 #[path = "transcript_view/patch_expansion_tests.rs"]
 mod patch_expansion_tests;
+
+#[cfg(test)]
+#[path = "transcript_view/plan_presentation_tests.rs"]
+mod plan_presentation_tests;
