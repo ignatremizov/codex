@@ -134,6 +134,7 @@ async fn switching_threads_restores_session_speed_for_the_next_turn() {
         events: Vec::new(),
         active_reasoning_item: None,
         input_state: None,
+        active_turn_timing: None,
     };
 
     app.replay_thread_snapshot(
