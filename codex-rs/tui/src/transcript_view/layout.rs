@@ -161,7 +161,9 @@ impl TranscriptView {
             && !ids.is_empty();
         let manually_expanded = self.disclosure.is_expanded(&ids);
         let reveal_image = ids.is_empty() || manually_expanded || self.detailed;
-        let expanded = disclosure && (full_content || manually_expanded);
+        let expanded =
+            disclosure && (full_content || self.activity_is_expanded(cells, index, &ids));
+        // Only propagate explicit expansions; defaults must follow config reloads.
         if manually_expanded {
             self.disclosure.expanded.extend(ids);
         }

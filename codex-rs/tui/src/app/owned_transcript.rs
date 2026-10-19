@@ -86,6 +86,7 @@ impl App {
         });
         view.mouse_scroll_speed = self.local_settings.tui.mouse_scroll_speed.unwrap_or(1.0);
         view.primary_selection = self.right_click_paste_environment.primary;
+        view.expand_patch_edits = self.local_settings.tui.expand_patch_edits;
         view.copy_on_select = self
             .local_settings
             .copy_on_select(&codex_terminal_detection::terminal_info());

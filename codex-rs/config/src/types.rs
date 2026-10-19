@@ -936,6 +936,11 @@ pub struct Tui {
     #[schemars(schema_with = "crate::tui_mouse_scroll::schema")]
     pub mouse_scroll_speed: Option<f64>,
 
+    /// Start applied patch diffs expanded in the fullscreen transcript.
+    /// Individual patches can still be collapsed manually. Defaults to `false`.
+    #[serde(default)]
+    pub expand_patch_edits: bool,
+
     /// Copy selected transcript, footer, or composer text when the mouse button is released.
     /// Defaults to `auto`: enabled except in direct terminals known to forward their native
     /// copy shortcut (Ghostty 1.2+, Kitty on macOS, Windows Terminal, and VS Code on Windows).
@@ -1118,6 +1123,7 @@ impl Default for Tui {
             raw_output_mode: false,
             fullscreen_transcript: false,
             mouse_scroll_speed: None,
+            expand_patch_edits: false,
             copy_on_select: Default::default(),
             copy_on_select_clear_selection: false,
             right_click_paste: Default::default(),
