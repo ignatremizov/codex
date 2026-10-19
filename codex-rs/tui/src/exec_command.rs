@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_protocol::parse_command::ParsedCommand;
 use codex_shell_command::parse_command::extract_shell_command;
 use dirs::home_dir;
 use shlex::try_join;
@@ -14,6 +15,19 @@ pub(crate) fn strip_bash_lc_and_escape(command: &[String]) -> String {
         return script.to_string();
     }
     escape_command(command)
+}
+
+/// Legacy exec history carries a saved script as one argument and repeats its exact source in
+/// the unknown action. Use that source for display instead of quoting the entire shell program.
+/// Real argv commands retain their quoting, including executable paths containing spaces.
+pub(crate) fn command_display(command: &[String], parsed: &[ParsedCommand]) -> String {
+    if let [script] = command
+        && let [ParsedCommand::Unknown { cmd }] = parsed
+        && script == cmd
+    {
+        return script.clone();
+    }
+    strip_bash_lc_and_escape(command)
 }
 
 pub(crate) fn split_command_string(command: &str) -> Vec<String> {
@@ -103,5 +117,14 @@ mod tests {
     fn split_command_string_preserves_non_roundtrippable_windows_commands() {
         let command = r#"C:\Program Files\Git\bin\bash.exe -lc "echo hi""#;
         assert_eq!(split_command_string(command), vec![command.to_string()]);
+    }
+
+    #[test]
+    fn display_keeps_argv_quoting_for_an_executable_path_with_spaces() {
+        let command = vec!["/opt/My Tools/check".to_string()];
+        let parsed = vec![ParsedCommand::Unknown {
+            cmd: escape_command(&command),
+        }];
+        assert_eq!(command_display(&command, &parsed), "'/opt/My Tools/check'");
     }
 }
