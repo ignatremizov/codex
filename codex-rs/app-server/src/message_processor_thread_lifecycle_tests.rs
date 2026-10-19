@@ -370,7 +370,7 @@ async fn disconnected_v2_child_lifecycle(unload_delay_secs: u64, ephemeral: bool
                 .get_thread(child_id)
                 .await?,
         );
-        let attach = processor.try_attach_thread_listener(child_id, Vec::new());
+        let attach = processor.try_attach_created_thread_listener(child_id);
         tokio::pin!(attach);
         // The old runtime has left core, but its app-server cleanup still owns the ID.
         let pending = &processor.thread_processor.pending_thread_unloads;

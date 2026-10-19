@@ -30,7 +30,6 @@ use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::rollout_without_exact_rollback_ranges;
 use codex_thread_store::PersistContext;
@@ -39,6 +38,7 @@ use std::ops::ControlFlow;
 mod agent_alias;
 mod agent_control;
 mod agent_queue;
+mod thread_listeners;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 pub(super) const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -3792,89 +3792,6 @@ impl ThreadRequestProcessor {
 
     pub(crate) fn subscribe_running_assistant_turn_count(&self) -> watch::Receiver<usize> {
         self.thread_watch_manager.subscribe_running_turn_count()
-    }
-
-    /// Best-effort: start the lifecycle listener and subscribe initialized connections.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "listener state creation must be serialized against pending unloads"
-    )]
-    pub(crate) async fn try_attach_thread_listener(
-        &self,
-        thread_id: ThreadId,
-        connection_ids: Vec<ConnectionId>,
-    ) {
-        if connection_ids.is_empty() {
-            let result = loop {
-                let pending = self.pending_thread_unloads.lock().await;
-                if let Some(unload) = pending.get(&thread_id) {
-                    // A replacement can be published before the old listener finishes cleanup.
-                    let mut completion = unload.subscribe();
-                    drop(pending);
-                    let _ = completion.changed().await;
-                    continue;
-                }
-                let Ok(thread) = self.thread_manager.get_thread(thread_id).await else {
-                    return;
-                };
-                // Only persisted V2 children can reload after idle eviction.
-                if thread.multi_agent_version() != Some(MultiAgentVersion::V2)
-                    || thread.config().await.ephemeral
-                {
-                    return;
-                }
-                self.thread_watch_manager
-                    .upsert_thread(&thread_id.to_string())
-                    .await;
-                let thread_state = self.thread_state_manager.thread_state(thread_id).await;
-                let result = self
-                    .ensure_listener_task_running(thread_id, thread, thread_state)
-                    .await;
-                drop(pending);
-                break result;
-            };
-            if let Err(err) = result {
-                warn!(
-                    "failed to start listener for thread {thread_id}: {message}",
-                    message = err.message
-                );
-            }
-            return;
-        }
-
-        let mut raw_events_enabled = false;
-        if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
-            let config_snapshot = thread.config_snapshot().await;
-            if let Some(parent_thread_id) = config_snapshot.parent_thread_id {
-                self.thread_watch_manager
-                    .upsert_thread(&thread_id.to_string())
-                    .await;
-                raw_events_enabled = self
-                    .thread_state_manager
-                    .thread_state(parent_thread_id)
-                    .await
-                    .lock()
-                    .await
-                    .experimental_raw_events;
-            } else {
-                // Root creation RPCs introduce the thread with their response and
-                // ThreadStarted notification. This concurrent observer must not
-                // announce an initial Idle status before that boundary.
-                self.thread_watch_manager
-                    .upsert_thread_silently(&thread_id.to_string())
-                    .await;
-            }
-        }
-
-        for connection_id in connection_ids {
-            log_listener_attach_result(
-                self.ensure_conversation_listener(thread_id, connection_id, raw_events_enabled)
-                    .await,
-                thread_id,
-                connection_id,
-                "thread",
-            );
-        }
     }
 
     async fn thread_resume_inner(

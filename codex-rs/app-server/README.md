@@ -478,6 +478,11 @@ the entire network configuration.
 
 ## Live thread direct-input capability
 
+Creating or cold-resuming a root thread subscribes the requesting client. Other connected clients
+remain independent until they explicitly open that thread. Newly loaded children inherit their
+parent's current subscribers. `thread/unload` can therefore unload a client's task while unrelated
+TUIs remain connected, and still rejects unloading a subtree viewed by another subscribed client.
+
 Resuming a loaded thread also sends the resuming connection
 `item/commandExecution/terminalInteraction` start notifications for waits that are still active,
 after the resume response and before subsequent lifecycle events. These retain the original
