@@ -373,7 +373,7 @@ async fn disconnected_v2_child_lifecycle(unload_delay_secs: u64, ephemeral: bool
                 .get_thread(child_id)
                 .await?,
         );
-        let attach = processor.try_attach_thread_listener(child_id, Vec::new());
+        let attach = processor.try_attach_created_thread_listener(child_id);
         tokio::pin!(attach);
         // The old runtime has left core, but its app-server cleanup still owns the ID.
         let pending = &processor.thread_processor.pending_thread_unloads;
@@ -636,8 +636,14 @@ decision = "prompt-user"
 
         while outgoing.try_recv().is_ok() {}
         // Attach the initial client set before draining the child's queued approval.
+        let child = processor
+            .thread_processor
+            .thread_manager
+            .get_thread(child_id)
+            .await?;
         processor
-            .try_attach_thread_listener(child_id, vec![incompatible_id, capable_id])
+            .thread_processor
+            .try_attach_thread_listener(child_id, child, vec![incompatible_id, capable_id])
             .await;
         let request = timeout(Duration::from_secs(/*secs*/ 10), async {
             loop {
