@@ -65,6 +65,7 @@ fn copy_shortcuts_clear_selection_only_after_confirmed_delivery() {
     ]))];
     for key in [
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Insert, KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER),
         KeyEvent::new(
@@ -85,6 +86,7 @@ fn copy_shortcuts_clear_selection_only_after_confirmed_delivery() {
                     view.begin_search();
                 }
                 view.begin_selection(&cells, /*column*/ 0, /*row*/ 0, /*clicks*/ 3);
+                assert!(view.owns_interaction_key(key));
                 let action = view.handle_key(key, &cells);
                 assert_eq!(
                     matches!(&action, Some(ViewAction::CopyAndFollow(_))),

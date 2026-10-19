@@ -10,6 +10,8 @@ use std::io::Write;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use codex_terminal_detection::TerminalInfo;
+use codex_terminal_detection::TerminalName;
 use crossterm::Command;
 use crossterm::event::DisableMouseCapture;
 #[cfg(windows)]
@@ -30,6 +32,7 @@ use super::tmux::MouseCapture;
 pub(super) static ALTERNATE_SCREEN: AlternateScreen = AlternateScreen {
     active: AtomicBool::new(/*v*/ false),
     mouse_active: AtomicBool::new(/*v*/ false),
+    codex_selection_active: AtomicBool::new(/*v*/ false),
     mouse_capture_disabled: AtomicBool::new(/*v*/ false),
     input_configured: AtomicBool::new(/*v*/ false),
     keyboard_active: AtomicBool::new(/*v*/ false),
@@ -41,6 +44,7 @@ pub(super) struct AlternateScreen {
     link_pointer: super::link_pointer::LinkPointer,
     active: AtomicBool,
     mouse_active: AtomicBool,
+    codex_selection_active: AtomicBool,
     // Refresh alongside keyboard modes whenever this screen is entered or restored.
     mouse_capture_disabled: AtomicBool,
     // A cleanup/setup error must not make the next identical request look already applied.
@@ -104,6 +108,19 @@ impl AlternateScreen {
         writer: &mut impl Write,
         capture_mouse: bool,
     ) -> Result<()> {
+        self.configure_input_for_terminal(
+            writer,
+            capture_mouse,
+            &codex_terminal_detection::terminal_info(),
+        )
+    }
+
+    fn configure_input_for_terminal(
+        &self,
+        writer: &mut impl Write,
+        capture_mouse: bool,
+        terminal: &TerminalInfo,
+    ) -> Result<()> {
         self.input_configured
             .store(/*val*/ false, Ordering::Relaxed);
         let result = if capture_mouse && !self.mouse_capture_disabled.load(Ordering::Relaxed) {
@@ -113,6 +130,12 @@ impl AlternateScreen {
                 // Some Windows terminals send legacy mouse reports as key records. Request SGR
                 // reports so ConPTY can translate them into mouse records instead.
                 writer.write_all(b"\x1b[?1006h")?;
+                // This fork-specific opt-in must never pass through tmux or Zellij.
+                if terminal.name == TerminalName::Ghostty && terminal.multiplexer.is_none() {
+                    self.codex_selection_active
+                        .store(/*val*/ true, Ordering::Relaxed);
+                    writer.write_all(b"\x1b]1337;SetUserVar=codex_selection=MQ==\x07")?;
+                }
                 writer.flush()
             })
         } else {
@@ -127,6 +150,18 @@ impl AlternateScreen {
     }
 
     fn disable_mouse(&self, writer: &mut impl Write) -> Result<()> {
+        let selection_result = if self.codex_selection_active.load(Ordering::Relaxed) {
+            let result = writer
+                .write_all(b"\x1b]1337;SetUserVar=codex_selection=MA==\x07")
+                .and_then(|()| writer.flush());
+            if result.is_ok() {
+                self.codex_selection_active
+                    .store(/*val*/ false, Ordering::Relaxed);
+            }
+            result
+        } else {
+            Ok(())
+        };
         let pointer_result = self
             .link_pointer
             .restore(writer, codex_terminal_detection::terminal_info().name);
@@ -158,7 +193,7 @@ impl AlternateScreen {
 
             self.mouse_active.store(/*val*/ false, Ordering::Relaxed);
         }
-        pointer_result
+        selection_result.and(pointer_result)
     }
 
     /// Release input modes without changing the screen, so an editor can take it over.
