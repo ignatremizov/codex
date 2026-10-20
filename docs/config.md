@@ -440,6 +440,15 @@ Set any value to `0` to show all retained output for that category in the main T
 
 Thread naming is on demand. `/rename` opens an editable name prompt and requests a suggestion from the recent conversation; sending a normal message does not launch title generation. A suggestion is not saved until you confirm the name. Existing names and manual renames remain authoritative, and canceled or stale suggestions cannot overwrite another prompt.
 
+Set `tui.rename_prompt` to replace the default naming instructions. For example:
+
+```toml
+[tui]
+rename_prompt = "Generate a concise kebab-case task name using lowercase words separated by hyphens, such as fix-login-timeout. Do not use spaces, quotes, or trailing punctuation."
+```
+
+Omitting the setting or leaving it blank uses the default sentence-style suggestions. Custom instructions still receive the recent conversation, and suggestions remain limited to 36 characters. The instructions are a client-local preference loaded at TUI startup or local settings reload.
+
 ## TUI notification previews
 
 The following `[tui]` settings limit notification previews by Unicode grapheme clusters. The agent-turn limit applies to both desktop and ambient-pet previews; the execution-approval and user-input limits apply to their respective desktop notification categories:

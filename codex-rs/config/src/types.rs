@@ -905,6 +905,10 @@ pub struct Tui {
     #[serde(default)]
     pub auto_recap: bool,
 
+    /// Custom naming instructions for `/rename` suggestions.
+    /// Omitted or blank values use the default title prompt.
+    pub rename_prompt: Option<String>,
+
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
@@ -1117,6 +1121,7 @@ impl Default for Tui {
             show_tooltips: false,
             show_server_version_notice: false,
             auto_recap: false,
+            rename_prompt: None,
             disable_paste_burst: None,
             vim_mode_default: false,
             question_esc_back: false,
