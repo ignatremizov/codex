@@ -27,8 +27,12 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const THREAD_TITLE_MAX_CHARS: usize = 36;
 const THREAD_TITLE_MODEL: &str = "gpt-5.6-luna";
+/// Budget for the default prompt; custom instructions retain the same conversation budget.
 pub(super) const THREAD_TITLE_PROMPT_MAX_BYTES: usize = 960;
 const THREAD_TITLE_RECENT_MESSAGES: usize = 8;
+const THREAD_TITLE_CONTEXT_PREFIX: &str = "\n\
+Prioritize the current task and latest substantive user request.\n\n\
+Recent conversation messages:\n";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,11 +236,19 @@ impl App {
             return;
         };
 
+        let instructions = self
+            .local_settings
+            .tui
+            .rename_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+            .map_or_else(thread_title_instructions, str::to_string);
         self.generate_thread_title(
             app_server,
             thread_id,
             request_id,
-            recent_conversation_thread_title_prompt(&conversation),
+            recent_conversation_thread_title_prompt(&conversation, &instructions),
         );
     }
 }
@@ -322,8 +334,9 @@ where
 
     messages.reverse();
 
-    let conversation_bytes = THREAD_TITLE_PROMPT_MAX_BYTES
-        .saturating_sub(recent_conversation_thread_title_prompt("").len());
+    let conversation_bytes = THREAD_TITLE_PROMPT_MAX_BYTES.saturating_sub(
+        recent_conversation_thread_title_prompt("", &thread_title_instructions()).len(),
+    );
     let markup_bytes = "<conversation>\n".len()
         + "\n</conversation>".len()
         + messages.len().saturating_sub(/*rhs*/ 1)
@@ -360,16 +373,18 @@ where
     ))
 }
 
-/// Bound the entire suggestion prompt while preserving complete Unicode characters.
-pub(super) fn recent_conversation_thread_title_prompt(conversation: &str) -> String {
-    let instructions = thread_title_instructions();
-    let prefix = format!(
-        "{instructions}\n\
-Prioritize the current task and latest substantive user request.\n\n\
-Recent conversation messages:\n"
-    );
+/// Bound conversation data while preserving complete Unicode and configured instructions.
+///
+/// Keep the default conversation budget even when custom instructions change length, so
+/// a long naming preference cannot cut off the selected messages or their markup.
+pub(super) fn recent_conversation_thread_title_prompt(
+    conversation: &str,
+    instructions: &str,
+) -> String {
+    let prefix = format!("{instructions}{THREAD_TITLE_CONTEXT_PREFIX}");
     let conversation = conversation.trim();
-    let remaining_bytes = THREAD_TITLE_PROMPT_MAX_BYTES.saturating_sub(prefix.len());
+    let remaining_bytes = THREAD_TITLE_PROMPT_MAX_BYTES
+        .saturating_sub(thread_title_instructions().len() + THREAD_TITLE_CONTEXT_PREFIX.len());
     let mut start = conversation.len().saturating_sub(remaining_bytes);
     while !conversation.is_char_boundary(start) {
         start += 1;
