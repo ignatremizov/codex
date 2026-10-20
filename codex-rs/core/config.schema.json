@@ -5120,6 +5120,10 @@
           "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
           "type": "boolean"
         },
+        "rename_prompt": {
+          "description": "Custom naming instructions for `/rename` suggestions. Omitted or blank values use the default title prompt.",
+          "type": "string"
+        },
         "rendering": {
           "allOf": [
             {

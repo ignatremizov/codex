@@ -38,11 +38,23 @@ const EXPECTED_THREAD_TITLE_INSTRUCTIONS: &str = concat!(
     "exactly. Write in the user's language. Do not use quotes, markdown, ",
     "or trailing punctuation. Do not answer the request."
 );
+const KEBAB_CASE_INSTRUCTIONS: &str =
+    "Generate a concise task name in lowercase kebab-case, such as fix-login-timeout.";
 
 #[tokio::test]
 async fn slash_rename_generates_editable_title_through_embedded_app_server()
 -> color_eyre::Result<()> {
     check_thread_title_generation(TitleScenario::Suggestion).await
+}
+
+#[tokio::test]
+async fn slash_rename_uses_custom_naming_instructions() -> color_eyre::Result<()> {
+    check_thread_title_generation(TitleScenario::CustomPrompt).await
+}
+
+#[tokio::test]
+async fn slash_rename_uses_default_instructions_for_blank_prompt() -> color_eyre::Result<()> {
+    check_thread_title_generation(TitleScenario::BlankPrompt).await
 }
 
 #[tokio::test]
@@ -58,6 +70,8 @@ async fn overview_rename_cancels_running_thread_title() -> color_eyre::Result<()
 #[derive(Clone, Copy)]
 enum TitleScenario {
     Suggestion,
+    CustomPrompt,
+    BlankPrompt,
     ManualRename,
     OverviewRename,
 }
@@ -68,9 +82,17 @@ async fn check_thread_title_generation(scenario: TitleScenario) -> color_eyre::R
         TitleScenario::ManualRename | TitleScenario::OverviewRename
     );
     let server = wiremock::MockServer::start().await;
+    let title = if matches!(scenario, TitleScenario::CustomPrompt) {
+        "fix-login-timeout"
+    } else {
+        "Fix login timeout"
+    };
     let mut template = responses::sse_response(responses::sse(vec![
         responses::ev_response_created("title-response"),
-        responses::ev_assistant_message("title-message", r#"{"title":"Fix login timeout"}"#),
+        responses::ev_assistant_message(
+            "title-message",
+            &serde_json::json!({ "title": title }).to_string(),
+        ),
         responses::ev_completed("title-response"),
     ]));
     if cancel {
@@ -95,6 +117,13 @@ async fn check_thread_title_generation(scenario: TitleScenario) -> color_eyre::R
     )?;
 
     let mut app = make_test_app().await;
+    app.local_settings.tui.rename_prompt = match scenario {
+        TitleScenario::CustomPrompt => Some(format!("  {KEBAB_CASE_INSTRUCTIONS}  ")),
+        TitleScenario::BlankPrompt => Some(" \n\t ".to_string()),
+        TitleScenario::Suggestion | TitleScenario::ManualRename | TitleScenario::OverviewRename => {
+            None
+        }
+    };
     let (event_tx, mut event_rx) = unbounded_channel();
     app.local_settings.tui.animations = false;
     app.app_event_tx = AppEventSender::new(event_tx);
@@ -209,7 +238,9 @@ async fn check_thread_title_generation(scenario: TitleScenario) -> color_eyre::R
                     TitleScenario::OverviewRename => {
                         AppEvent::RenameAgentsOverviewThread { thread_id, name }
                     }
-                    TitleScenario::Suggestion => unreachable!(),
+                    TitleScenario::Suggestion
+                    | TitleScenario::CustomPrompt
+                    | TitleScenario::BlankPrompt => unreachable!(),
                 };
                 app.handle_event(&mut tui, &mut app_server, event).await?;
                 assert!(app.pending_thread_titles.is_empty());
@@ -246,7 +277,17 @@ async fn check_thread_title_generation(scenario: TitleScenario) -> color_eyre::R
         assert!(app.pending_thread_titles.is_empty());
     } else {
         let popup = render_bottom_popup(&app.chat_widget, /*width*/ 80);
-        assert!(popup.contains("Fix login timeout"));
+        assert!(popup.contains(title));
+        if matches!(scenario, TitleScenario::CustomPrompt) {
+            insta::assert_snapshot!(normalize_snapshot_paths(popup.clone()), @r"
+              Name thread
+              Suggested from this conversation
+
+            › fix-login-timeout
+
+              enter submit · esc back
+            ");
+        }
         assert!(!popup.contains("Generating a title suggestion"));
         assert_eq!(
             app_server
@@ -261,6 +302,18 @@ async fn check_thread_title_generation(scenario: TitleScenario) -> color_eyre::R
     assert!(!render_bottom_popup(&app.chat_widget, /*width*/ 120).contains('⠋'));
 
     let request = response.single_request();
+    let prompts = request.message_input_texts("user");
+    let instructions = if matches!(scenario, TitleScenario::CustomPrompt) {
+        KEBAB_CASE_INSTRUCTIONS
+    } else {
+        EXPECTED_THREAD_TITLE_INSTRUCTIONS
+    };
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.starts_with(instructions)),
+        "{prompts:?}"
+    );
     assert!(
         request
             .body_json()
@@ -418,6 +471,7 @@ fn recent_conversation_messages_require_substantive_content() {
 fn recent_conversation_prompt_trims_messages_and_prioritizes_latest_request() {
     let prompt = recent_conversation_thread_title_prompt(
         "  User: Fix login\nAssistant: Investigating the auth flow  \n",
+        EXPECTED_THREAD_TITLE_INSTRUCTIONS,
     );
 
     assert_eq!(
@@ -431,7 +485,8 @@ fn recent_conversation_prompt_trims_messages_and_prioritizes_latest_request() {
 #[test]
 fn recent_conversation_prompt_keeps_latest_unicode_characters() {
     let conversation = format!("discarded-{}x", "🚀".repeat(THREAD_TITLE_PROMPT_MAX_BYTES));
-    let prompt = recent_conversation_thread_title_prompt(&conversation);
+    let prompt =
+        recent_conversation_thread_title_prompt(&conversation, EXPECTED_THREAD_TITLE_INSTRUCTIONS);
     let expected_instructions = format!(
         "{EXPECTED_THREAD_TITLE_INSTRUCTIONS}\nPrioritize the current task and latest substantive user request.\n\n"
     );
@@ -457,7 +512,8 @@ fn recent_conversation_prompt_preserves_latest_user_request_and_complete_markup(
         ),
     ];
     let conversation = recent_conversation_messages(&items).expect("substantive conversation");
-    let prompt = recent_conversation_thread_title_prompt(&conversation);
+    let prompt =
+        recent_conversation_thread_title_prompt(&conversation, EXPECTED_THREAD_TITLE_INSTRUCTIONS);
 
     assert!(prompt.len() <= THREAD_TITLE_PROMPT_MAX_BYTES);
     assert!(prompt.contains("<conversation>\n"));
@@ -477,7 +533,8 @@ fn recent_conversation_prompt_never_splits_an_escaped_markup_entity() {
         &"<&>".repeat(THREAD_TITLE_PROMPT_MAX_BYTES),
     )];
     let conversation = recent_conversation_messages(&items).expect("substantive conversation");
-    let prompt = recent_conversation_thread_title_prompt(&conversation);
+    let prompt =
+        recent_conversation_thread_title_prompt(&conversation, EXPECTED_THREAD_TITLE_INSTRUCTIONS);
 
     assert!(prompt.len() <= THREAD_TITLE_PROMPT_MAX_BYTES);
     let text = conversation
@@ -491,6 +548,31 @@ fn recent_conversation_prompt_never_splits_an_escaped_markup_entity() {
                 || fragment.starts_with("amp;")
         );
     }
+}
+
+#[test]
+fn custom_naming_instructions_preserve_the_selected_conversation() {
+    let items = vec![
+        title_user_message("user", "Fix <authentication> & login regressions"),
+        title_agent_message(
+            "assistant",
+            &"🚀".repeat(THREAD_TITLE_PROMPT_MAX_BYTES),
+            Some(MessagePhase::FinalAnswer),
+        ),
+    ];
+    let conversation = recent_conversation_messages(&items).expect("substantive conversation");
+    let instructions = format!(
+        "{KEBAB_CASE_INSTRUCTIONS}\n{}",
+        "Keep names relevant. ".repeat(THREAD_TITLE_PROMPT_MAX_BYTES)
+    );
+    let prompt = recent_conversation_thread_title_prompt(&conversation, &instructions);
+
+    assert_eq!(
+        prompt,
+        format!(
+            "{instructions}\nPrioritize the current task and latest substantive user request.\n\nRecent conversation messages:\n{conversation}"
+        )
+    );
 }
 
 #[test]
