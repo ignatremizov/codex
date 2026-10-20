@@ -855,6 +855,9 @@ pub struct Config {
     /// Generate automatic TUI recaps. Manual `/recap` remains available when disabled.
     pub tui_auto_recap: bool,
 
+    /// Custom naming instructions for on-demand TUI `/rename` suggestions.
+    pub tui_rename_prompt: Option<String>,
+
     /// Persisted startup availability NUX state for model tooltips.
     pub model_availability_nux: ModelAvailabilityNuxConfig,
 
@@ -4923,6 +4926,10 @@ impl Config {
                 .as_ref()
                 .map(|t| t.auto_recap)
                 .unwrap_or_default(),
+            tui_rename_prompt: cfg
+                .tui
+                .as_ref()
+                .and_then(|tui| tui.rename_prompt.clone()),
             model_availability_nux: cfg
                 .tui
                 .as_ref()
