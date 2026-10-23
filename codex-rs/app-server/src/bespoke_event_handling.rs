@@ -1482,6 +1482,7 @@ async fn start_command_execution_item(
             cwd,
             process_id: None,
             source,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::InProgress,
             command_actions,
             aggregated_output: None,
