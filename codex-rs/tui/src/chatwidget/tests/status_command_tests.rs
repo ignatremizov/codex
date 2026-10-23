@@ -15,6 +15,7 @@ async fn status_command_wraps_resolved_local_home_without_rollout() {
     chat.remote_connection = Some(crate::status::remote_connection::RemoteConnectionStatus {
         address: "ws://server.example/".to_string(),
         is_local_daemon: false,
+        is_managed_daemon: false,
         version: "v1".to_string(),
     });
     let home = chat.config.codex_home.display().to_string();
