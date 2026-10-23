@@ -25,7 +25,7 @@ pub(super) fn validate_recovery_settings(
             "reasoning effort",
             context.effort != config.reasoning_effort,
         ),
-        ("personality", context.personality != config.personality),
+        ("personality", saved.personality != config.personality),
         (
             "disabled plugins",
             context.disabled_plugin_ids.as_ref() != Some(&config.disabled_plugin_ids),
@@ -57,12 +57,7 @@ pub(super) fn validate_recovery_settings(
             "recovery requires one persisted local environment",
         ));
     };
-    let workspace_roots = config
-        .effective_workspace_roots()
-        .iter()
-        .map(PathUri::to_abs_path)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(io::Error::other)?;
+    let workspace_roots = config.effective_workspace_roots();
     if environment.environment_id != codex_exec_server::LOCAL_ENVIRONMENT_ID
         || environment.config != EnvironmentConfigState::FromThread
         || environment.cwd != PathUri::from_abs_path(&context.cwd)
@@ -70,7 +65,7 @@ pub(super) fn validate_recovery_settings(
         || context.permission_profile() != config.permission_profile
         || context.approval_policy != config.approval_policy
         || context.approvals_reviewer != Some(config.approvals_reviewer)
-        || context.workspace_roots.as_deref().unwrap_or_default() != workspace_roots.as_slice()
+        || saved.workspace_roots.as_deref() != Some(workspace_roots.as_slice())
     {
         return Err(io::Error::other(
             "saved permissions or environment cannot be restored exactly",
