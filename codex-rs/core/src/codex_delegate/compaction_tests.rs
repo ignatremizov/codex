@@ -1,9 +1,7 @@
 use super::*;
 use crate::session::SessionIo;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::Op;
 use futures::FutureExt;
-use pretty_assertions::assert_eq;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -60,37 +58,43 @@ async fn dropped_caller_keeps_cleanup_owned_until_actor_termination() {
     let request = request(cancellation).await;
     let startup = Arc::new(SessionStartup::default());
     let weak_startup = Arc::downgrade(&startup);
-    let (tx_sub, rx_sub) = async_channel::bounded(/*cap*/ 2);
-    let (_events, rx_event) = async_channel::unbounded();
-    let (_status, agent_status) = watch::channel(AgentStatus::Running);
+    let mut config = request.config.clone();
+    config.ephemeral = true;
+    let manager =
+        crate::thread_manager::ThreadManager::with_models_provider_home_and_state_for_tests(
+            codex_login::CodexAuth::from_api_key("dummy"),
+            config.model_provider.clone(),
+            config.codex_home.to_path_buf(),
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            /*state_db*/ None,
+        );
+    let thread = manager
+        .start_thread(crate::thread_manager::StartThreadOptions::new(config))
+        .await
+        .expect("start decoder actor fixture")
+        .thread;
+    let mut io = thread.io.clone();
+    let actor_termination = io.session_loop_termination.clone();
     let (terminated, termination) = oneshot::channel();
-    let io = SessionIo {
-        session: std::sync::Weak::new(),
-        tx_sub,
-        submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
-        rx_event,
-        agent_status,
-        session_loop_termination: async {
-            let _ = termination.await;
-        }
-        .boxed()
-        .shared(),
-    };
+    io.session_loop_termination = async {
+        actor_termination.await;
+        let _ = termination.await;
+    }
+    .boxed()
+    .shared();
+    startup.set_session(Arc::clone(&thread.session));
     assert!(startup.io.set(io).is_ok());
     let caller = tokio::spawn(run_with_startup(request, startup));
-    for expected in [Op::Interrupt, Op::Shutdown] {
-        let submission = timeout(Duration::from_secs(/*secs*/ 5), rx_sub.recv())
-            .await
-            .expect("cleanup submits shutdown")
-            .expect("submission");
-        assert_eq!(
-            std::mem::discriminant(&submission.submission.op),
-            std::mem::discriminant(&expected)
-        );
-    }
+    timeout(Duration::from_secs(/*secs*/ 5), async {
+        while !thread.io.durable_shutdown_succeeded() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cleanup receives the actor's durable shutdown acknowledgement");
     assert!(
         !caller.is_finished(),
-        "a shutdown submission is not termination"
+        "durable acknowledgement is not the termination barrier"
     );
     caller.abort();
     let _ = caller.await;

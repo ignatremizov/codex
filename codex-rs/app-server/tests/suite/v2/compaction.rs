@@ -524,7 +524,13 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
                 body["input"][0]["content"][0]["text"],
                 "Repeat the compacted handoff content verbatim. Do not summarize, explain, or add any text."
             );
-            assert!(!decoder.body_contains_text("<environment_context>"));
+            let input = decoder.input();
+            let instruction = input.last().context("decoder instruction")?;
+            assert_eq!(instruction["role"], "developer");
+            assert_eq!(
+                instruction["content"][0]["text"], body["input"][0]["content"][0]["text"],
+                "no fresh context may be appended after the decoder instruction",
+            );
             // This fixture installs no skills inventory; decoder prose cannot invent one.
             assert_eq!(completed_skills, Vec::<String>::new());
             assert_eq!(
