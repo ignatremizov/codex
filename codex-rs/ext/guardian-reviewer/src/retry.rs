@@ -198,6 +198,7 @@ fn should_retry_guardian_review(outcome: &GuardianReviewOutcome) -> bool {
             | CodexErrorInfo::TooManyDenials
             | CodexErrorInfo::Unauthorized
             | CodexErrorInfo::BadRequest
+            | CodexErrorInfo::ModelNotFound
             | CodexErrorInfo::InvalidPrompt
             | CodexErrorInfo::SandboxError
             | CodexErrorInfo::ActiveTurnNotSteerable { .. }
