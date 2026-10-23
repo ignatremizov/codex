@@ -2761,7 +2761,7 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
                 commentary: true,
                 queue_delivery: false,
                 final_response:
-                    crate::app::agent_observation_display::AgentFinalResponseDisplay::Presentation,
+                    crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
             }
         )
     );
