@@ -45,6 +45,11 @@ pub(crate) async fn run_command(
     command: AppServerDaemonSubcommand,
     overrides: &CliConfigOverrides,
 ) -> anyhow::Result<()> {
+    // Daemon lifecycle commands remain usable after the invoking project is deleted.
+    if matches!(std::env::current_dir(), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        std::env::set_current_dir(find_codex_home()?)?;
+    }
     match command {
         AppServerDaemonSubcommand::Start | AppServerDaemonSubcommand::Restart => {
             let launch = effective_launch(overrides).await?;
