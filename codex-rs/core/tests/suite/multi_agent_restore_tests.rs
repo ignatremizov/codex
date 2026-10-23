@@ -13,7 +13,6 @@ use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;

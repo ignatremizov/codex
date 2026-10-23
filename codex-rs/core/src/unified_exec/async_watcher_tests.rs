@@ -12,7 +12,6 @@ use super::start_streaming_output;
 use super::utf8_boundary;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::unified_exec::UnifiedExecContext;
-use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::process::OutputBuffers;
 use crate::unified_exec::process::UnifiedExecProcess;
 use codex_protocol::items::CommandExecutionStatus;

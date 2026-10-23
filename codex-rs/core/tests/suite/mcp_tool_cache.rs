@@ -982,6 +982,7 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
         .expect("the current-catalog rejection should reach the model");
     // Frozen declarations do not retain call authority after live startup changes
     // a tool to app-only. Call preparation rechecks the current catalog.
+    let expected_error = format!("MCP tool `{SERVER_NAME}/cwd` is not available to the model");
     assert_eq!(
         output.split_once("\nOutput:\n").map(|(_, body)| body),
         Some(expected_error.as_str()),

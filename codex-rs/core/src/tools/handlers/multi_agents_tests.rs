@@ -3583,7 +3583,7 @@ async fn send_input_interrupts_before_prompt() {
             }]
     ));
     wait_for_recorded_agent_input(
-        thread.thread.as_ref(),
+        thread.as_ref(),
         parent.thread_id,
         &[UserInput::Text {
             text: "hi".to_string(),
@@ -3683,7 +3683,7 @@ async fn send_input_accepts_structured_items() {
         .expect("child thread should remain live");
 
     wait_for_recorded_agent_input(
-        thread.thread.as_ref(),
+        thread.as_ref(),
         parent.thread_id,
         &[
             UserInput::Mention {
