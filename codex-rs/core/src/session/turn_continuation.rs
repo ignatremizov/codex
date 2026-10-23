@@ -114,7 +114,7 @@ pub(super) async fn prepare(session: &Session) -> CodexResult<TurnContextItem> {
         || context.permission_profile() != config.permission_profile
         || context.approval_policy != config.approval_policy
         || context.approvals_reviewer != Some(config.approvals_reviewer)
-        || saved.workspace_roots.as_deref() != Some(config.effective_workspace_roots())
+        || saved.workspace_roots.as_deref() != Some(config.effective_workspace_roots().as_slice())
     {
         return Err(CodexErr::InvalidRequest(
             "Permissions or execution environment changed; submit new input instead.".to_string(),
