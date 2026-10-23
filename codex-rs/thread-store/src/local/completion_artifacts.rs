@@ -103,7 +103,9 @@ pub(super) async fn load_canonical_items(
         let items = read_thread::load_history_items(resolved.path.as_path()).await?;
         return Ok(vec![items]);
     }
-    let lineage = store.resolve_rollout_lineage(thread_id).await?;
+    let lineage = store
+        .resolve_rollout_lineage(thread_id, Some(resolved.path))
+        .await?;
     tokio::task::spawn_blocking(move || {
         let mut items = Vec::new();
         for segment in lineage.segments() {
