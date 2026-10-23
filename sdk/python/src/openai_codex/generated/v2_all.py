@@ -10489,24 +10489,6 @@ class ProcessOutputDeltaServerNotification(BaseModel):
     params: ProcessOutputDeltaNotification
 
 
-class ItemCommandExecutionTerminalInteractionServerNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    emitted_at_ms: Annotated[
-        int | None,
-        Field(
-            alias="emittedAtMs",
-            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
-        ),
-    ] = None
-    method: Annotated[
-        Literal["item/commandExecution/terminalInteraction"],
-        Field(title="Item/commandExecution/terminalInteractionNotificationMethod"),
-    ]
-    params: TerminalInteractionNotification
-
-
 class ServerRequestResolvedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11107,6 +11089,7 @@ class CommandExecutionThreadItem(BaseModel):
             description="Completion delivery policy for a user-authored shell command. `None` for model-authored and unified-exec commands.",
         ),
     ] = None
+
 
 class FileChangeThreadItem(BaseModel):
     model_config = ConfigDict(
@@ -13464,6 +13447,24 @@ class ItemCompletedServerNotification(BaseModel):
     ] = None
     method: Annotated[Literal["item/completed"], Field(title="Item/completedNotificationMethod")]
     params: ItemCompletedNotification
+
+
+class ItemCommandExecutionTerminalInteractionServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["item/commandExecution/terminalInteraction"],
+        Field(title="Item/commandExecution/terminalInteractionNotificationMethod"),
+    ]
+    params: TerminalInteractionNotification
 
 
 class Thread(BaseModel):
