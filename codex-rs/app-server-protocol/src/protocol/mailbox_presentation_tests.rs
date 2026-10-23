@@ -319,6 +319,7 @@ fn mailbox_read_item_survives_live_transport_and_rollout_replay() {
 
     let rollout = vec![
         RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             turn_id: "turn".to_string(),
             trace_id: None,
             started_at: None,

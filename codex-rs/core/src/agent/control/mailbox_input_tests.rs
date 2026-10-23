@@ -455,6 +455,7 @@ async fn unloaded_receiver_recovery_runs_after_thread_registration() {
             harness.config.clone(),
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: receiver,
+                history_revision: history.revision,
                 history: Arc::new(history.items),
                 rollout_path: stored.rollout_path,
             }),
