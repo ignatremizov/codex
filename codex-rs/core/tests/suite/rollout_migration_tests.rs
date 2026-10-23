@@ -18,6 +18,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::user_input::UserInput;
@@ -60,7 +61,13 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
         })
         .build_with_auto_env(&server)
         .await?;
-    let environments = test.codex.environment_selections().await;
+    let environments = test
+        .codex
+        .environment_selections()
+        .await
+        .into_iter()
+        .map(TurnEnvironmentSelection::into_request)
+        .collect::<Vec<_>>();
     let parent_thread_id = test.session_configured.thread_id;
     let state_db = test.codex.state_db().context("durable ancestry store")?;
     state_db
