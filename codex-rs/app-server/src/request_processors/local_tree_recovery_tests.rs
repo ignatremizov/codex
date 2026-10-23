@@ -133,6 +133,7 @@ fn completed_and_aborted_turns_are_not_recovered() -> anyhow::Result<()> {
             time_to_first_token_ms: None,
         }),
         EventMsg::TurnAborted(TurnAbortedEvent {
+            root_turn_id: None,
             turn_id: Some("original".to_string()),
             reason: TurnAbortReason::Interrupted,
             error: None,
