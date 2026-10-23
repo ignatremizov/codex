@@ -276,11 +276,14 @@ pub(super) async fn start_app_server_for_session_command(
             .build()
             .await
             .wrap_err("failed to load config.toml")?;
-        return Ok(AppServerSession::new(
-            super::connect_remote_app_server(endpoint).await?,
-            ThreadParamsMode::Remote,
-        )
-        .with_remote_cwd_override(cli.cwd.clone()));
+        return Ok(SessionCommandServer {
+            server: AppServerSession::new(
+                super::connect_remote_app_server(endpoint).await?,
+                ThreadParamsMode::Remote,
+            )
+            .with_remote_cwd_override(cli.cwd.clone()),
+            expected_local_daemon_socket: None,
+        });
     }
 
     let workload_identity_selected = codex_login::is_workload_identity_selected();
