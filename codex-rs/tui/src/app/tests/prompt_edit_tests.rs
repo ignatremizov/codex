@@ -266,7 +266,12 @@ async fn goal_free_and_safety_retry_fork_requests_preserve_both_history_modes() 
             )
             .await?;
         server
-            .fork_side_thread(&app.local_settings, app.config.clone(), source_id)
+            .fork_side_thread(
+                &app.local_settings,
+                app.config.clone(),
+                source_id,
+                /*selected_profile*/ None,
+            )
             .await?;
         server
             .fork_thread_at(
