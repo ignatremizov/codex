@@ -556,8 +556,8 @@ impl LocalAgentControl {
         {
             apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
             config.model_reasoning_effort = stored_reasoning_effort;
-            config.service_tier = stored_service_tier;
         }
+        config.service_tier = stored_service_tier;
         let parent_thread_id = session_source
             .parent_thread_id()
             .or_else(|| initial_history.get_resumed_parent_thread_id())
