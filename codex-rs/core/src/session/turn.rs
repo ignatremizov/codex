@@ -641,9 +641,8 @@ pub(crate) async fn run_turn(
                 // before the response stream closes. Preserve that message across the required
                 // follow-up so an empty acknowledgement does not erase the turn's last visible
                 // answer.
-                if !model_needs_follow_up
-                    && let Some(sampling_request_last_agent_message) =
-                        sampling_request_last_agent_message
+                if let Some(sampling_request_last_agent_message) =
+                    sampling_request_last_agent_message
                 {
                     last_agent_message = Some(sampling_request_last_agent_message);
                 }
