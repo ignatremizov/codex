@@ -381,6 +381,15 @@ impl CommandPopup {
 }
 
 impl CommandItem {
+    pub(crate) fn description(&self) -> &str {
+        match self {
+            Self::Builtin(command) => command.description(),
+            Self::ServiceTier(command) => &command.description,
+            Self::Mcp(completion) => completion.description(),
+            Self::BackgroundTerminal(terminal) => &terminal.command_display,
+        }
+    }
+
     pub(crate) fn command(&self) -> std::borrow::Cow<'_, str> {
         match self {
             Self::Builtin(cmd) => cmd.command().into(),
