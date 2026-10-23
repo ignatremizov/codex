@@ -2028,9 +2028,7 @@ async fn command_approval_timeout_rejects_without_execution_and_turn_continues()
             }])
             .with_thread_settings(
                 codex_protocol::protocol::ThreadSettingsOverrides {
-                    environments: Some(
-                        test.default_environment_selections(test.config.cwd.clone()),
-                    ),
+                    environments: Some(test.default_environment_requests(test.config.cwd.clone())),
                     approval_policy: Some(AskForApproval::OnRequest),
                     approvals_reviewer: Some(ApprovalsReviewer::User),
                     sandbox_policy: Some(sandbox_policy),
