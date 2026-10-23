@@ -120,6 +120,7 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
         .thread
         .append_rollout_items(&[
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
                 turn_id: "removed-turn".to_string(),
                 root_turn_id: None,
                 trace_id: None,
@@ -133,6 +134,7 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
                 ..UserMessageEvent::default()
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: None,
                 turn_id: "removed-turn".to_string(),
                 last_agent_message: None,
                 error: None,
@@ -155,6 +157,8 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
                 message: message.to_string(),
                 replacement_history: Some(vec![
                     ResponseItem::Message {
+                        status: None,
+                        encrypted_content: None,
                         id: None,
                         role: "user".to_string(),
                         content: vec![ContentItem::InputText {
@@ -226,6 +230,7 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
     let audit = test
         .thread_store
         .list_items(ListItemsParams {
+            item_ids: None,
             thread_id: child.thread_id,
             turn_id: None,
             include_archived: false,
@@ -272,6 +277,7 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
             environments: Some(environments),
             initial_history: InitialHistory::Resumed(ResumedHistory {
                 conversation_id: child.thread_id,
+                history_revision: context.revision,
                 history: Arc::new(context.items),
                 rollout_path: Some(rollout_path.clone()),
             }),

@@ -2514,6 +2514,7 @@ async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenari
         .list_items(ListItemsParams {
             thread_id,
             turn_id: Some("old-turn".to_string()),
+            item_ids: None,
             include_archived: false,
             position: None,
             page_size: 20,
