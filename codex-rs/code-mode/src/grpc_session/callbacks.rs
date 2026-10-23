@@ -1,6 +1,7 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::PoisonError;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CellId;
