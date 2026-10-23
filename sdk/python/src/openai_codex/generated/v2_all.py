@@ -8024,17 +8024,6 @@ class ThreadCompactStartRequest(BaseModel):
     params: ThreadCompactStartParams
 
 
-class ThreadShellCommandRequest(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    id: RequestId
-    method: Annotated[
-        Literal["thread/shellCommand"], Field(title="Thread/shellCommandRequestMethod")
-    ]
-    params: ThreadShellCommandParams
-
-
 class ThreadApproveGuardianDeniedActionRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11802,6 +11791,17 @@ class ThreadGoalClearRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/goal/clear"], Field(title="Thread/goal/clearRequestMethod")]
     params: ThreadGoalClearParams
+
+
+class ThreadShellCommandRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/shellCommand"], Field(title="Thread/shellCommandRequestMethod")
+    ]
+    params: ThreadShellCommandParams
 
 
 class ThreadListRequest(BaseModel):
