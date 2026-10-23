@@ -549,6 +549,7 @@ impl LocalAgentControl {
             }
         }
         if multi_agent_version == MultiAgentVersion::V2
+            || session_source.is_non_root_agent()
             || matches!(
                 authority,
                 ResumeAuthority::Controlled | ResumeAuthority::Transfer { .. }
