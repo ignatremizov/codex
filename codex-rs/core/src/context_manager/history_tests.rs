@@ -664,6 +664,13 @@ fn prepared_compaction_preserves_the_independent_guardian_suffix() -> anyhow::Re
     );
     let mut suffix = vec![image("current-image")?];
     history.record_annotated_items(&mut suffix, TruncationPolicy::Tokens(10_000));
+    let expected_suffix = history
+        .guardian_history_checkpoint()
+        .expect("independent review checkpoint")
+        .0
+        .last()
+        .cloned()
+        .expect("reviewer suffix");
     let mut replacement = vec![ResponseItemEnvelope::new(assistant_msg("prepared summary"))];
     replacement.extend(suffix.iter().cloned());
     history.replace_compacted(replacement, /*reviewer_compaction_hash*/ None);
@@ -672,7 +679,7 @@ fn prepared_compaction_preserves_the_independent_guardian_suffix() -> anyhow::Re
         .compacted_guardian_history_checkpoint(&suffix)
         .expect("independent review checkpoint");
     let (current, compacted) = checkpoint.0.split_last().expect("retained suffix");
-    assert_eq!(current, &suffix[0]);
+    assert_eq!(current, &expected_suffix);
     assert_eq!(compacted.len(), 2);
     let serialized = serde_json::to_string(
         &compacted

@@ -310,7 +310,9 @@ pub(crate) fn sanitize_compacted_media_prefix(
     };
     for item in items.iter_mut().take(prefix_len) {
         match item {
-            ResponseItem::Message { .. } => {
+            ResponseItem::Message { content, .. }
+                if content.iter().any(content_item_is_compacted_media) =>
+            {
                 let Some(mut content) = to_annotated_content(item) else {
                     continue;
                 };
@@ -362,7 +364,8 @@ pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
     for item in items {
         match item {
             item @ ResponseItem::Message { .. } => {
-                let Some(mut content) = to_annotated_content(item) else {
+                let mut original = item.clone();
+                let Some(mut content) = to_annotated_content(&mut original) else {
                     continue;
                 };
                 content.retain(|item| {
@@ -443,7 +446,13 @@ pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
                         let _ = content_items.pop_front();
                     }
                 }
-                let _ = set_annotated_content(item, retained);
+                if let ResponseItem::Message { content, .. } = item
+                    && !content
+                        .iter()
+                        .eq(retained.iter().map(AnnotatedContent::content))
+                {
+                    let _ = set_annotated_content(item, retained);
+                }
             }
             ResponseItem::FunctionCallOutput { output, .. }
             | ResponseItem::CustomToolCallOutput { output, .. } => {

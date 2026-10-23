@@ -37,14 +37,18 @@ fn sanitized_envelopes_keep_identity_and_suffix_but_invalidate_changed_source_pr
         }]),
         metadata: Some(metadata.clone()),
     };
-    let mut items = vec![original.clone(), original.clone()];
-    let outcome = sanitize_compacted_media_envelopes(&mut items, /*prefix_len*/ 1);
+    let text = ResponseItemEnvelope::new(user_message(vec![ContentItem::InputText {
+        text: "unchanged message without positional classifications".to_owned(),
+    }]));
+    let mut items = vec![text.clone(), original.clone(), original.clone()];
+    let outcome = sanitize_compacted_media_envelopes(&mut items, /*prefix_len*/ 2);
     let mut expected_metadata = metadata;
     expected_metadata.mark_retained_sources_incomplete();
     assert_eq!(outcome.omitted_image_count, 1);
     assert_eq!(
         items,
         vec![
+            text,
             ResponseItemEnvelope {
                 item: annotated_user_message(vec![ContentItem::InputText {
                     text: CompactedImageOmission::unavailable().render(),
@@ -55,7 +59,7 @@ fn sanitized_envelopes_keep_identity_and_suffix_but_invalidate_changed_source_pr
         ],
     );
     let expected = items.clone();
-    assert!(!sanitize_compacted_media_envelopes(&mut items, /*prefix_len*/ 1).changed());
+    assert!(!sanitize_compacted_media_envelopes(&mut items, /*prefix_len*/ 2).changed());
     assert_eq!(items, expected);
 }
 
