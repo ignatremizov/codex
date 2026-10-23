@@ -499,7 +499,11 @@ async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
             text_elements: Vec::new(),
         }]))
         .await?;
-    let TurnInputSubmission::Started { turn_id } = submission else {
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = submission
+    else {
         anyhow::bail!("sender should start a new turn");
     };
     let request = timeout(
@@ -643,7 +647,11 @@ async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
             text_elements: Vec::new(),
         }]))
         .await?;
-    let TurnInputSubmission::Started { turn_id } = submission else {
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = submission
+    else {
         anyhow::bail!("resumed receiver should start a new turn");
     };
     timeout(

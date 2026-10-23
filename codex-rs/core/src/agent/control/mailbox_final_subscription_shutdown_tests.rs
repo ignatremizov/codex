@@ -47,7 +47,7 @@ impl ThreadStore for RecoveryFaultStore {
 
     forward_store! {
         fn create_thread(params: CreateThreadParams) -> ();
-        fn resume_thread(params: ResumeThreadParams) -> ();
+        fn resume_thread(params: ResumeThreadParams) -> Arc<Vec<codex_history::RolloutItem>>;
         fn append_items(params: AppendThreadItemsParams) -> ();
         fn append_completion_items_and_flush(params: AppendThreadItemsParams) -> ();
         fn persist_thread(thread_id: ThreadId, context: PersistContext) -> ();

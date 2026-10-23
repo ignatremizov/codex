@@ -89,7 +89,7 @@ impl store::ThreadStore for DelayedProofStore {
         fn stage_pending_thread_metadata( &self, thread_id: ThreadId, patch: store::ThreadMetadataPatch, ) -> store::ThreadStoreFuture<'_, ()>;
         fn read_pending_thread_metadata( &self, thread_id: ThreadId, ) -> store::ThreadStoreFuture<'_, Option<store::ThreadMetadataPatch>>;
         fn remove_pending_thread_metadata(&self, thread_id: ThreadId) -> store::ThreadStoreFuture<'_, ()>;
-        fn resume_thread(&self, params: store::ResumeThreadParams) -> store::ThreadStoreFuture<'_, ()>;
+        fn resume_thread(&self, params: store::ResumeThreadParams) -> store::ThreadStoreFuture<'_, Arc<Vec<RolloutItem>>>;
         fn reserve_thread_writers( &self, thread_ids: Vec<ThreadId>, ) -> store::ThreadStoreFuture<'_, store::ThreadWriterReservation>;
         fn append_items(&self, params: store::AppendThreadItemsParams) -> store::ThreadStoreFuture<'_, ()>;
         fn record_thread_metadata( &self, params: store::UpdateThreadMetadataParams, ) -> store::ThreadStoreFuture<'_, ()>;

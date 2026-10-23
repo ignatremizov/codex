@@ -67,7 +67,7 @@ impl ThreadStore for FixedClaimStore {
         fn accept_mailbox_input(params: codex_thread_store::AcceptMailboxInputParams) -> codex_thread_store::StoredMailboxInput;
         fn claim_mailbox_input(params: codex_thread_store::ClaimMailboxInputParams) -> codex_thread_store::MailboxClaim;
         fn create_thread(params: codex_thread_store::CreateThreadParams) -> ();
-        fn resume_thread(params: codex_thread_store::ResumeThreadParams) -> ();
+        fn resume_thread(params: codex_thread_store::ResumeThreadParams) -> Arc<Vec<codex_history::RolloutItem>>;
         fn reserve_thread_writers(thread_ids: Vec<ThreadId>) -> codex_thread_store::ThreadWriterReservation;
         fn append_items(params: codex_thread_store::AppendThreadItemsParams) -> ();
         fn append_completion_items_and_flush(params: codex_thread_store::AppendThreadItemsParams) -> ();

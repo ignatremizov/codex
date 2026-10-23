@@ -62,7 +62,11 @@ async fn begin(thread: &CodexThread, prompt: &str) -> Result<String> {
             text_elements: Vec::new(),
         }]))
         .await?;
-    let TurnInputSubmission::Started { turn_id } = submission else {
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = submission
+    else {
         anyhow::bail!("expected new turn for {prompt}: {submission:?}");
     };
     Ok(turn_id)
