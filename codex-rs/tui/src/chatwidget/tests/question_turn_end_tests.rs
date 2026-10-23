@@ -271,7 +271,7 @@ async fn question_turn_end_recovers_after_interruption_restores_queued_input() {
                     .composer
                     .unwrap()
                     .text,
-                "queued prompt\nmain draft\nanswer"
+                "queued prompt\nmain draft\n\n> Which way?\n\nanswer"
             );
             // A query miss and unsuccessful Enter must retain both the search and the answers.
             chat.handle_key_event(KeyEvent::from(KeyCode::Char('z')));
@@ -293,7 +293,10 @@ async fn question_turn_end_recovers_after_interruption_restores_queued_input() {
         if matches!(main_input, MainInput::HistoryAccept) {
             assert_recovered_draft(&mut chat, "earlier prompt");
         } else {
-            assert_recovered_draft(&mut chat, &format!("queued prompt\n{main_draft}\nanswer"));
+            assert_recovered_draft(
+                &mut chat,
+                &format!("queued prompt\n{main_draft}\n\n> Which way?\n\nanswer"),
+            );
         }
         // The submitted steer stays optimistic until its canonical receipt arrives. It must
         // neither disappear nor become another sendable copy in the recovered question draft.
