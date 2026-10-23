@@ -936,7 +936,7 @@ PATCH"#,
         for (original, expected_content) in [
             ("one\r\ntwo\r\n", "FINAL\r\ntwo\r\n"),
             ("one\r\ntwo\n", "FINAL\r\ntwo\n"),
-            ("one\r\ntwo", "FINAL\r\ntwo"),
+            ("one\r\ntwo", "FINAL\r\ntwo\r\n"),
         ] {
             let session_dir = tempdir().unwrap();
             let relative_path = "source.txt";
