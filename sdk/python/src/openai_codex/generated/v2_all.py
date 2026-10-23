@@ -11046,24 +11046,6 @@ class UserMessageThreadItem(BaseModel):
     type: Annotated[Literal["userMessage"], Field(title="UserMessageThreadItemType")]
 
 
-class AgentMessageThreadItem(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    attribution: AgentInputAttribution | None = None
-    delivery: AgentMessageDelivery | None = None
-    id: str
-    input: list[UserInput] | None = None
-    inter_agent_source: Annotated[
-        InterAgentMessageSource | None, Field(alias="interAgentSource")
-    ] = None
-    memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
-    phase: MessagePhase | None = None
-    questions: list[AsyncUserInputQuestion] | None = None
-    text: str
-    type: Annotated[Literal["agentMessage"], Field(title="AgentMessageThreadItemType")]
-
-
 class CommandExecutionThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12723,6 +12705,24 @@ class TerminalInteractionNotification(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
     wait: TerminalWait | None = None
+
+
+class AgentMessageThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    attribution: AgentInputAttribution | None = None
+    delivery: AgentMessageDelivery | None = None
+    id: str
+    input: list[UserInput] | None = None
+    inter_agent_source: Annotated[
+        InterAgentMessageSource | None, Field(alias="interAgentSource")
+    ] = None
+    memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
+    phase: MessagePhase | None = None
+    questions: list[AsyncUserInputQuestion] | None = None
+    text: str
+    type: Annotated[Literal["agentMessage"], Field(title="AgentMessageThreadItemType")]
 
 
 class FunctionCallOutputThreadItem(BaseModel):
