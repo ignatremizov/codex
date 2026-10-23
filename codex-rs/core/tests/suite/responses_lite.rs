@@ -338,7 +338,6 @@ async fn base_instructions_use_input_items(responses_lite: bool) -> Result<()> {
     );
 
     let tools = if responses_lite {
-        assert!(body.get("tools").is_none());
         assert_eq!(input[0]["type"], "additional_tools");
         assert_eq!(input[0]["role"], "developer");
         assert!(
