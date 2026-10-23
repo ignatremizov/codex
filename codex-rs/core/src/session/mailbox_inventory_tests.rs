@@ -41,7 +41,7 @@ impl ThreadStore for CancellationGateStore {
 
     forward_store! {
         fn create_thread(params: CreateThreadParams) -> ();
-        fn resume_thread(params: ResumeThreadParams) -> ();
+        fn resume_thread(params: ResumeThreadParams) -> Arc<Vec<codex_history::RolloutItem>>;
         fn reserve_thread_writers(thread_ids: Vec<ThreadId>) -> ThreadWriterReservation;
         fn append_items(params: AppendThreadItemsParams) -> ();
         fn append_completion_items_and_flush(params: AppendThreadItemsParams) -> ();
