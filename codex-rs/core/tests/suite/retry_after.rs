@@ -545,12 +545,15 @@ async fn exhaust_capacity_retries(
                         operation: operation.into(),
                     }
                 );
-                // Keep this task runnable while the retry owner registers its timer, then
-                // restore real time before waiting on any socket or mock-server activity.
-                tokio::time::pause();
-                tokio::task::yield_now().await;
-                tokio::time::advance(Duration::from_secs(/*secs*/ 70)).await;
-                tokio::time::resume();
+                // Zero-delay advice can already be reading the next response. Advance only
+                // the selected wait so unrelated stream I/O cannot hit its idle deadline.
+                if !retry.delay.is_zero() {
+                    tokio::time::pause();
+                    tokio::task::yield_now().await;
+                    // Telemetry rounds the selected duration down to whole milliseconds.
+                    tokio::time::advance(retry.delay + Duration::from_millis(/*millis*/ 1)).await;
+                    tokio::time::resume();
+                }
             }
             EventMsg::Error(error) => {
                 errors += 1;

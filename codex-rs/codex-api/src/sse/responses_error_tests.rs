@@ -154,3 +154,58 @@ async fn retry_header_does_not_override_terminal_errors() {
         assert_eq!(error.retry_delay(/*retry_count*/ 1), None, "{code}");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn enclosing_retry_header_keeps_its_deadline_and_preserves_terminal_failures() {
+    for (code, expected_code, retryable) in [
+        (
+            "server_is_overloaded",
+            CodexErrorInfo::ServerOverloaded,
+            true,
+        ),
+        (
+            "rate_limit_exceeded",
+            CodexErrorInfo::RateLimitExceeded,
+            true,
+        ),
+        ("unknown_failure", CodexErrorInfo::Other, true),
+        (
+            "insufficient_quota",
+            CodexErrorInfo::UsageLimitExceeded,
+            false,
+        ),
+    ] {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "11".parse().unwrap());
+        let expected_deadline = RetryAfter::from_headers(&headers);
+        let failure = json!({
+            "type": "response.failed",
+            "response": {"error": {"code": code, "headers": {"retry-after": "7"}}}
+        });
+        let mut events = spawn_response_stream(
+            StreamResponse {
+                status: StatusCode::OK,
+                headers,
+                bytes: Box::pin(stream::iter([Ok(Bytes::from(format!(
+                    "data: {failure}\n\n"
+                )))])),
+            },
+            Duration::from_secs(/*secs*/ 60),
+            /*telemetry*/ None,
+            /*turn_state*/ None,
+        );
+        tokio::time::advance(Duration::from_secs(/*secs*/ 3)).await;
+        let error = loop {
+            match events.next().await {
+                Some(Err(error)) => break map_api_error(error),
+                Some(Ok(_)) => {}
+                None => panic!("stream must retain its failure"),
+            }
+        };
+        assert_eq!(
+            (error.to_codex_protocol_error(), error.retry_after()),
+            (expected_code, expected_deadline.filter(|_| retryable)),
+            "{code}",
+        );
+    }
+}

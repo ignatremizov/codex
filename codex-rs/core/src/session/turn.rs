@@ -12,6 +12,7 @@ use crate::compact_remote_v2::AutoCompactRun;
 use crate::compact_remote_v2::BackgroundCompactionCandidate;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
+use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::context::UserVerificationNotice;
 use crate::cyber_access_program;
@@ -1846,6 +1847,7 @@ pub(crate) fn build_prompt(
     incremental_tools: bool,
 ) -> Prompt {
     let turn_context = &step_context.turn;
+    let base_instructions_in_history = input.iter().any(BaseInstructionsFragment::matches_item);
     Prompt {
         input,
         tools: if incremental_tools {
@@ -1854,7 +1856,7 @@ pub(crate) fn build_prompt(
             step_context.tool_router.model_visible_specs()
         },
         parallel_tool_calls: true,
-        base_instructions: if incremental_tools {
+        base_instructions: if incremental_tools && base_instructions_in_history {
             BaseInstructions {
                 text: String::new(),
                 provenance: None,
