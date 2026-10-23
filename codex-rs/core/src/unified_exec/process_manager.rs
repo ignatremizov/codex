@@ -636,7 +636,7 @@ impl UnifiedExecProcessManager {
             request
                 .cwd
                 .infer_path_convention()
-                .unwrap_or(match request.shell.shell_type {
+                .unwrap_or(match request.shell.shell.shell_type {
                     crate::shell::ShellType::PowerShell | crate::shell::ShellType::Cmd => {
                         PathConvention::Windows
                     }
