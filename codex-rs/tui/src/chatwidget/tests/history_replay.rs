@@ -1,3 +1,4 @@
+use super::helpers::drain_insert_history_cells;
 use super::helpers::drain_insert_history_transcript;
 use super::*;
 use crate::app_event::HistoryLookupResponse;
@@ -349,7 +350,7 @@ async fn replay_and_projection_preserve_agent_message_phase() {
             "turn-1".to_string(),
             ReplayKind::ResumeInitialMessages,
         );
-        let replayed = drain_insert_history(&mut rx);
+        let replayed = drain_insert_history_cells(&mut rx);
         assert_eq!(replayed.len(), 1);
         assert_eq!(replayed[0].transcript_navigation_kind(), Some(navigation));
 
