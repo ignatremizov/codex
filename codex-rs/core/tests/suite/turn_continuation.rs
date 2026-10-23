@@ -4,6 +4,7 @@ use codex_core::SuspendTurnOutcome;
 use codex_core::TurnInputRequest;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
+use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ActivePermissionProfile;
@@ -27,6 +28,8 @@ enum Attachment {
     Live,
     Resumed,
     ResumedModelDefault,
+    ResumedChangedPersonality,
+    ResumedChangedWorkspaceRoots,
     Suspended,
 }
 
@@ -45,6 +48,10 @@ enum Roots {
 #[test_case(ThreadHistoryMode::Paginated, Attachment::Suspended, Roots::Runtime; "paginated unfinished restart")]
 #[test_case(ThreadHistoryMode::Legacy, Attachment::Live, Roots::WithProfile; "legacy profile root")]
 #[test_case(ThreadHistoryMode::Paginated, Attachment::Resumed, Roots::WithProfile; "paginated profile root")]
+#[test_case(ThreadHistoryMode::Legacy, Attachment::ResumedChangedPersonality, Roots::Runtime; "legacy changed personality")]
+#[test_case(ThreadHistoryMode::Paginated, Attachment::ResumedChangedPersonality, Roots::Runtime; "paginated changed personality")]
+#[test_case(ThreadHistoryMode::Legacy, Attachment::ResumedChangedWorkspaceRoots, Roots::Runtime; "legacy changed roots")]
+#[test_case(ThreadHistoryMode::Paginated, Attachment::ResumedChangedWorkspaceRoots, Roots::Runtime; "paginated changed roots")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_preserves_original_input_and_completed_tool_work(
     mode: ThreadHistoryMode,
@@ -80,6 +87,9 @@ async fn continue_preserves_original_input_and_completed_tool_work(
         .with_history_mode(mode)
         .with_config(move |config| {
             config.update_plan_enabled = true;
+            if matches!(attachment, Attachment::ResumedChangedPersonality) {
+                config.personality = Some(Personality::Friendly);
+            }
             if matches!(attachment, Attachment::ResumedModelDefault) {
                 // An unknown model has an Auto summary default. Start with that value
                 // explicitly selected, then let cold resume use the same model default.
@@ -148,7 +158,11 @@ async fn continue_preserves_original_input_and_completed_tool_work(
         }
         match attachment {
             Attachment::Suspended => matches!(event, EventMsg::ShutdownComplete),
-            Attachment::Live | Attachment::Resumed | Attachment::ResumedModelDefault => {
+            Attachment::Live
+            | Attachment::Resumed
+            | Attachment::ResumedModelDefault
+            | Attachment::ResumedChangedPersonality
+            | Attachment::ResumedChangedWorkspaceRoots => {
                 matches!(event, EventMsg::TurnAborted(_))
             }
         }
@@ -158,16 +172,29 @@ async fn continue_preserves_original_input_and_completed_tool_work(
 
     let thread = match attachment {
         Attachment::Live => Arc::clone(&test.codex),
-        Attachment::Resumed | Attachment::ResumedModelDefault | Attachment::Suspended => {
+        Attachment::Resumed
+        | Attachment::ResumedModelDefault
+        | Attachment::ResumedChangedPersonality
+        | Attachment::ResumedChangedWorkspaceRoots
+        | Attachment::Suspended => {
             if matches!(
                 attachment,
-                Attachment::Resumed | Attachment::ResumedModelDefault
+                Attachment::Resumed
+                    | Attachment::ResumedModelDefault
+                    | Attachment::ResumedChangedPersonality
+                    | Attachment::ResumedChangedWorkspaceRoots
             ) {
                 test.codex.shutdown_and_wait().await?;
             }
             let mut config = test.config.clone();
             if matches!(attachment, Attachment::ResumedModelDefault) {
                 config.model_reasoning_summary = None;
+            }
+            if matches!(attachment, Attachment::ResumedChangedPersonality) {
+                config.personality = Some(Personality::Pragmatic);
+            }
+            if matches!(attachment, Attachment::ResumedChangedWorkspaceRoots) {
+                config.workspace_roots.push(config.cwd.join("changed-root"));
             }
             let history = test
                 .thread_store
@@ -193,6 +220,15 @@ async fn continue_preserves_original_input_and_completed_tool_work(
                 .thread
         }
     };
+    if matches!(
+        attachment,
+        Attachment::ResumedChangedPersonality | Attachment::ResumedChangedWorkspaceRoots
+    ) {
+        assert!(thread.continue_turn().await.is_err());
+        assert_eq!(blocked.requests().len(), 1);
+        thread.shutdown_and_wait().await?;
+        return Ok(());
+    }
     let continuation = responses::mount_sse_once_with_delay(
         &server,
         responses::sse_completed("continued"),

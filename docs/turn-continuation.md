@@ -18,6 +18,7 @@ An interrupted tool call without a saved result does not block continuation. Bot
 - Completed, failed, budget-limited, replaced, review, realtime, inherited, and rolled-back turns are not eligible. An ordinary user interruption is eligible; an unfinished turn after harness loss is eligible when its canonical input and settings were saved.
 - Missing tool outcomes permit continuation; ambiguous or unidentified tool-call identities still require reconciliation.
 - Original model/settings and execution permissions must still match. The current durable recovery certificate covers one thread-configured local environment; remote or multiple environment identities are not reconstructed implicitly.
+- Personality and workspace-root URIs must match the saved start options. Older snapshots without recorded roots require new input.
 - Settings changes or newer work supersede an outstanding continuation. Unknown persistence outcomes quarantine the session rather than permitting another blind append or model request.
 - TUI composer drafts, attachments, and deferred follow-up messages remain under normal user control. `/continue` does not automatically resume subagents; owning-tree restoration after local daemon loss remains a separate recovery path.
 

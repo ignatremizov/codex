@@ -88,7 +88,7 @@ pub(super) async fn prepare(session: &Session) -> CodexResult<TurnContextItem> {
     if context.model != config.model
         || context.collaboration_mode.as_ref() != Some(&config.collaboration_mode)
         || context.effort != config.reasoning_effort
-        || context.personality != config.personality
+        || saved.personality != config.personality
         || context.disabled_plugin_ids.as_ref() != Some(&config.disabled_plugin_ids)
         // Core resolves an unset selection and checks the effective summary before admission.
         || (config.reasoning_summary.is_some()
@@ -107,16 +107,6 @@ pub(super) async fn prepare(session: &Session) -> CodexResult<TurnContextItem> {
             "The original execution environment cannot be reproduced.".to_string(),
         ));
     };
-    let workspace_roots = config
-        .effective_workspace_roots()
-        .iter()
-        .map(PathUri::to_abs_path)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            CodexErr::InvalidRequest(format!(
-                "Cannot reproduce original workspace roots: {error}"
-            ))
-        })?;
     if environment.environment_id != codex_exec_server::LOCAL_ENVIRONMENT_ID
         || environment.config != EnvironmentConfigState::FromThread
         || environment.cwd != PathUri::from_abs_path(&context.cwd)
@@ -124,7 +114,7 @@ pub(super) async fn prepare(session: &Session) -> CodexResult<TurnContextItem> {
         || context.permission_profile() != config.permission_profile
         || context.approval_policy != config.approval_policy
         || context.approvals_reviewer != Some(config.approvals_reviewer)
-        || context.workspace_roots.as_deref().unwrap_or_default() != workspace_roots.as_slice()
+        || saved.workspace_roots.as_deref() != Some(config.effective_workspace_roots())
     {
         return Err(CodexErr::InvalidRequest(
             "Permissions or execution environment changed; submit new input instead.".to_string(),
