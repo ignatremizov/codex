@@ -11,6 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::AppServerTarget;
 use crate::Cli;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::ThreadParamsMode;
