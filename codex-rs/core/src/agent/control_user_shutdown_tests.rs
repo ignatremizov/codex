@@ -217,7 +217,6 @@ async fn tree_shutdown_cancels_pending_queue_without_waiting_for_target_completi
             response_observation: ResponseObservationPolicy::from_turn_parts(
                 /*commentary*/ false,
                 FinalResponseObservation::Passive,
-                /*target_messages*/ false,
                 /*queue_input*/ true,
             ),
             task_preview: None,

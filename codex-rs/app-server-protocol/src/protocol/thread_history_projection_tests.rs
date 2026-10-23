@@ -269,6 +269,7 @@ fn peer_message_audit_replays_without_completing_active_root_turn() {
         let mut builder = crate::ThreadHistoryBuilder::new();
         if turn_id == "active-root-turn" {
             builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
                 turn_id: turn_id.to_string(),
                 trace_id: None,
                 started_at: None,

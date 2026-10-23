@@ -424,6 +424,7 @@ async fn directory_running_interrupted_and_error_filters_follow_live_status_with
         ),
         (
             EventMsg::TurnAborted(TurnAbortedEvent {
+                root_turn_id: None,
                 turn_id: Some("directory-status".to_string()),
                 reason: TurnAbortReason::Interrupted,
                 error: None,

@@ -54,6 +54,7 @@ fn turn_completed(items: Vec<ThreadItem>) -> ServerNotification {
     ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
         thread_id: "thread-1".into(),
         turn: codex_app_server_protocol::Turn {
+            root_turn_id: None,
             id: "turn-1".into(),
             items,
             items_view: codex_app_server_protocol::TurnItemsView::Full,
