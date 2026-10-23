@@ -2306,7 +2306,7 @@ async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenari
                 materialized_turns: None,
                 rollback_start_index: None,
             })),
-            exec_completion("old-turn", "OLD_TOOL_SENTINEL"),
+            exec_completion("old-turn", "OLD_TOOL_SENTINEL", "old tool output"),
             RolloutItem::Compacted(CompactedItem {
                 message: "latest checkpoint".to_string(),
                 replacement_history: Some(vec![
