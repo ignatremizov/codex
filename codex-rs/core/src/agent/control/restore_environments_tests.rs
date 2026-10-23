@@ -19,6 +19,7 @@ fn captured_environment(
         Arc::new(Environment::create_for_tests(exec_server_url).expect("environment"));
     let selection = TurnEnvironmentSelection {
         environment_id: "captured-not-default".to_string(),
+        selected_capability_roots: Default::default(),
         cwd: PathUri::from_abs_path(&config.cwd),
         workspace_roots: config
             .workspace_roots
@@ -61,6 +62,7 @@ async fn explicit_local_workspaces_keep_captured_executor_and_use_supplied_confi
         restored.to_selections(),
         vec![TurnEnvironmentSelection {
             environment_id: "captured-not-default".to_string(),
+            selected_capability_roots: Default::default(),
             cwd: PathUri::from_abs_path(&config.cwd),
             workspace_roots: config
                 .workspace_roots
