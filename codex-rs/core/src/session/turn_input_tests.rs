@@ -374,6 +374,13 @@ async fn recovery_snapshot_records_schema_effective_tier_and_parent_lineage() {
         context.to_turn_context_item().recovery_start_options,
         Some(codex_protocol::protocol::TurnRecoveryStartOptions {
             final_output_json_schema: Some(schema),
+            personality: context.personality(),
+            workspace_roots: Some(
+                context
+                    .initial_environments
+                    .primary_workspace_root_uris()
+                    .to_vec(),
+            ),
             service_tier: Some("flex".to_string()),
             parent_turn_id: Some("parent-turn".to_string()),
             configured_reasoning_summary: context.initial_settings.selected().reasoning_summary,
@@ -386,6 +393,9 @@ async fn recovery_snapshot_records_schema_effective_tier_and_parent_lineage() {
 #[test_case("mode"; "preserves old plan turn")]
 #[test_case("model"; "rejects newer model")]
 #[test_case("plugins"; "rejects newer plugin selection")]
+#[test_case("personality"; "rejects changed personality")]
+#[test_case("workspace_roots"; "rejects changed workspace roots")]
+#[test_case("missing_workspace_roots"; "rejects uncertified workspace roots")]
 #[test_case("summary"; "rejects changed effective default summary")]
 #[test_case("legacy_summary"; "rejects changed effective summary from older fork context")]
 #[test_case("start_options"; "old context requires explicit retry")]
@@ -406,6 +416,37 @@ async fn guarded_recovery_rejects_incompatible_original_context(field: &str) {
         }
         "model" => saved.model = "different-original-model".to_string(),
         "plugins" => saved.disabled_plugin_ids = Some(vec!["original-plugin".to_string()]),
+        "personality" => {
+            let options = saved
+                .recovery_start_options
+                .as_mut()
+                .expect("recovery options");
+            options.personality = Some(
+                if options.personality == Some(codex_protocol::config_types::Personality::Friendly)
+                {
+                    codex_protocol::config_types::Personality::Pragmatic
+                } else {
+                    codex_protocol::config_types::Personality::Friendly
+                },
+            );
+        }
+        "workspace_roots" => {
+            saved
+                .recovery_start_options
+                .as_mut()
+                .expect("recovery options")
+                .workspace_roots
+                .as_mut()
+                .expect("recorded roots")
+                .push(context.config.cwd.join("changed-root").into());
+        }
+        "missing_workspace_roots" => {
+            saved
+                .recovery_start_options
+                .as_mut()
+                .expect("recovery options")
+                .workspace_roots = None;
+        }
         "summary" | "legacy_summary" => {
             let recovery = saved
                 .recovery_start_options

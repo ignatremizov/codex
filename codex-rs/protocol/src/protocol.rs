@@ -3728,6 +3728,14 @@ pub struct AgentResponseCommentaryDelivery {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
 pub struct TurnRecoveryStartOptions {
     pub final_output_json_schema: Option<Value>,
+    /// Personality captured for recovery independently of the World State projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub personality: Option<Personality>,
+    /// Exact workspace roots; absence means older snapshots cannot certify their scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_roots: Option<Vec<PathUri>>,
     /// Effective service tier used by the original turn, not a later thread preference.
     pub service_tier: Option<String>,
     pub parent_turn_id: Option<String>,

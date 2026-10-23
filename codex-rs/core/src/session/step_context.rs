@@ -81,7 +81,7 @@ impl StepContext {
         if item.model != self.settings.model_info.slug
             || item.collaboration_mode != Some(self.settings.effective_collaboration_mode())
             || item.effort.as_ref() != self.settings.reasoning_effort()
-            || item.personality != self.settings.personality()
+            || self.turn.personality() != self.settings.personality()
             || item.approval_policy != self.settings.approval_policy()
             || item.approvals_reviewer != Some(self.settings.approvals_reviewer())
             || self.environments.all_selections() != self.turn.initial_environments.all_selections()

@@ -901,6 +901,12 @@ impl TurnContext {
             turn_id: Some(self.sub_id.clone()),
             recovery_start_options: Some(TurnRecoveryStartOptions {
                 final_output_json_schema: self.final_output_json_schema.clone(),
+                personality: self.personality(),
+                workspace_roots: Some(
+                    self.initial_environments
+                        .primary_workspace_root_uris()
+                        .to_vec(),
+                ),
                 service_tier: self.initial_settings.service_tier.clone(),
                 parent_turn_id: self.turn_metadata_state.parent_turn_id(),
                 configured_reasoning_summary: self.initial_settings.selected().reasoning_summary,

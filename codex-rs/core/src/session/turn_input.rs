@@ -240,7 +240,16 @@ impl PreparedTurnInputSettings {
                 ),
                 (
                     "personality",
-                    expected.personality != turn_context.personality(),
+                    saved.personality != turn_context.personality(),
+                ),
+                (
+                    "workspace roots",
+                    saved.workspace_roots.as_deref()
+                        != Some(
+                            turn_context
+                                .initial_environments
+                                .primary_workspace_root_uris(),
+                        ),
                 ),
                 (
                     "disabled plugins",
