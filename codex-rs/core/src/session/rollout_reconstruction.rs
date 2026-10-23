@@ -1116,7 +1116,7 @@ impl ContextManager {
                 checkpoint.retained_context = Some(retained_context.clone());
                 checkpoint.guardian_history = guardian_history.clone();
                 checkpoint.latest_token_usage_record =
-                    Session::last_token_usage_record_from_rollout(rollout_items);
+                    Session::last_token_usage_record_from_rollout(rollout_items).map(Box::new);
                 checkpoint.window_number = Some(window.number);
                 checkpoint.resume_metadata = Some(CompactionResumeMetadata {
                     multi_agent_version: resume_metadata

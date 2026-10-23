@@ -3585,7 +3585,7 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
                 previous_window_id: None,
                 window_id: None,
                 compaction_response_id: None,
-                latest_token_usage_record: Some(parent_record.clone()),
+                latest_token_usage_record: Some(Box::new(parent_record.clone())),
                 resume_metadata: Some(parent_resume_metadata.clone()),
                 ..Default::default()
             }),

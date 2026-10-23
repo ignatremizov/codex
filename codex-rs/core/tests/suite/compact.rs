@@ -1380,7 +1380,7 @@ async fn manual_compact_records_durable_and_local_token_usage() {
     assert_eq!(
         (
             compacted.compaction_response_id.as_deref(),
-            compacted.latest_token_usage_record.as_ref(),
+            compacted.latest_token_usage_record.as_deref(),
         ),
         (Some("r1"), records.first().copied())
     );

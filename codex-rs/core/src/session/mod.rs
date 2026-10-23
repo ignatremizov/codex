@@ -2019,7 +2019,7 @@ impl Session {
             match item {
                 RolloutItem::TokenUsageRecord(record) => return Some(record.clone()),
                 RolloutItem::Compacted(compacted) => {
-                    return compacted.latest_token_usage_record.clone();
+                    return compacted.latest_token_usage_record.as_deref().cloned();
                 }
                 _ => {}
             }

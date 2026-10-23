@@ -378,7 +378,7 @@ impl Session {
                 latest_token_usage_record: if canonical_has_pending {
                     None
                 } else {
-                    state.latest_token_usage_record.clone()
+                    state.latest_token_usage_record.clone().map(Box::new)
                 },
                 resume_metadata: Some(CompactionResumeMetadata {
                     multi_agent_version: self.multi_agent_version(),

@@ -324,7 +324,7 @@ impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
                 .as_deref()
                 .map(|window_id| WindowIdWire::Id(Cow::Borrowed(window_id))),
             compaction_response_id: item.compaction_response_id.as_deref().map(Cow::Borrowed),
-            latest_token_usage_record: item.latest_token_usage_record.as_ref().map(Cow::Borrowed),
+            latest_token_usage_record: item.latest_token_usage_record.as_deref().map(Cow::Borrowed),
             resume_metadata: item.resume_metadata.as_ref().map(Cow::Borrowed),
             replacement_history_media_sanitized_prefix_len: item
                 .replacement_history_media_sanitized_prefix_len,
@@ -394,7 +394,10 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
             previous_window_id: item.previous_window_id.map(Cow::into_owned),
             window_id,
             compaction_response_id: item.compaction_response_id.map(Cow::into_owned),
-            latest_token_usage_record: item.latest_token_usage_record.map(Cow::into_owned),
+            latest_token_usage_record: item
+                .latest_token_usage_record
+                .map(Cow::into_owned)
+                .map(Box::new),
             resume_metadata: item.resume_metadata.map(Cow::into_owned),
             replacement_history_media_sanitized_prefix_len: item
                 .replacement_history_media_sanitized_prefix_len,

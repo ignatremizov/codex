@@ -24,7 +24,7 @@ impl Session {
             previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
             window_id: Some(window_ids.window_id.to_string()),
             compaction_response_id: None,
-            latest_token_usage_record: state.latest_token_usage_record.clone(),
+            latest_token_usage_record: state.latest_token_usage_record.clone().map(Box::new),
             resume_metadata: None,
             replacement_history_media_sanitized_prefix_len: Some(
                 history.compacted_prefix_len().unwrap_or_default() as u64,

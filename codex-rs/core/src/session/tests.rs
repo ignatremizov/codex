@@ -4975,7 +4975,7 @@ async fn start_new_context_window_persists_checkpoint_state() {
         persisted_compacted.map(|compacted| {
             (
                 compacted.compaction_response_id.as_deref(),
-                compacted.latest_token_usage_record.as_ref(),
+                compacted.latest_token_usage_record.as_deref(),
             )
         }),
         Some((None, Some(&token_usage_record)))
