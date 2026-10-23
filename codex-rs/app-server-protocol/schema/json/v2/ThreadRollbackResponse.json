@@ -162,12 +162,12 @@
       "properties": {
         "end": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "start": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
@@ -207,7 +207,7 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0,
+                  "minimum": 0.0,
                   "type": [
                     "integer",
                     "null"
@@ -231,7 +231,7 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0,
+                  "minimum": 0.0,
                   "type": [
                     "integer",
                     "null"
@@ -255,7 +255,7 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0,
+                  "minimum": 0.0,
                   "type": [
                     "integer",
                     "null"
@@ -279,7 +279,7 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0,
+                  "minimum": 0.0,
                   "type": [
                     "integer",
                     "null"
@@ -1126,12 +1126,12 @@
       "properties": {
         "lineEnd": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "lineStart": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "note": {
@@ -2782,7 +2782,7 @@
           "properties": {
             "durationMs": {
               "format": "uint64",
-              "minimum": 0,
+              "minimum": 0.0,
               "type": "integer"
             },
             "elapsedMs": {
