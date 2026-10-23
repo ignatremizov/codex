@@ -78,6 +78,7 @@ impl ThreadManagerState {
             let _source_admission_guard = source_admission_guard;
             let _residency_guard = residency_guard;
             thread.ensure_rollout_materialized().await;
+            let status = thread.agent_status().await;
             let disarm = thread.session.disarm_terminal_presentation();
             if let Err(err) = thread.shutdown_and_wait().await {
                 teardown.record_shutdown_failure("stop_resident", CodexErrKind::from(&err).into());
@@ -107,7 +108,7 @@ impl ThreadManagerState {
             }
             runtime
                 .registry
-                .save_evicted_environments(thread_id, environments);
+                .save_evicted_environments(thread_id, environments, status);
             // Eviction is a residency handoff, not a terminal child result.
             disarm.commit();
             thread.session.retire_agent_status_observers(

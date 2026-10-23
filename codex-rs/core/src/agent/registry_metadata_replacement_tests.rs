@@ -29,7 +29,7 @@ fn replacement_preserves_live_submission_identity_assignment_and_environments() 
         .expect("reserve replacement");
     // Both updates happen after the restoration caller captured its metadata snapshot.
     registry.update_last_task_message(thread_id, &submission, /*last_task_message*/ None);
-    registry.save_evicted_environments(thread_id, Vec::new());
+    registry.save_evicted_environments(thread_id, Vec::new(), AgentStatus::Interrupted);
     replacement.commit().expect("commit");
 
     let current = registry.mailbox_submission(thread_id);
@@ -37,6 +37,10 @@ fn replacement_preserves_live_submission_identity_assignment_and_environments() 
     assert!(current.semaphore.try_acquire().is_err());
     assert!(registry.submission_is_current(thread_id, &submission));
     assert_eq!(registry.evicted_environments(thread_id), Some(Vec::new()));
+    assert_eq!(
+        registry.evicted_status(thread_id),
+        Some(AgentStatus::Interrupted)
+    );
     assert_eq!(
         registry
             .agent_metadata_for_thread(thread_id)

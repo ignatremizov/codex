@@ -365,7 +365,11 @@ impl LocalAgentControl {
             return AgentStatus::NotFound;
         };
         let Ok(thread) = state.get_thread(agent_id).await else {
-            return AgentStatus::NotFound;
+            return self
+                .runtime
+                .registry
+                .evicted_status(agent_id)
+                .unwrap_or(AgentStatus::NotFound);
         };
         thread.agent_status().await
     }
@@ -434,13 +438,17 @@ impl LocalAgentControl {
                 continue;
             }
 
-            let Ok(thread) = state.get_thread(thread_id).await else {
-                continue;
+            let status = match state.get_thread(thread_id).await {
+                Ok(thread) => thread.agent_status().await,
+                Err(_) => match self.runtime.registry.evicted_status(thread_id) {
+                    Some(status) => status,
+                    None => continue,
+                },
             };
             agents.push(LiveAgent {
                 thread_id,
                 metadata,
-                status: thread.agent_status().await,
+                status,
             });
         }
 

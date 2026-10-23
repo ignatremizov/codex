@@ -6,6 +6,7 @@ use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -52,6 +53,7 @@ struct ActiveAgents {
 struct RegisteredAgent {
     path: String,
     evicted_environments: Option<Vec<TurnEnvironmentSelection>>,
+    evicted_status: Option<AgentStatus>,
     submission: Arc<AgentSubmission>,
 }
 
@@ -66,6 +68,7 @@ impl RegisteredAgent {
         Self {
             path,
             evicted_environments: None,
+            evicted_status: None,
             submission: Arc::new(AgentSubmission {
                 semaphore,
                 registered: true,
@@ -222,6 +225,7 @@ impl AgentRegistry {
         &self,
         thread_id: ThreadId,
         environments: Vec<TurnEnvironmentSelection>,
+        status: AgentStatus,
     ) {
         let mut active_agents = self
             .active_agents
@@ -229,6 +233,7 @@ impl AgentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = Some(environments);
+            agent.evicted_status = Some(status);
         }
     }
 
@@ -253,7 +258,17 @@ impl AgentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = None;
+            agent.evicted_status = None;
         }
+    }
+
+    pub(crate) fn evicted_status(&self, thread_id: ThreadId) -> Option<AgentStatus> {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .thread_paths
+            .get(&thread_id)
+            .and_then(|agent| agent.evicted_status.clone())
     }
 
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {

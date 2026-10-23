@@ -616,6 +616,10 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         })
         .context("evicted worker must remain listed")?;
     assert_eq!(
+        first["agent_status"],
+        json!({"completed": "worker completed"}),
+    );
+    assert_eq!(
         first["last_task_message"],
         if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
             json!(QUEUED_AUDIT)
@@ -751,12 +755,17 @@ async fn tree_shutdown_waits_for_children_without_affecting_other_roots() -> Res
     use codex_protocol::protocol::SessionSource;
 
     let server = start_mock_server().await;
-    mount_root_collaboration_call(
+    let admission = mount_root_collaboration_call(
         &server,
         FIRST_PROMPT,
         "first-call",
         "spawn_agent",
-        json!({"message": FIRST_TASK, "task_name": "first", "fork_turns": "none"}),
+        json!({
+            "message": FIRST_TASK,
+            "task_message": FIRST_TASK,
+            "task_name": "first",
+            "fork_turns": "none",
+        }),
     )
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
@@ -769,6 +778,12 @@ async fn tree_shutdown_waits_for_children_without_affecting_other_roots() -> Res
         .build_with_auto_env(&server)
         .await?;
     test.submit_turn(FIRST_PROMPT).await?;
+    let output = admission
+        .function_call_output_text("first-call")
+        .context("spawn should return an admission result")?;
+    let result: serde_json::Value =
+        serde_json::from_str(&output).with_context(|| format!("spawn was rejected: {output}"))?;
+    assert_eq!(result["task_name"], json!("/root/first"));
     let root_id = test.session_configured.thread_id;
     let worker_id = test
         .thread_manager

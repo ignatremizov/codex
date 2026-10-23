@@ -235,6 +235,10 @@ async fn interrupted_v2_agent_reloads_after_residency_eviction() {
         )
         .await
         .expect("second resident slot should evict the first interrupted idle agent");
+    assert_eq!(
+        control.get_status(first.thread_id).await,
+        codex_protocol::protocol::AgentStatus::Interrupted,
+    );
     match manager.get_thread(first.thread_id).await {
         Err(err) => match err.details() {
             CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
