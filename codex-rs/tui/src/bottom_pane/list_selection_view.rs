@@ -847,8 +847,6 @@ impl ListSelectionView {
                         } else {
                             ""
                         }
-                    } else if item.is_default {
-                        " (default)"
                     } else {
                         ""
                     };
