@@ -1,20 +1,22 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 2584
 expression: "context_snapshot::format_context_snapshot(\"Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.
 
 ## Window 1
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=9e075cc611be6070):
+        - namespace/functions; hash=b394d5b66480be7a
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
+          - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -41,15 +43,16 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
 
 ## Window 2 (after request 2: input diverged at item 08)
 -- request 3 (request) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=9e075cc611be6070):
+        - namespace/functions; hash=b394d5b66480be7a
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
+          - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -78,15 +81,16 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
 
 ## Window 3 (after request 3: input diverged at item 02)
 -- request 4 (request) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=9e075cc611be6070):
+        - namespace/functions; hash=b394d5b66480be7a
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
+          - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -114,4 +118,4 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
 10:message/assistant:
     I will check who is available.
 11:function_call/collaboration.list_agents:{}
-12:function_call_output:{"agents":[{"agent_name":"/root","agent_status":"running"}]}
+12:function_call_output:{"agents":[{"agent_name":"/root","agent_status":"running","last_task_message":"Main thread"}]}

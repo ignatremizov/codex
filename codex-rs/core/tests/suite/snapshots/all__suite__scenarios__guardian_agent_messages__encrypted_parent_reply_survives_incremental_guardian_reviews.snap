@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_guardian_agent_messages_tests.rs
+assertion_line: 153
 expression: snapshot
 ---
 Scenario: An encrypted parent reply is delivered as a native agent message. Both Guardian reviews contain it exactly once, in order, as agent evidence. Ciphertext and decisions are mocked; this scenario verifies transport, not backend decryption or authorization outcomes.
@@ -21,8 +22,8 @@ Scenario: An encrypted parent reply is delivered as a native agent message. Both
 
 ## Window 2 (after request 2: input diverged at item 00, settings changed (model, parallel_tool_calls, prompt_cache_key, reasoning, text, tools))
 -- request 3 (turn) --
-00:additional_tools/developer (1; hash=a472d7cc0311720b):
-        - namespace/functions; hash=2ba659e6af7280e3
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:
@@ -109,8 +110,8 @@ Scenario: An encrypted parent reply is delivered as a native agent message. Both
 
 ## Window 4 (after request 4: input diverged at item 00, settings changed (model, parallel_tool_calls, prompt_cache_key, reasoning, text, tools))
 -- request 5 (turn) --
-00:additional_tools/developer (1; hash=a472d7cc0311720b):
-        - namespace/functions; hash=2ba659e6af7280e3
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:

@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
+assertion_line: 91
 expression: "context_snapshot::format_request_history_snapshot(if use_responses_lite\n{\n    \"Tool definitions enter history in one batch; a catalog change appends one developer notice before only the changed exec definition, without modifying namespace descriptions. The next unchanged turn appends only user input.\"\n} else\n{\n    \"Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.\"\n}, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.
@@ -15,15 +16,18 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (9; hash=b0011e3ae8ca7fd2):
-    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=3b60611486072e76
+  tools (11; hash=585b0436095c95f3):
+    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=cc7a16f73d63e61d
     - function/wait: Waits on a yielded `exec` cell and returns new output or completion. - Use `wait` only after `exe...; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=6692d8f6c55be489
-    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.  exec tool dec...; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=759843fc2a7d41a0
-    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.  exec tool decla...; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=e6405481b30a43c1
+    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.  exec tool dec...; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=b48150a82059af34
+    - function/write_stdin: Writes chars to or polls an exec session, returning recent output. Polls return immediately on pr...; args=[chars, max_output_tokens, session_id, wait_until_exit, yield_time_ms]; hash=ebacaad66f916134
+    - function/update_plan: Updates the task plan. Provide an optional explanation and a list of plan items, each with a step...; args=[explanation, plan]; hash=bf8cd068d5858fd5
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
-    - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=11c5b5ed4fb972e8
+    - custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.  exec tool declaration: ```ts declare co...; hash=6be99b1ff9c9ade2
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=1b87dd8874f6fa10
-    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+    - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+      - function/check_mail
+    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
     - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
 00:message/developer:
@@ -41,8 +45,8 @@ Settings:
 ## Window 2 (after request 2)
 Settings: relative to window 1
   model: "updated-tools-model"
-  tools (9; hash=717c46ada005dfd7):
-    ~ custom/exec: Updated execution instructions.  Some deferred nested tools may be omitted from this description....; hash=7af6961848c10849
+  tools (11; hash=f156e089155c38f0):
+    ~ custom/exec: Updated execution instructions.  Some deferred nested tools may be omitted from this description....; hash=89dbff97f4251fc8
 -- request 3 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>

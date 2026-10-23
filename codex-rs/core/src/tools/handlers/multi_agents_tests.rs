@@ -4029,13 +4029,14 @@ async fn resume_agent_observes_owned_live_v1_thread_without_losing_terminal_tran
         .await
         .expect("resume_agent should idempotently retain the live observation");
 
-    assert!(
+    assert_eq!(
         parent_session
             .services
             .local_agent_runtime
             .control(parent_session.session_id())
             .get_agent_metadata(child_thread_id)
-            .is_none()
+            .and_then(|metadata| metadata.agent_id),
+        Some(child_thread_id),
     );
     assert_eq!(child.session_source, native_source);
 

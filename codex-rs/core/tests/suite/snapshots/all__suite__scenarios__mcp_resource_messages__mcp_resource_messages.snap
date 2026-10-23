@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_mcp_resource_messages.rs
-assertion_line: 152
+assertion_line: 159
 expression: "context_snapshot::format_request_history_snapshot(\"Catalog resource descriptions and parameter guidance accompany discovery and reading through Code Mode.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Catalog resource descriptions and parameter guidance accompany discovery and reading through Code Mode.
@@ -16,8 +16,8 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (8; hash=48e0224647257a7b):
-    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=587bcd0a30be06de
+  tools (8; hash=b684f17a712d8c45):
+    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=121a58aa165a5dba
     - function/wait: Waits on a yielded `exec` cell and returns new output or completion. - Use `wait` only after `exe...; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=6692d8f6c55be489
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - function/request_user_input_async: Ask the user one or more questions during ongoing work. Use this tool only to request missing inf...; args=[questions]; hash=d6d74f33db330162

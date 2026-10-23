@@ -1,14 +1,14 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 549
+assertion_line: 605
 expression: "context_snapshot::format_request_history_snapshot(\"Astra starts in one workspace, switches for the next step of the active turn, and returns to the original workspace on the next turn.\",\n&requests, &ContextSnapshotOptions::default(),)"
 ---
 Scenario: Astra starts in one workspace, switches for the next step of the active turn, and returns to the original workspace on the next turn.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=8bbc8841c0ce74a2):
-        - namespace/functions; hash=7cf3490999fc89ae
+00:additional_tools/developer (3; hash=1b15d0c69b3b6896):
+        - namespace/functions; hash=8c357ce662fbbdea
           - custom/exec
           - function/wait
           - function/request_user_input

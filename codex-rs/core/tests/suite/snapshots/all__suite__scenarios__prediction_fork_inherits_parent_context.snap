@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 2058
 expression: "context_snapshot::format_request_history_snapshot(\"A parent pins high request effort, then selects low. Its ephemeral prediction fork inherits the context and baseline, then selects medium on its first turn. Continuing the parent at medium produces the same request.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: A parent pins high request effort, then selects low. Its ephemeral prediction fork inherits the context and baseline, then selects medium on its first turn. Continuing the parent at medium produces the same request.
@@ -15,15 +16,19 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
+  tools (1; hash=436fd2c773918985):
+    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=44f4cad2ce4ab17d):
-        - namespace/functions; hash=101d32aa59ea258b
+00:additional_tools/developer (2; hash=b9471233df9a3c20):
+        - namespace/functions; hash=105cd58f4c69f795
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
 
@@ -89,14 +94,16 @@ Settings:
 ## Window 2 (after request 3: input repeated)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=44f4cad2ce4ab17d):
-        - namespace/functions; hash=101d32aa59ea258b
+00:additional_tools/developer (2; hash=b9471233df9a3c20):
+        - namespace/functions; hash=105cd58f4c69f795
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
 
