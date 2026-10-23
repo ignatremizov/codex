@@ -165,13 +165,14 @@ async fn prompt_hidden_call_retains_authority_and_does_not_enable_unknown_tools(
     let binding = Arc::get_mut(&mut fixture.step).expect("exclusive binding");
     let key = (SERVER_NAME.to_string(), TOOL_NAME.to_string());
     let call = binding.calls.get_mut(&key).expect("registered call");
-    call.tool_info.tool.meta = Some(
+    let mut expected = call.tool_info().clone();
+    expected.tool.meta = Some(
         serde_json::from_value(serde_json::json!({"ui": {"visibility": ["app"]}}))
             .expect("visibility metadata"),
     );
-    let expected = call.tool_info.clone();
+    call.tool_info = expected.clone().into();
     assert!(!crate::tool_is_model_visible(&expected));
-    binding.tools.clear();
+    binding.tools = Arc::from([]);
     assert_eq!(
         binding
             .prepare_call(SERVER_NAME, TOOL_NAME)
