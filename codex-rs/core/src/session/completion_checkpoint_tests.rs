@@ -4,6 +4,7 @@ use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentResponsePromotedTaskContext;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::ThreadStore;
+use codex_utils_output_truncation::TruncationPolicy;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
