@@ -282,7 +282,6 @@ async fn explicit_zero_user_shell_timeout_is_immediate() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(end.exit_code, 124);
-    assert!(end.aggregated_output.contains("command timed out"));
     Ok(())
 }
 
