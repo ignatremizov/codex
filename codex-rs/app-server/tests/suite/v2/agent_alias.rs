@@ -47,6 +47,7 @@ use codex_thread_store::ThreadStore;
 use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
+use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::time::Duration;
 use tempfile::TempDir;
