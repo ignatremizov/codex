@@ -1429,7 +1429,7 @@ async fn find_refreshes_live_details_before_searching_the_first_query() -> Resul
     let rendered = buffer_text(crate::custom_terminal::test_support::last_rendered_buffer(
         &tui.terminal,
     ));
-    assert!(rendered.contains("printf needle"), "{rendered}");
+    assert!(rendered.lines().any(|line| line == "needle"), "{rendered}");
     insta::assert_snapshot!("compact_overlay_finds_hidden_live_text", rendered);
     app_server.shutdown().await?;
     Ok(())

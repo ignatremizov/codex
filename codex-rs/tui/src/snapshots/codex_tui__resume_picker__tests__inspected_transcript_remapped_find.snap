@@ -1,12 +1,12 @@
 ---
 source: tui/src/resume_picker.rs
-assertion_line: 5309
+assertion_line: 5348
 expression: buffer
 ---
 Buffer {
     area: Rect { x: 0, y: 0, width: 80, height: 12 },
     content: [
-        "T R A N S C R I P T · F U L L                                                   ",
+        "T R A N S C R I P T · R E V I E W                                               ",
         "transcript                                                                      ",
         "                                                                                ",
         "                                                                                ",
@@ -15,7 +15,7 @@ Buffer {
         "                                                                                ",
         "                                                                                ",
         "Find: BAtail                                                                    ",
-        "Searching… · full transcript · esc close                                        ",
+        "Searching… · full transcript · esc cancel                                       ",
         "                                                                                ",
         "                                                                                ",
     ],
@@ -27,6 +27,6 @@ Buffer {
         x: 0, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
         x: 31, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
         x: 34, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 40, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 41, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
     ]
 }
