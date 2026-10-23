@@ -6,6 +6,7 @@
 use std::sync::Weak;
 
 use super::*;
+use crate::history_cell::ActivityDisclosure;
 
 const MAX_CACHED_ENTRIES: usize = 64;
 const MAX_CACHED_TEXT_BYTES: usize = 8 * 1024 * 1024;
