@@ -144,7 +144,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
                 .for_prompt_annotated(&model_info.input_modalities)
                 .into_iter()
                 .map(ResponseItemEnvelope::into_item)
-                .collect();
+                .collect::<Vec<_>>();
             sess.services
                 .executed_tool_calls
                 .attach_to_compaction_prompt(&mut input);
@@ -306,7 +306,7 @@ pub(crate) fn capture_background_input(
         .for_prompt_annotated(&step_context.settings.model_info.input_modalities)
         .into_iter()
         .map(ResponseItemEnvelope::into_item)
-        .collect();
+        .collect::<Vec<_>>();
     sess.services
         .executed_tool_calls
         .attach_to_compaction_prompt(&mut input);
