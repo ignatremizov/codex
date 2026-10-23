@@ -27,6 +27,8 @@ use crate::remote_session::wait_for_watch;
 
 mod opening;
 
+const INITIAL_GENERATION: u64 = 1;
+
 pub(super) struct ReconnectableSession {
     inner: Arc<ReconnectInner>,
 }
@@ -63,7 +65,7 @@ impl ReconnectableSession {
                 retired: Mutex::new(Vec::new()),
                 opening_permit: Arc::new(Semaphore::new(/*permits*/ 1)),
                 opening: Mutex::new(None),
-                next_generation: AtomicU64::new(1),
+                next_generation: AtomicU64::new(INITIAL_GENERATION),
                 shutdown_requested: CancellationToken::new(),
                 shutdown_result: Mutex::new(None),
                 durable_result: Mutex::new(None),
@@ -153,7 +155,9 @@ impl ReconnectInner {
         generation: Option<u64>,
     ) -> Result<SessionBinding, String> {
         let binding = self.get_or_open_binding().await?;
-        if generation != Some(binding.generation) {
+        // An owned logical session opens lazily on its first operation. Only that
+        // initial generation can be admitted without a previously captured binding.
+        if generation.unwrap_or(INITIAL_GENERATION) != binding.generation {
             return Err(concat!(
                 "The exec runtime was replaced. Stored values and running cells were lost. ",
                 "Prior external tool operations may have completed; inspect their results before retrying. ",
