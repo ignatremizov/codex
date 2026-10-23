@@ -4,7 +4,7 @@ use super::response_observer::ResponseObserverStart;
 use super::*;
 use crate::CodexThread;
 use crate::session::AgentResponseSnapshot;
-use codex_history::rollout::exact_rollback_removed_items;
+use codex_history::exact_rollback_removed_items;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
