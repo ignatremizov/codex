@@ -6082,7 +6082,6 @@ async fn send_input_q_waits_for_a_distinct_target_turn(
         }),
         ChildResponseTiming::Delayed(Duration::from_secs(3)),
         /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
         |builder| builder.with_history_mode(history_mode),
     )
     .await?;
@@ -7621,7 +7620,6 @@ async fn active_wait_finishes_when_subscribed_commentary_is_omitted(
         }),
         ChildResponseTiming::Immediate,
         /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
         |builder| builder.with_history_mode(history_mode),
     )
     .await?;
@@ -7962,7 +7960,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         ThreadHistoryMode::Paginated => {
             let history = initial
                 .thread_store
-                .load_rollback_history(LoadThreadHistoryParams {
+                .load_history(LoadThreadHistoryParams {
                     thread_id: parent_thread_id,
                     include_archived: false,
                 })
@@ -8172,7 +8170,7 @@ async fn fork_requires_explicit_agent_reconfiguration(
             StartThreadOptions::new(initial.config.clone()),
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: source_parent_id,
-                history_revision: Some(parent_model_context.revision),
+                history_revision: parent_model_context.revision,
                 history: Arc::new(parent_model_context.items),
                 rollout_path: None,
             }),
