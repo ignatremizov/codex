@@ -147,6 +147,7 @@ async fn replayed_command_execution_is_visible_in_transcript() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.replay_thread_turns(
         vec![AppServerTurn {
+            root_turn_id: None,
             id: "turn-1".to_string(),
             items: vec![AppServerThreadItem::CommandExecution {
                 id: "exec-1".to_string(),
@@ -271,6 +272,7 @@ async fn terminal_ownership_is_independent_of_initial_resume_task_lifecycle() {
         chat.replay_thread_turns(
             vec![AppServerTurn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items: vec![AppServerThreadItem::CommandExecution {
                     id: "exec-1".to_string(),
                     model_context: None,

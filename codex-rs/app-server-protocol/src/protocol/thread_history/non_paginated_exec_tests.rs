@@ -33,6 +33,7 @@ fn started(turn_id: &str) -> RolloutItem {
 
 fn turn_started(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+        turn_attribution: None,
         turn_id: turn_id.to_string(),
         root_turn_id: None,
         trace_id: None,
@@ -73,6 +74,7 @@ fn initial_history() -> Vec<RolloutItem> {
             "Chunk ID: 1\nWall time: 0.5 seconds\nProcess running with session ID 42\nOutput:\nfirst",
         ),
         RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            root_turn_id: None,
             turn_id: "A".to_string(),
             last_agent_message: None,
             error: None,
