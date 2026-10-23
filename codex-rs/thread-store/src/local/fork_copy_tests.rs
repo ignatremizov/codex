@@ -66,7 +66,7 @@ async fn complete_lineage_rejects_ordinal_gaps() {
     fs::write(path.as_path(), format!("{}\n", lines.join("\n"))).expect("write rollout");
     let lineage = RolloutLineage {
         segments: vec![RolloutLineageSegment {
-            thread_id: thread_id,
+            thread_id,
             rollout_id: thread_id,
             rollout_path: path,
             start_ordinal: 1,
@@ -326,7 +326,7 @@ async fn complete_lineage_does_not_read_past_inherited_byte_cutoff() {
     .expect("write rollout");
     let lineage = RolloutLineage {
         segments: vec![RolloutLineageSegment {
-            thread_id: thread_id,
+            thread_id,
             rollout_id: thread_id,
             rollout_path: path,
             start_ordinal: 1,
@@ -385,7 +385,7 @@ async fn current_segment_uses_the_opened_file_length_as_its_snapshot() {
     )
     .expect("append rollout item");
     let segment = RolloutLineageSegment {
-        thread_id: thread_id,
+        thread_id,
         rollout_id: thread_id,
         rollout_path: path,
         start_ordinal: 1,
@@ -609,7 +609,7 @@ async fn complete_lineage_rejects_cutoff_inside_jsonl_record() {
     fs::write(path.as_path(), &contents).expect("write rollout");
     let lineage = RolloutLineage {
         segments: vec![RolloutLineageSegment {
-            thread_id: thread_id,
+            thread_id,
             rollout_id: thread_id,
             rollout_path: path,
             start_ordinal: 1,
@@ -666,7 +666,7 @@ async fn complete_lineage_classifies_rejected_records_as_invalid_requests() {
         .expect("write rejected rollout");
         let lineage = RolloutLineage {
             segments: vec![RolloutLineageSegment {
-                thread_id: thread_id,
+                thread_id,
                 rollout_id: thread_id,
                 rollout_path: path,
                 start_ordinal: 1,
