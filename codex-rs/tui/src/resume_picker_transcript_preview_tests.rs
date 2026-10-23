@@ -50,7 +50,7 @@ fn incoming_communication_preview_preserves_literal_directives() {
     let mut lines = Vec::new();
     append_transcript_preview_lines(
         &mut lines,
-        [&item],
+        [&item].into_iter(),
         Path::new("/workspace"),
         /*inline_visualization_context*/ None,
     );
