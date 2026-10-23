@@ -165,10 +165,6 @@ fn normalize_summary_message(text: &str) -> String {
         .to_string()
 }
 
-fn summary_message_matches(text: &str, summary: &str) -> bool {
-    normalize_summary_message(text) == summary_with_prefix(summary)
-}
-
 fn set_test_compact_prompt(config: &mut Config) {
     config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
 }
