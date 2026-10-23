@@ -554,16 +554,12 @@ impl LocalAgentControl {
                     .unwrap_or(MultiAgentVersion::V1),
             )?;
         }
-        if notification_source.is_some() {
-            state.publish_restored_thread(&new_thread.thread, parent.as_ref(), || {
-                if !reservation.commit_if_absent(agent_metadata.clone()) {
-                    return Err(CodexErr::InvalidRequest("spawn registration changed during setup".into()));
-                }
-                Ok(())
-            }).await?;
-        } else {
-            reservation.commit(agent_metadata.clone());
-        }
+        state.publish_restored_thread(&new_thread.thread, parent.as_ref(), || {
+            if !reservation.commit_if_absent(agent_metadata.clone()) {
+                return Err(CodexErr::InvalidRequest("spawn registration changed during setup".into()));
+            }
+            Ok(())
+        }).await?;
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
         }
