@@ -1,5 +1,6 @@
 use super::*;
 use codex_app_server_protocol::AgentForkMode;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 
 #[cfg(test)]
 #[path = "conversion_tests.rs"]

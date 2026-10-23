@@ -306,14 +306,22 @@ fn environment_context_updates_when_subagent_roster_changes() {
         Some("- 2: Pascal".to_string()),
     );
 
-    let without_snapshot = without_subagents.snapshot();
-    let with_snapshot = with_subagents.snapshot();
+    let without_snapshot = without_subagents
+        .render_fragment_diff(PreviousSectionState::Absent)
+        .0
+        .expect("environment snapshot");
+    let with_snapshot = with_subagents
+        .render_fragment_diff(PreviousSectionState::Absent)
+        .0
+        .expect("environment snapshot");
     let added = with_subagents
-        .render_diff(PreviousSectionState::Known(&without_snapshot))
+        .render_fragment_diff(PreviousSectionState::Known(&without_snapshot))
+        .1
         .expect("adding a subagent should render a world-state update")
         .render();
     let cleared = without_subagents
-        .render_diff(PreviousSectionState::Known(&with_snapshot))
+        .render_fragment_diff(PreviousSectionState::Known(&with_snapshot))
+        .1
         .expect("removing the last subagent should render a world-state update")
         .render();
 

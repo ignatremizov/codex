@@ -5663,7 +5663,6 @@ async fn child_can_reply_to_same_root_input_without_a_grant(
         }),
         ChildResponseTiming::Immediate,
         /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
         |builder| builder.with_history_mode(history_mode),
     )
     .await?;
