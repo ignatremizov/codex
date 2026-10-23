@@ -2415,9 +2415,13 @@ async fn capture_binding_preserves_ready_client_catalog_and_shares_prepared_meta
             .and_then(|tool| tool.connector_id.as_deref()),
         Some("z-hidden")
     );
-    assert!(
+    assert_eq!(
         step.prepare_call(CODEX_APPS_MCP_SERVER_NAME, "collision")
-            .is_none()
+            .expect("permitted app-only tool should remain callable")
+            .tool_info()
+            .connector_id
+            .as_deref(),
+        Some("z-hidden")
     );
     assert!(
         step.prepare_call(CODEX_APPS_MCP_SERVER_NAME, "shared_cached_tool")
