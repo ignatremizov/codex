@@ -1,6 +1,7 @@
 use super::*;
 use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
+use codex_thread_store::LoadThreadHistoryParams;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::start_mock_server;
 use pretty_assertions::assert_eq;

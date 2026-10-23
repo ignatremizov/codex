@@ -7,6 +7,7 @@ use codex_core::UserAgentSpawnOptions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::Op;
+use codex_thread_store::LoadThreadHistoryParams;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::start_mock_server;
