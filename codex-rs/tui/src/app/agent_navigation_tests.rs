@@ -442,8 +442,16 @@ fn picker_refresh_rejects_responses_from_before_clear() {
         .begin_picker_refresh(thread_id)
         .expect("refresh after session reset");
 
-    assert!(!state.finish_picker_refresh(thread_id, stale_request));
-    assert!(state.finish_picker_refresh(thread_id, current_request));
+    assert!(
+        state
+            .finish_picker_refresh(thread_id, stale_request)
+            .is_none()
+    );
+    assert!(
+        state
+            .finish_picker_refresh(thread_id, current_request)
+            .is_some()
+    );
 }
 
 #[test]
