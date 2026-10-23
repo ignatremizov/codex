@@ -4667,10 +4667,13 @@ impl Session {
                     .await?,
             );
             let full_context = if should_inject_full_context {
-                Some(
-                    self.build_initial_context_with_world_state(step_context, &world_state)
-                        .await,
-                )
+                let (updates, snapshot) = self
+                    .build_initial_context_with_world_state(step_context, &world_state)
+                    .await;
+                Some((
+                    crate::context_manager::updates::merge_world_state_updates(updates),
+                    snapshot,
+                ))
             } else {
                 None
             };
@@ -4687,9 +4690,7 @@ impl Session {
                 continue;
             }
             let (snapshot, mut context_items, world_state_item) =
-                if let Some((context_updates, snapshot)) = full_context {
-                    let items =
-                        crate::context_manager::updates::merge_world_state_updates(context_updates);
+                if let Some((items, snapshot)) = full_context {
                     let rollout = Some(WorldStateItem::full(snapshot.clone().into_object()));
                     (snapshot, items, rollout)
                 } else {
