@@ -51,6 +51,8 @@ fn dropped_acknowledgement_does_not_commit_extension_state() {
 fn inventory(metadata: &str) -> ResponseItemEnvelope {
     ResponseItemEnvelope {
         item: ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: Some(ResponseItemId::from_server("catalog-source".to_string())),
             role: "developer".to_string(),
             content: vec![ContentItem::InputText {
