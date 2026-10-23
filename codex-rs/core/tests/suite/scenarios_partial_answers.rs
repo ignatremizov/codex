@@ -296,7 +296,24 @@ async fn partial_answers_survive_forked_child_requests(
                 json!([{"type":"output_text", "text":"Checking the remaining result."}]),
             ),
         );
-        let parent_input = requests[1].input();
+        let mut parent_input = requests[1].input();
+        let mut projected = 0;
+        for item in &mut parent_input {
+            let kinds = item["internal_chat_message_metadata_passthrough"]["content_item_kinds"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if let Some(content) = item["content"].as_array_mut() {
+                for (kind, fragment) in kinds.iter().zip(content) {
+                    if kind == "generic.developer_instructions" {
+                        assert_eq!(fragment["text"], "Coordinate the investigation.");
+                        fragment["text"] = json!("Check both results independently.");
+                        projected += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(projected, 1);
         assert_eq!(
             responses::strip_response_item_ids_from_json(json!(
                 &child_requests[0].input()[..parent_input.len()]
@@ -324,7 +341,7 @@ async fn partial_answers_survive_forked_child_requests(
             insta::assert_snapshot!(
                 "preserved_answer_fork",
                 context_snapshot::format_request_history_snapshot(
-                    "A worker inherits the parent prefix unchanged and receives its own instructions. Requests are grouped by parent, then child.",
+                    "A worker inherits the parent prefix with only the classified developer instructions projected to its resolved role. Requests are grouped by parent, then child.",
                     &requests,
                     &ContextSnapshotOptions::default().rewrite_known_segments()
                 )

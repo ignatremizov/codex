@@ -16,6 +16,7 @@ pub(crate) const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for communi
 const SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE: &str = "Spawn settings resolve from parent, configured subagent defaults, then selected role; explicit model and reasoning override all three.";
 const SPAWN_AGENT_MODEL_CATALOG_GUIDANCE: &str =
     "Pick model overrides from the latest <model_catalog> listing.";
+const SPAWN_AGENT_MODEL_OVERRIDE_GUIDANCE: &str = "Use explicit `model` or `reasoning_effort` only when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; otherwise omit them so role/configured defaults apply.";
 const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str =
     "Agent type override for the new agent. Omit to use `default`.";
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
@@ -962,7 +963,7 @@ fn spawn_agent_tool_description(
     format!(
         r#"
         {tool_description}
-Use explicit `model` or `reasoning_effort` only when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; otherwise omit them so role/configured defaults apply. Follow the guidance below.
+{SPAWN_AGENT_MODEL_OVERRIDE_GUIDANCE} Follow the guidance below.
 
 Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.
 Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.{agent_role_usage_hint}
@@ -995,7 +996,12 @@ fn spawn_agent_tool_description_v2(
     let model_precedence_guidance = model_precedence_guidance.unwrap_or_default();
 
     let (catalog_prefix, catalog_suffix) = if model_catalog_in_context {
-        (String::new(), format!("\n{model_catalog_guidance}"))
+        let mut guidance = format!("\n{model_catalog_guidance}");
+        if !model_precedence_guidance.is_empty() {
+            guidance.push('\n');
+            guidance.push_str(SPAWN_AGENT_MODEL_OVERRIDE_GUIDANCE);
+        }
+        (String::new(), guidance)
     } else {
         let available_models_description = available_models_description.unwrap_or_default();
         (
