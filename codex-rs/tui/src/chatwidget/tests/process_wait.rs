@@ -3,6 +3,7 @@ use codex_app_server_protocol::TerminalInteractionNotification;
 use codex_app_server_protocol::TerminalWait;
 use codex_app_server_protocol::TerminalWaitCompletionReason;
 use codex_app_server_protocol::TerminalWaitMode;
+use pretty_assertions::assert_eq;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
