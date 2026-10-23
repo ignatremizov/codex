@@ -654,9 +654,7 @@ impl Session {
         }
         let (input, mut start_options) =
             self.input_queue.get_pending_input(&self.active_turn).await;
-        if !input.iter().any(
-            |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
-        ) {
+        if !input.iter().any(TurnInput::triggers_turn) {
             // Queue-only mail wakes durable sleep without selecting a new task's settings.
             start_options = previous_options;
             start_options.cyber_access_program = self

@@ -1087,7 +1087,8 @@ impl Session {
         if active_turn.is_some() {
             return None;
         }
-        let needs_new_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
+        let needs_new_turn = self.input_queue.has_queued_turn_trigger().await
+            || self.input_queue.has_trigger_turn_mailbox_items().await;
         if !needs_new_turn && !self.has_outstanding_durable_sleep() {
             return None;
         }

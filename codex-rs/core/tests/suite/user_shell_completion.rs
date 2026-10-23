@@ -61,6 +61,7 @@ async fn user_shell_command_wake_starts_an_idle_turn_with_the_result() -> anyhow
         _ => None,
     })
     .await;
+    assert_eq!(completed.error, None);
     assert_eq!(
         completed.last_agent_message.as_deref(),
         Some("wake observed")
