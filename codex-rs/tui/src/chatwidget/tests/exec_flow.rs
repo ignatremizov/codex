@@ -1761,7 +1761,10 @@ async fn exec_history_extends_previous_when_consecutive() {
         "",
         /*exit_code*/ 0,
     );
-    assert_eq!(active_blob(&chat), explored_foo);
+    assert_eq!(
+        active_blob(&chat),
+        format!("{explored_foo}• Ran sed -n 100,200p foo.txt\n  └ chunk\n"),
+    );
 
     // 6) Start & complete "cat bar.txt"
     let begin_cat_bar = begin_exec(&mut chat, "call-cat-bar", "cat bar.txt");
