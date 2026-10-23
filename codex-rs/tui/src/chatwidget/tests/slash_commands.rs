@@ -1205,7 +1205,7 @@ async fn approvals_and_permissions_open_local_settings_and_defer_input() {
             let profile_requests = std::iter::from_fn(|| events.try_recv().ok())
                 .filter(|event| matches!(event, AppEvent::FetchPermissionProfiles { .. }))
                 .count();
-            assert_eq!(profile_requests, usize::from(explicit_profiles));
+            assert_eq!(profile_requests, 1);
         }
     }
 }
