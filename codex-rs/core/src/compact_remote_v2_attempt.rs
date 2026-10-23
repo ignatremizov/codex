@@ -48,7 +48,7 @@ pub(super) struct RemoteCompactV2Attempt {
 
 pub(super) enum RemoteCompactV2AttemptInput<'a> {
     Foreground(Option<&'a mut ModelClientSession>),
-    Background(BackgroundCompactionInput),
+    Background(Box<BackgroundCompactionInput>),
 }
 
 pub(crate) struct BackgroundCompactionCandidate {
@@ -342,7 +342,7 @@ pub(crate) async fn run_background_compaction(
         &CompactionTraceContext::disabled(),
         metadata,
         &mut CompactionAnalyticsDetails::default(),
-        RemoteCompactV2AttemptInput::Background(prepared_input),
+        RemoteCompactV2AttemptInput::Background(Box::new(prepared_input)),
     )
     .await?;
     Ok(BackgroundCompactionCandidate {
