@@ -713,14 +713,20 @@ impl UnifiedExecProcessManager {
                 UnifiedExecError::process_failed("timeout_ms is too large".into())
             })?);
         let output = process.output_handles().clone();
-        let collected_output = collect_output_until_deadline(
-            &output,
-            Some(context.session.subscribe_elicitation_pause_state()),
-            deadline,
-            None,
-        )
-        .await
-        .collected;
+        let collected_output = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled(), if completion.is_none() => {
+                // The registered resumable process retains its producer and output.
+                // Release initial collection so background draining and later polls can run.
+                return Err(UnifiedExecError::process_failed("exec_command cancelled".into()));
+            }
+            result = collect_output_until_deadline(
+                &output,
+                Some(context.session.subscribe_elicitation_pause_state()),
+                deadline,
+                /*interrupts*/ None,
+            ) => result.collected,
+        };
         if let Some(completion) = completion.as_mut()
             && !process.has_exited()
         {

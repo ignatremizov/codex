@@ -7946,28 +7946,13 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     );
 
     let parent_thread_id = initial.session_configured.thread_id;
-    let (parent_history_revision, parent_history_items) = match history_mode {
-        ThreadHistoryMode::Legacy => {
-            let history = initial
-                .thread_store
-                .load_latest_model_context(LoadThreadHistoryParams {
-                    thread_id: parent_thread_id,
-                    include_archived: false,
-                })
-                .await?;
-            (history.revision, history.items)
-        }
-        ThreadHistoryMode::Paginated => {
-            let history = initial
-                .thread_store
-                .load_history(LoadThreadHistoryParams {
-                    thread_id: parent_thread_id,
-                    include_archived: false,
-                })
-                .await?;
-            (history.revision, history.items)
-        }
-    };
+    let parent_history = initial
+        .thread_store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: parent_thread_id,
+            include_archived: false,
+        })
+        .await?;
     initial.thread_manager.remove_thread(&spawned_id).await;
     initial
         .thread_manager
@@ -7998,14 +7983,21 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         ]),
     )
     .await;
-    let resumed = initial
-        .thread_manager
+    // Graceful root shutdown seals its owning control. A cold restart gets a
+    // fresh manager while retaining the exact model window captured above.
+    let resumed_manager = codex_core::test_support::thread_manager_with_models_provider_and_home(
+        CodexAuth::from_api_key("test"),
+        initial.config.model_provider.clone(),
+        initial.config.codex_home.to_path_buf(),
+        initial.thread_manager.environment_manager(),
+    );
+    let resumed = resumed_manager
         .resume_thread_with_history(
             initial.config.clone(),
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: parent_thread_id,
-                history_revision: parent_history_revision,
-                history: Arc::new(parent_history_items),
+                history_revision: parent_history.revision,
+                history: Arc::new(parent_history.items),
                 rollout_path: None,
             }),
             codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test")),
@@ -8090,7 +8082,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         sse(vec![ev_completed("cold-reconfigured-wake")]),
     )
     .await;
-    let child = initial.thread_manager.get_thread(spawned_id).await?;
+    let child = resumed_manager.get_thread(spawned_id).await?;
     submit_turn_on_thread(child.as_ref(), "fresh task after cold reconfiguration").await?;
     let wake = wait_for_request_containing_text(&wake, next_final).await?;
     assert!(!wake.body_contains_text("durable child final"));
