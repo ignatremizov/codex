@@ -115,7 +115,11 @@ async fn mailbox_batch_keeps_receiver_scoped_acceptance_and_partial_results(
             text_elements: Vec::new(),
         }]))
         .await?;
-    let TurnInputSubmission::Started { turn_id } = submission else {
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = submission
+    else {
         anyhow::bail!("sender should start");
     };
     let event = wait_for_event(test.codex.as_ref(), |event| {

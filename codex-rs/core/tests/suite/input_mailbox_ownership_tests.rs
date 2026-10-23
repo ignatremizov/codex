@@ -1,6 +1,7 @@
 use super::*;
 use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
+use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::RejectMailboxInputParams;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -125,7 +126,11 @@ async fn mixed_receipt_hides_rejected_cross_root_mail_without_hiding_same_root_d
             text_elements: Vec::new(),
         }]))
         .await?;
-    let TurnInputSubmission::Started { turn_id } = submission else {
+    let TurnInputSubmission::Started {
+        turn_id,
+        root_turn_id: _,
+    } = submission
+    else {
         anyhow::bail!("expected a receiver turn");
     };
     tokio::time::timeout(Duration::from_secs(/*secs*/ 15), first.wait_for_request()).await?;
