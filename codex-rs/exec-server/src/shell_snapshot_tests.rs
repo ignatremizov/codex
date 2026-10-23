@@ -337,7 +337,12 @@ fn snapshot_filters_profile_exports_after_capture() {
     );
     assert_eq!(
         snapshot.unset_environment,
-        vec!["PROFILE_DENIED".to_string(), "PROFILE_SECRET".to_string()]
+        vec![
+            "CODEX_THREAD_ID".to_string(),
+            "CODEX_TOOL_CALL_ID".to_string(),
+            "PROFILE_DENIED".to_string(),
+            "PROFILE_SECRET".to_string(),
+        ]
     );
     assert_eq!(
         snapshot.state,

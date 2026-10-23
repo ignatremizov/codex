@@ -2957,8 +2957,13 @@ async fn v2_spawn_resolves_reported_effort_without_changing_child_selection(
         .enable(Feature::MultiAgentV2)
         .expect("enable v2");
     config.model_reasoning_effort = selected_effort.clone();
-    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let mut harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_id, parent) = harness.start_thread().await;
+    harness.control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
     let source = thread_spawn_source(
         parent_id,
         &parent.session_source,
