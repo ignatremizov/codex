@@ -1029,12 +1029,18 @@ async fn spawn_failure_context_survives_manager_and_fork_errors() {
 #[tokio::test]
 async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
     let harness = AgentControlHarness::new().await;
-    let state = harness.control.runtime.upgrade().expect("live manager");
-    let spawn = harness.control.spawn_agent(
+    let (parent_id, parent) = harness.start_thread().await;
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let state = control.runtime.upgrade().expect("live manager");
+    let spawn = control.spawn_agent(
         harness.config.clone(),
         text_input("hello"),
         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: ThreadId::new(),
+            parent_thread_id: parent_id,
             depth: 1,
             agent_path: None,
             agent_nickname: None,
@@ -1052,7 +1058,7 @@ async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
                 .poll(&mut Context::from_waker(Waker::noop()))
                 .is_pending()
         );
-        harness.control.runtime.request_shutdown()
+        control.runtime.request_shutdown()
     };
     let error = spawn
         .await
@@ -1078,59 +1084,40 @@ async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
 #[tokio::test]
 async fn cancelled_spawn_after_input_admission_discards_child() {
     let harness = AgentControlHarness::new().await;
-    let state = harness.control.runtime.upgrade().expect("live manager");
-    let parent_id = ThreadId::new();
-    let mut spawn = harness.control.spawn(SpawnRequest {
-        caller: parent_id,
-        config: harness.config.clone(),
-        input: AgentInput::UserInput(text_input("child task")),
-        source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: parent_id,
-            depth: 1,
-            agent_path: None,
-            agent_nickname: None,
-            agent_role: None,
-        }),
-        options: SpawnAgentOptions::default(),
-    });
-    let child = poll_fn(|cx| {
-        assert!(spawn.as_mut().poll(cx).is_pending());
-        let threads = state.threads.try_read().expect("uncontended manager");
-        // On this single-thread runtime the session loop cannot consume the first
-        // input until this poll returns. Leave spawn waiting for its admission reply.
-        match threads.values().find(|thread| !thread.io.tx_sub.is_empty()) {
-            Some(child) => Poll::Ready(Arc::clone(child)),
-            None => Poll::Pending,
-        }
-    })
-    .await;
-    let child_id = child.session.thread_id();
-    // This no-op goes through the same FIFO submission loop. Its receipt proves the
-    // earlier input has been admitted, without polling the spawn future again.
-    child
-        .update_thread_settings(ThreadSettingsOverrides::default())
+    let (parent_id, parent) = harness.start_thread().await;
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let prepared = control
+        .spawn_agent_prepared(
+            harness.config.clone(),
+            super::spawn::SpawnInitialInput::UserInput(text_input("child task")),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions::default(),
+            control.runtime.admit_start().expect("spawn membership"),
+            CancellationToken::new(),
+        )
         .await
-        .expect("input admission completed before the settings barrier");
-    {
-        // Only the final status lookup now needs the manager lock. Cancel there,
-        // after input admission but before the backend can return its receipt.
-        let _threads = state.threads.write().await;
-        assert!(
-            spawn
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-                .is_pending()
-        );
-        drop(spawn);
-    }
+        .expect("prepare a receipt after confirmed input admission");
+    let child_id = prepared.spawned.agent.thread_id;
+    let child = harness.manager.get_thread(child_id).await.expect("child");
+    // Only consuming the receipt commits ownership, including after admitted input.
+    drop(prepared);
+    child.wait_until_terminated().await;
     assert!(
-        harness.control.get_agent_metadata(child_id).is_none(),
+        control.get_agent_metadata(child_id).is_none(),
         "cancelled spawn must not leave an accepted child registered"
     );
-    child.wait_until_terminated().await;
     assert_thread_not_loaded(&harness.manager, child_id).await;
-    harness
-        .control
+    control
         .runtime
         .request_shutdown()
         .wait()
@@ -1395,7 +1382,12 @@ async fn cancelled_v2_send_finishes_reload_registration() {
     let state = control.runtime.upgrade().unwrap();
     let mut send = control.send(followup_request("cancelled follow-up"));
     let (reloaded, pin_blocker) = poll_fn(|cx| {
-        assert!(send.as_mut().poll(cx).is_pending());
+        if let Poll::Ready(result) = send.as_mut().poll(cx) {
+            panic!(
+                "send completed before reload registration could be intercepted: {:?}",
+                result.map(|_| ())
+            );
+        }
         let Ok(threads) = state.threads.try_read() else {
             return Poll::Pending;
         };
