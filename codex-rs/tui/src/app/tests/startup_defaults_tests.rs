@@ -254,6 +254,7 @@ async fn cli_fork_forwards_explicit_rollout_without_reading_active_home_parent()
         config,
         bootstrap,
         SessionSelection::Fork(target),
+        AppServerTarget::Embedded,
     ));
     tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
         loop {
