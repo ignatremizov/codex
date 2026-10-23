@@ -590,9 +590,7 @@ impl ThreadManager {
                 }
                 return Ok(NewThread {
                     thread_id: id,
-                    session_configured: thread
-                        .startup_metadata()
-                        .to_session_configured_event(initial_history.get_event_msgs()),
+                    session_configured: thread.startup_metadata().to_session_configured_event(),
                     thread,
                 });
             }
@@ -656,12 +654,17 @@ impl ThreadManager {
         let setup = async {
             if controlled_child {
                 control
-                    .publish_restored_agent(&resumed.thread, parent.as_ref(), || {
-                        if let Some(registration) = registration {
-                            registration.commit()?;
-                        }
-                        Ok(())
-                    })
+                    .publish_restored_agent(
+                        &resumed.thread,
+                        parent.as_ref(),
+                        /*resumed_created_at*/ None,
+                        || {
+                            if let Some(registration) = registration {
+                                registration.commit()?;
+                            }
+                            Ok(())
+                        },
+                    )
                     .await?;
             } else {
                 self.state
