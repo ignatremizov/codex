@@ -158,7 +158,8 @@ fn partial_updates_clear_labels_add_complete_entries_and_replay_legacy_upserts()
         {"ref":"4", "nickname":"New", "task_path":"/root/new", "state":"active"}
     ]));
     let delta = current
-        .render_diff(PreviousSectionState::Known(&previous.snapshot()))
+        .render_fragment_diff(PreviousSectionState::Known(&previous.body))
+        .1
         .expect("partial update");
     assert_eq!(
         payload(delta.as_ref()),
