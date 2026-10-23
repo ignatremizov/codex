@@ -223,6 +223,9 @@ jobs:
           cargo build --profile ci-test -p codex-cli --bin codex
           cargo build --profile ci-test -p codex-code-mode-host --bin codex-code-mode-host
           cargo build --profile ci-test -p codex-voice-host --bin codex-voice-host
+          cargo build --profile ci-test -p codex-bwrap --bin bwrap
+          mkdir -p "${CARGO_TARGET_DIR}/ci-test/codex-resources"
+          install -m 0755 "${CARGO_TARGET_DIR}/ci-test/bwrap" "${CARGO_TARGET_DIR}/ci-test/codex-resources/bwrap"
           test "$("${CARGO_TARGET_DIR}/ci-test/codex-voice-host" --build-commit)" = "$GITHUB_SHA"
 
       - name: Set up remote test env (Docker)
@@ -522,12 +525,13 @@ jobs:
           cargo build --profile ci-test -p codex-cli --bin codex
           cargo build --profile ci-test -p codex-code-mode-host --bin codex-code-mode-host
           cargo build --profile ci-test -p codex-voice-host --bin codex-voice-host
+          cargo build --profile ci-test -p codex-bwrap --bin bwrap
           test "$("${CARGO_TARGET_DIR}/ci-test/codex-voice-host" --build-commit)" = "$GITHUB_SHA"
           cp "${CARGO_TARGET_DIR}/ci-test/codex-linux-sandbox" "${helper_dir}/"
           cp "${CARGO_TARGET_DIR}/ci-test/codex" "${helper_dir}/"
           cp "${CARGO_TARGET_DIR}/ci-test/codex-code-mode-host" "${helper_dir}/"
           cp "${CARGO_TARGET_DIR}/ci-test/codex-voice-host" "${helper_dir}/"
-          for binary in codex-exec rmcp_test_server \
+          for binary in bwrap codex-exec rmcp_test_server \
             test_stdio_server test_streamable_http_server \
             test_mcp_2026_stdio_server test_mcp_2026_discovery_stdio_server; do
             install -m 0755 "${CARGO_TARGET_DIR}/ci-test/${binary}" "${helper_dir}/${binary}"
@@ -556,6 +560,7 @@ jobs:
         with:
           name: ${{ env.TEST_HELPERS_ARTIFACT }}
           path: |
+            ${{ runner.temp }}/${{ env.TEST_HELPERS_ARTIFACT }}/bwrap
             ${{ runner.temp }}/${{ env.TEST_HELPERS_ARTIFACT }}/codex-linux-sandbox
             ${{ runner.temp }}/${{ env.TEST_HELPERS_ARTIFACT }}/codex
             ${{ runner.temp }}/${{ env.TEST_HELPERS_ARTIFACT }}/codex-code-mode-host
@@ -656,7 +661,7 @@ jobs:
           install -m 0755 \
             "${helper_dir}/codex-linux-sandbox" \
             "${target_dir}/codex-linux-sandbox"
-          for binary in codex codex-code-mode-host codex-voice-host \
+          for binary in bwrap codex codex-code-mode-host codex-voice-host \
             codex-exec rmcp_test_server \
             test_stdio_server test_streamable_http_server \
             test_mcp_2026_stdio_server test_mcp_2026_discovery_stdio_server; do
@@ -664,6 +669,8 @@ jobs:
             echo "CARGO_BIN_EXE_${binary}=${target_dir}/${binary}" >> "$GITHUB_ENV"
             echo "CARGO_BIN_EXE_${binary//-/_}=${target_dir}/${binary}" >> "$GITHUB_ENV"
           done
+          mkdir -p "${target_dir}/codex-resources"
+          install -m 0755 "${target_dir}/bwrap" "${target_dir}/codex-resources/bwrap"
           voice_root="${CARGO_TARGET_DIR}/voice-native"
           mkdir -p "$voice_root"
           tar -xzf "${helper_dir}/voice-runtime.tar.gz" -C "$voice_root"

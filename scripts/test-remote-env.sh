@@ -9,8 +9,8 @@
 #   codex_remote_env_cleanup
 #
 # Archive runners set CODEX_TEST_REMOTE_CODEX_BINARY to their installed codex.
-# The matching codex-code-mode-host must be beside it, or supplied explicitly
-# through CODEX_TEST_REMOTE_CODE_MODE_HOST_BINARY. Local setup builds both.
+# The matching bwrap and codex-code-mode-host must be beside it; the latter may
+# use CODEX_TEST_REMOTE_CODE_MODE_HOST_BINARY. Local setup builds all three.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -23,6 +23,7 @@ setup_remote_env() {
   local container_name
   local codex_binary_path
   local code_mode_host_path
+  local bwrap_path
   local remote_codex_path
   local remote_exec_server_pid
   local remote_exec_server_port
@@ -31,6 +32,7 @@ setup_remote_env() {
   container_name="${CODEX_TEST_REMOTE_ENV_CONTAINER_NAME:-codex-remote-test-env-local-$(date +%s)-${RANDOM}}"
   codex_binary_path="${CODEX_TEST_REMOTE_CODEX_BINARY:-${CARGO_TARGET_DIR:-${REPO_ROOT}/codex-rs/target}/debug/codex}"
   code_mode_host_path="${CODEX_TEST_REMOTE_CODE_MODE_HOST_BINARY:-$(dirname "$codex_binary_path")/codex-code-mode-host}"
+  bwrap_path="$(dirname "$codex_binary_path")/bwrap"
 
   if ! command -v docker >/dev/null 2>&1; then
     echo "docker is required (Colima or Docker Desktop)" >&2
@@ -50,12 +52,12 @@ setup_remote_env() {
 
     (
       cd "${REPO_ROOT}/codex-rs"
-      cargo build -p codex-cli --bin codex -p codex-code-mode-host --bin codex-code-mode-host
+      cargo build -p codex-cli --bin codex -p codex-code-mode-host --bin codex-code-mode-host -p codex-bwrap --bin bwrap
     ) || return 1
   fi
 
-  if [[ ! -x "${codex_binary_path}" || ! -x "${code_mode_host_path}" ]]; then
-    echo "executable codex/code-mode helper required at ${codex_binary_path} and ${code_mode_host_path}" >&2
+  if [[ ! -x "${codex_binary_path}" || ! -x "${code_mode_host_path}" || ! -x "${bwrap_path}" ]]; then
+    echo "executable helpers required at ${codex_binary_path}, ${code_mode_host_path} and ${bwrap_path}" >&2
     return 1
   fi
 
@@ -78,10 +80,11 @@ setup_remote_env() {
     remote_codex_path="/tmp/codex-remote-env/codex"
     remote_exec_server_port="31987"
     remote_exec_server_stdout_path="/tmp/codex-remote-env/exec-server.stdout"
-    if ! docker exec "${container_name}" sh -lc "mkdir -p /tmp/codex-remote-env" \
+    if ! docker exec "${container_name}" mkdir -p /tmp/codex-remote-env/codex-resources \
       || ! docker cp "${codex_binary_path}" "${container_name}:${remote_codex_path}" \
       || ! docker cp "${code_mode_host_path}" "${container_name}:/tmp/codex-remote-env/codex-code-mode-host" \
-      || ! docker exec "${container_name}" chmod +x "${remote_codex_path}" /tmp/codex-remote-env/codex-code-mode-host; then
+      || ! docker cp "${bwrap_path}" "${container_name}:/tmp/codex-remote-env/codex-resources/bwrap" \
+      || ! docker exec "${container_name}" chmod +x "${remote_codex_path}" /tmp/codex-remote-env/codex-code-mode-host /tmp/codex-remote-env/codex-resources/bwrap; then
       docker rm -f "${container_name}" >/dev/null 2>&1 || true
       return 1
     fi
