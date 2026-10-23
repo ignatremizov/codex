@@ -101,7 +101,6 @@ async fn legacy_rejection_and_ambiguous_outcomes_preserve_draft_without_retry() 
                     service_tier: None,
                     final_output_json_schema: None,
                     collaboration_mode: None,
-                    personality: None,
                 }),
                 AppEvent::SubmitThreadOp {
                     thread_id: source_id,
