@@ -38,7 +38,7 @@ impl App {
         }
         config.model = Some(self.chat_widget.current_model().to_string());
         config.model_reasoning_effort = self.chat_widget.current_reasoning_effort();
-        let selected_profile = self.confirmed_server_profile(thread_id);
+        let selected_profile = self.selected_server_profile(thread_id);
         let forked = match app_server
             .fork_thread_at(
                 &self.local_settings,
