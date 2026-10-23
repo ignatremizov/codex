@@ -55,7 +55,11 @@ fn only_assistant_output_contributes_to_the_output_limit() {
             encrypted_content: None,
             id: None,
             role: role.to_string(),
-            content: vec![ContentItem::OutputText { text: text.clone() }],
+            content: vec![ContentItem::OutputText {
+                text: text.clone(),
+                annotations: None,
+                logprobs: None,
+            }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         };
