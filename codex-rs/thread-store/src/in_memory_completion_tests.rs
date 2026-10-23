@@ -53,12 +53,14 @@ async fn completion_thread(
                 },
                 git: None,
             })])),
+            history_revision: None,
             include_archived: false,
             metadata: params.metadata,
         },
     )
     .await
     .expect("resume the supplied canonical completion fixture")
+    .0
 }
 
 #[tokio::test]
