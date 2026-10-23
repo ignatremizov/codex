@@ -399,7 +399,7 @@ impl ChatWidget {
         let lease = match lease {
             Ok(lease) => lease,
             Err(error) => {
-                self.on_realtime_error(error);
+                self.on_realtime_error(error, RealtimeFailureCause::AudioDevices);
                 return;
             }
         };
