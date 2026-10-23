@@ -7313,7 +7313,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                       Pending mail: loading
 
                       Enter opens this thread
-                      ctrl+t inspects transcript · Tab opens controls.
+                      ⌃t inspects transcript · Tab opens controls.
                       Tab opens controls
                     "###
                 );

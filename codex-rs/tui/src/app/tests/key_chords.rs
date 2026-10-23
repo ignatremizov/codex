@@ -209,7 +209,7 @@ async fn tab_transcript_chord_inspects_agent_without_opening_controls() -> Resul
     let params = app.agent_picker_selection_view_params(/*selected*/ Some(1));
     assert_eq!(
         params.footer_note.as_ref().map(ToString::to_string),
-        Some("tab ctrl+t inspects transcript.".to_string())
+        Some("tab ⌃t inspects transcript.".to_string())
     );
     assert!(
         params

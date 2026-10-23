@@ -561,7 +561,7 @@ async fn transcript_inspection_keeps_the_agent_pane_under_the_pager() {
         params
             .footer_note
             .as_ref()
-            .is_some_and(|line| line.to_string().contains("ctrl+t inspects transcript"))
+            .is_some_and(|line| line.to_string().contains("⌃t inspects transcript"))
     );
     let (tx, mut rx) = unbounded_channel();
     params.items[0]
