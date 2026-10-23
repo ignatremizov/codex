@@ -65,7 +65,7 @@ fn history(thread_id: ThreadId, mode: ThreadHistoryMode) -> anyhow::Result<Vec<R
             }),
             root_turn_id: None,
             disabled_plugin_ids: None,
-            cwd: cwd.clone(),
+            cwd,
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),

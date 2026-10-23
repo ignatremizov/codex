@@ -20,9 +20,6 @@
 //! runtime remain bounded; the local consumer event queue is unbounded so
 //! unread notifications cannot prevent request responses from being delivered.
 
-// Recovery plans carry the same recursive thread-manager state as core and app-server.
-#![recursion_limit = "256"]
-
 mod local_tree_recovery;
 mod path;
 mod remote;
