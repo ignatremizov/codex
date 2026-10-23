@@ -19,6 +19,7 @@ use test_case::test_case;
 
 use super::super::rmcp_client::remote_aware_environment_id;
 use super::super::rmcp_client::remote_aware_stdio_server_bin;
+use super::super::rmcp_client::remote_aware_stdio_server_cwd;
 
 #[test_case(true; "responses_lite")]
 #[test_case(false; "responses_api")]
@@ -127,6 +128,7 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
         serde_json::from_value(json!({
             "command": command,
             "environment_id": environment_id,
+            "cwd": remote_aware_stdio_server_cwd(),
             "env": {"MCP_TEST_SERVER_INSTRUCTIONS": instructions},
             "enabled_tools": enabled_tools,
             "default_tools_approval_mode": "approve",

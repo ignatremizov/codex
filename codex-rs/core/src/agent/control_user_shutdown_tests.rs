@@ -266,7 +266,7 @@ async fn tree_shutdown_cancels_pending_queue_without_waiting_for_target_completi
     assert!(control.list_queued_agent_turns().is_empty());
     assert_eq!(
         child.session.active_agent_response_turn_id().as_deref(),
-        Some("busy-target")
+        None
     );
     child.shutdown_and_wait().await.expect("stop child");
     root.shutdown_and_wait().await.expect("stop root");

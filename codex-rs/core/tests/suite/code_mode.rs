@@ -3796,6 +3796,7 @@ if (!tool) {
             "exec".to_string(),
             "wait".to_string(),
             "request_user_input".to_string(),
+            "multi_agent_v1".to_string(),
             "web_search".to_string()
         ]
     );

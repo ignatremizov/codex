@@ -77,18 +77,18 @@ async fn active_steer_promotes_before_sampling_and_survives_interrupt(
         vec![
             StreamingSseChunk {
                 gate: None,
-                body: responses::sse(vec![responses::ev_response_created("resp-1")]),
-            },
-            StreamingSseChunk {
-                gate: Some(first_gate),
                 body: responses::sse(vec![
+                    responses::ev_response_created("resp-1"),
                     responses::ev_function_call(
                         "plan-step",
                         "update_plan",
                         r#"{"plan":[{"step":"Inspect the task","status":"in_progress"}]}"#,
                     ),
-                    responses::ev_completed("resp-1"),
                 ]),
+            },
+            StreamingSseChunk {
+                gate: Some(first_gate),
+                body: responses::sse(vec![responses::ev_completed("resp-1")]),
             },
         ],
         vec![
@@ -185,6 +185,10 @@ async fn active_steer_promotes_before_sampling_and_survives_interrupt(
     let first: Value = serde_json::from_slice(&server.requests().await[0])?;
     assert_eq!(inventory_updates(&first), Vec::<String>::new());
     assert!(!first.to_string().contains("- unwrap:"));
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::PlanUpdate(_))
+    })
+    .await;
 
     assert_eq!(
         test.codex.start_or_steer_turn(skill_input(mention)).await?,
