@@ -2905,7 +2905,11 @@ async fn archived_untracked_threads_do_not_appear_in_agent_picker() -> Result<()
         .replace(&archived_thread_id.to_string(), "[archived]")
     );
     assert_eq!(
-        app.agent_navigation.ordered_thread_ids(),
+        app.agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .map(|(thread_id, _)| thread_id)
+            .collect::<Vec<_>>(),
         vec![primary_thread_id, archived_thread_id]
     );
     assert_eq!(app.active_thread_id, Some(primary_thread_id));
