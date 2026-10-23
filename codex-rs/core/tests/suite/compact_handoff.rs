@@ -355,6 +355,7 @@ async fn remote_checkpoint_and_retained_inventory_are_independent_of_decoder(
             ),
             initial_history: InitialHistory::Resumed(ResumedHistory {
                 conversation_id: test.session_configured.thread_id,
+                history_revision: None,
                 history: Arc::new(history),
                 rollout_path: Some(rollout_path),
             }),
