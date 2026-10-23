@@ -743,12 +743,12 @@ fn inline_code_and_file_paths_use_stable_cyan() {
         .lines
         .iter()
         .flat_map(|line| &line.spans)
-        .filter(|span| matches!(span.content.as_ref(), "src/main.rs" | "src/lib.rs"))
+        .filter(|span| matches!(span.content.as_ref(), "src/main.rs" | "./src/lib.rs"))
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(
         paths,
-        vec!["src/main.rs".cyan(), "src/lib.rs".cyan()],
+        vec!["src/main.rs".cyan(), "./src/lib.rs".cyan()],
     );
     assert_debug_snapshot!(text);
 }
