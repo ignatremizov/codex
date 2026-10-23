@@ -534,7 +534,7 @@ impl ChatWidget {
                         message,
                     ));
                 }
-                Some(MessagePhase::FinalAnswer) | None => self
+                Some(MessagePhase::PartialAnswer | MessagePhase::FinalAnswer) | None => self
                     .transcript
                     .record_agent_markdown(parsed.visible_markdown.clone(), message),
             }

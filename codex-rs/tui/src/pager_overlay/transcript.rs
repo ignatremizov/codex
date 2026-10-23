@@ -285,6 +285,10 @@ impl TranscriptOverlay {
         self.view.is_search_editing()
     }
 
+    pub(crate) fn is_search_active(&self) -> bool {
+        self.view.is_search_active()
+    }
+
     pub(crate) fn owns_interaction_key(&self, key: KeyEvent) -> bool {
         self.view.owns_interaction_key(key)
     }
