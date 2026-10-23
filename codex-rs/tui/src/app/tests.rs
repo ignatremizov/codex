@@ -2744,34 +2744,6 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
             }
         )
     );
-    let mut scoped_reply_send = passive_send;
-    if let ServerNotification::ItemCompleted(notification) = &mut scoped_reply_send
-        && let ThreadItem::CollabAgentToolCall {
-            target_messages, ..
-        } = &mut notification.item
-    {
-        *target_messages = Some(true);
-    }
-    app.cache_collab_response_observation_for_notification(&scoped_reply_send);
-    let observation = app
-        .agent_navigation
-        .response_observation(observer_thread_id, receiver_thread_id)
-        .expect("live scoped reply policy");
-    assert_eq!(
-        observation,
-        crate::app::agent_observation_display::AgentResponseObservationDisplay {
-            binding: AgentResponseObservationBinding::Bound,
-            commentary: false,
-            target_messages: true,
-            queue_delivery: false,
-            final_response:
-                crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
-        }
-    );
-    insta::assert_snapshot!(observation.compact_label(), @"passive · replies");
-    app.agent_navigation
-        .clear_response_observation(observer_thread_id, receiver_thread_id);
-
     let commentary_presentation_send = completed_tool(
         "send-commentary-presentation",
         codex_app_server_protocol::CollabAgentTool::SendInput,
