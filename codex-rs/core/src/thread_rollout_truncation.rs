@@ -53,7 +53,10 @@ pub(crate) fn instruction_positions_in_rollout(items: &[RolloutItem]) -> Vec<usi
         }
         match item {
             RolloutItem::ResponseItem(item) if is_user_turn_boundary(item) => {
-                let boundary_index = if is_real_user_message_boundary(item) {
+                let boundary_index = if matches!(
+                    event_mapping::parse_turn_item(&item.item),
+                    Some(TurnItem::UserMessage(_))
+                ) {
                     pending_user_event_index.take().unwrap_or(idx)
                 } else if matches!(&item.item, ResponseItem::AgentMessage { .. })
                     && idx.checked_sub(1).is_some_and(|previous_idx| {
