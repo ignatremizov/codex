@@ -2281,9 +2281,7 @@ async fn v1_subagent_notification_survives_an_active_parent_turn_abort() -> Resu
             }])
             .with_thread_settings(
                 codex_protocol::protocol::ThreadSettingsOverrides {
-                    environments: Some(
-                        test.default_environment_selections(test.config.cwd.clone()),
-                    ),
+                    environments: Some(test.default_environment_requests(test.config.cwd.clone())),
                     approval_policy: Some(AskForApproval::Never),
                     sandbox_policy: Some(sandbox_policy),
                     permission_profile,
