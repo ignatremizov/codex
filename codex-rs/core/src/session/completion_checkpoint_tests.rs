@@ -95,7 +95,7 @@ async fn acknowledged_completion_survives_stale_checkpoint_before_or_after_consu
                 .await
                 .expect("consume");
         }
-        let suffix_media = matches!(kind, CheckpointKind::Prefix).then(|| {
+        let mut suffix_media = matches!(kind, CheckpointKind::Prefix).then(|| {
             ResponseItemEnvelope::new(
                 serde_json::from_value(serde_json::json!({
                     "type": "message", "role": "user", "id": "newer-media",
@@ -104,13 +104,11 @@ async fn acknowledged_completion_survives_stale_checkpoint_before_or_after_consu
                 .expect("newer unsummarized media"),
             )
         });
-        if let Some(media) = &suffix_media {
-            session
-                .state
-                .lock()
-                .await
-                .history
-                .record_annotated_items(&mut [media.clone()], TruncationPolicy::Tokens(1000));
+        if let Some(media) = &mut suffix_media {
+            session.state.lock().await.history.record_annotated_items(
+                std::slice::from_mut(media),
+                TruncationPolicy::Tokens(1000),
+            );
         }
         let (window_number, window_ids) = session.advance_auto_compact_window().await;
         let installation = match kind {

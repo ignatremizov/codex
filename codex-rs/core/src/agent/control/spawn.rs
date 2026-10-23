@@ -21,6 +21,8 @@ use crate::context::MultiAgentRoleInstructions;
 use crate::context::MultiAgentUsageHint;
 use crate::context::world_state::IncrementalToolsHint;
 use crate::context::world_state::PersistentModeState;
+use crate::environment_selection::TurnEnvironmentSnapshot;
+use crate::environment_selection::combine_selected_capability_roots;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::thread_manager::ForkSnapshot;
@@ -433,6 +435,18 @@ impl LocalAgentControl {
             disabled_plugin_ids,
             ..StartThreadOptions::new(config.clone())
         };
+        if options.environments.is_none()
+            && let Some(parent) = &parent
+        {
+            let roots = combine_selected_capability_roots(
+                &parent.session.services.selected_capability_roots,
+                start_options
+                    .inherited_environments
+                    .as_ref()
+                    .map(TurnEnvironmentSnapshot::selected_capability_roots),
+            );
+            start_options.thread_extension_init.insert(roots);
+        }
         let fork_context = match (session_source, options.fork_mode.as_ref()) {
             (Some(session_source), Some(_)) => {
                 let fork_context_started_at = Instant::now();
