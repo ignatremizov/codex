@@ -40,6 +40,7 @@ async fn public_injection_reserves_admission_before_initial_context_publication(
             Arc::clone(&session),
             SessionIo {
                 tx_sub,
+                session: Arc::downgrade(&session),
                 rx_event: events.clone(),
                 submission_admission: Arc::clone(&session.submission_admission),
                 agent_status: watch::channel(AgentStatus::PendingInit).1,
@@ -92,7 +93,11 @@ async fn public_injection_reserves_admission_before_initial_context_publication(
         assert!(session.reference_context_item().await.is_none());
         assert!(events.try_recv().is_err());
         assert_eq!(
-            queued.try_recv().expect("only rollback accepted").id,
+            queued
+                .try_recv()
+                .expect("only rollback accepted")
+                .submission
+                .id,
             rollback_id
         );
         assert!(queued.try_recv().is_err());

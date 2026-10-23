@@ -795,10 +795,13 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
     submit_thread_settings(
         conversation,
         ThreadSettingsOverrides {
-            environments: Some(TurnEnvironmentSelections::new(
-                test.config.cwd.join(OVERRIDE_DIRECTORY),
-                vec![environment],
-            )),
+            environments: Some(
+                TurnEnvironmentSelections::new(
+                    test.config.cwd.join(OVERRIDE_DIRECTORY),
+                    vec![environment],
+                )
+                .into_requests(),
+            ),
             collaboration_mode: Some(CollaborationMode {
                 mode: ModeKind::Default,
                 settings: Settings {
