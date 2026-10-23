@@ -395,15 +395,20 @@ async fn failed_publication_quarantines_an_edge_closed_during_metadata_commit() 
         .expect("open edge before restoration");
     let error = fixture
         .owner
-        .publish_restored_agent(&fixture.child.thread, Some(&fixture.parent.thread), || {
-            fixture.graph.edges.lock().expect("graph").insert(
-                fixture.child.thread_id,
-                (fixture.parent.thread_id, ThreadSpawnEdgeStatus::Closed),
-            );
-            Err(CodexErr::InvalidRequest(
-                "injected publication failure".to_string(),
-            ))
-        })
+        .publish_restored_agent(
+            &fixture.child.thread,
+            Some(&fixture.parent.thread),
+            /*resumed_created_at*/ None,
+            || {
+                fixture.graph.edges.lock().expect("graph").insert(
+                    fixture.child.thread_id,
+                    (fixture.parent.thread_id, ThreadSpawnEdgeStatus::Closed),
+                );
+                Err(CodexErr::InvalidRequest(
+                    "injected publication failure".to_string(),
+                ))
+            },
+        )
         .await
         .expect_err("changed edge is quarantined");
     assert!(
@@ -447,11 +452,16 @@ async fn stale_restoration_fence_cannot_close_a_reparented_edge() {
     fixture.graph.fail_closed.store(true, Ordering::Release);
     let error = fixture
         .owner
-        .publish_restored_agent(&fixture.child.thread, Some(&fixture.parent.thread), || {
-            Err(CodexErr::InvalidRequest(
-                "injected publication failure".to_string(),
-            ))
-        })
+        .publish_restored_agent(
+            &fixture.child.thread,
+            Some(&fixture.parent.thread),
+            /*resumed_created_at*/ None,
+            || {
+                Err(CodexErr::InvalidRequest(
+                    "injected publication failure".to_string(),
+                ))
+            },
+        )
         .await
         .expect_err("failed rollback establishes quarantine");
     let _error = fixture
