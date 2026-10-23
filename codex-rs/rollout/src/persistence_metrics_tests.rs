@@ -395,11 +395,11 @@ fn sub_agent_completion_item_is_persisted_in_both_history_modes() {
     };
     message.sub_agent_completion = None;
     assert!(
-        !crate::policy::persisted_rollout_item(
+        crate::policy::persisted_rollout_item(
             &RolloutItem::EventMsg(EventMsg::ItemCompleted(untrusted)),
             ThreadHistoryMode::Legacy,
         )
-        .is_some()
+        .is_none()
     );
 }
 

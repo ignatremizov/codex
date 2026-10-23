@@ -143,7 +143,7 @@ impl LocalAgentControl {
                 let previous_turn_id = if snapshot.active_turn_id.is_none() {
                     snapshot
                         .last_terminal
-                        .filter(|(_, status)| status == &previous_status)
+                        .filter(|(_, outcome)| outcome.status == previous_status)
                         .map(|(turn_id, _)| turn_id)
                 } else {
                     None
