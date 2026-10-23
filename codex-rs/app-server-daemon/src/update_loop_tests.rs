@@ -891,7 +891,7 @@ async fn daemon_start_and_restart_preserve_launch_features() {
         let expected = if features.is_empty() {
             "-c\ncli_auth_credentials_store=\"file\"\napp-server\n--listen\nunix://\n--analytics-default-enabled\n--managed-daemon\n"
         } else {
-            "-c\ncli_auth_credentials_store=\"file\"\napp-server\n--listen\nunix://\n-c\nfeatures.api_key_model_discovery=true\n-c\nfeatures.code_mode_host=false\n--managed-daemon\n"
+            "-c\ncli_auth_credentials_store=\"file\"\napp-server\n--listen\nunix://\n--analytics-default-enabled\n-c\nfeatures.api_key_model_discovery=true\n-c\nfeatures.code_mode_host=false\n--managed-daemon\n"
         };
         assert_eq!(std::fs::read_to_string(&args_path).unwrap(), expected);
         let reused = daemon

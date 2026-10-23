@@ -268,17 +268,24 @@ pub(super) async fn start_app_server_for_session_command(
         // Validate config before connecting, but leave authentication and execution
         // to the selected server even when this caller has workload identity set.
         launch_loader_overrides.ignore_login_requirements = true;
-        ConfigBuilder::default()
+        let config = ConfigBuilder::default()
             .codex_home(codex_home)
+            .auth_file_selection(auth_file_selection)
             .cli_overrides(cli_kv_overrides)
             .loader_overrides(launch_loader_overrides)
             .strict_config(strict_config)
             .build()
             .await
             .wrap_err("failed to load config.toml")?;
+        let mut target = AppServerTarget::Remote { endpoint };
+        super::auth_profile_connection::resolve_profile_socket_alias(
+            &mut target,
+            cli.remote_addr.as_deref(),
+            &config,
+        )?;
         return Ok(SessionCommandServer {
             server: AppServerSession::new(
-                super::connect_remote_app_server(endpoint).await?,
+                super::auth_profile_connection::connect(&target, &config).await?,
                 ThreadParamsMode::Remote,
             )
             .with_remote_cwd_override(cli.cwd.clone()),
