@@ -478,7 +478,6 @@ impl UnifiedExecProcess {
         let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
-            output_drain_policy,
             output_handles,
             managed.output_tx.clone(),
             managed.state_tx.clone(),
@@ -506,7 +505,6 @@ impl UnifiedExecProcess {
 
     fn spawn_exec_server_output_task(
         started: StartedExecProcess,
-        output_drain_policy: OutputDrainPolicy,
         output_handles: OutputHandles,
         output_tx: mpsc::Sender<Vec<u8>>,
         state_tx: watch::Sender<ProcessState>,
@@ -520,8 +518,8 @@ impl UnifiedExecProcess {
             output_closed,
             output_closed_notify,
             cancellation_token,
+            drain_policy: output_drain_policy,
             collection_finished,
-            ..
         } = output_handles;
         let process = started.process;
         let mut events = process.subscribe_events();
