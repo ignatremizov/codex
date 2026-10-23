@@ -72,7 +72,7 @@ async fn write_stdin_waits_until_exit_and_reports_a_correlated_lifecycle() -> Re
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
+                environments: Some(test.default_environment_requests(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 ..Default::default()
             }),
