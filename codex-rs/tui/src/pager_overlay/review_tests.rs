@@ -113,6 +113,7 @@ fn same_length_label_refresh_preserves_review_navigation() {
         cells,
         RuntimeKeymap::defaults().pager,
         /*copy_on_select*/ false,
+        /*mouse_scroll_speed*/ 1.0,
     ) else {
         panic!("transcript")
     };
