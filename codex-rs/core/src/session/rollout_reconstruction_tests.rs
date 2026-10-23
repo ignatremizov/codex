@@ -39,6 +39,12 @@ use std::path::PathBuf;
 use test_case::test_case;
 use uuid::Uuid;
 
+macro_rules! object {
+    ($value:tt) => {
+        serde_json::from_value(json!($value)).unwrap()
+    };
+}
+
 #[tokio::test]
 async fn guardian_only_media_repair_is_required_but_new_suffix_evidence_survives_resume() {
     let (session, mut turn) = make_session_and_context().await;
@@ -492,12 +498,6 @@ async fn sender_context_follows_its_delivery_through_checkpoint_and_rollback() {
             assert_eq!(replayed.history, rolled_back.annotated_items());
         }
     }
-}
-
-macro_rules! object {
-    ($value:tt) => {
-        serde_json::from_value(json!($value)).unwrap()
-    };
 }
 
 fn user_message(text: &str) -> ResponseItem {
@@ -1399,7 +1399,7 @@ async fn representation_repair_without_companion_records_preserves_existing_base
     let (session, turn_context) = make_session_and_context().await;
     let turn_context = Arc::new(turn_context);
     let world_state = build_world_state_from_turn_context(&session, &turn_context).await;
-    let world_state_snapshot = world_state.snapshot();
+    let (world_state_snapshot, _) = world_state.render_full();
     let reference_context = turn_context.to_turn_context_item();
     let replacement_history = vec![user_message("summary")];
     let rollout_items = vec![
@@ -1444,7 +1444,7 @@ async fn representation_repair_applies_its_out_of_band_companion_records() {
     let (session, turn_context) = make_session_and_context().await;
     let turn_context = Arc::new(turn_context);
     let world_state = build_world_state_from_turn_context(&session, &turn_context).await;
-    let world_state_snapshot = world_state.snapshot();
+    let (world_state_snapshot, _) = world_state.render_full();
     let reference_context = turn_context.to_turn_context_item();
     let rollout_items = vec![
         RolloutItem::Compacted(CompactedItem {

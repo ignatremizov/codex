@@ -674,7 +674,12 @@ fn prepared_compaction_preserves_the_independent_guardian_suffix() -> anyhow::Re
     let (current, compacted) = checkpoint.0.split_last().expect("retained suffix");
     assert_eq!(current, &suffix[0]);
     assert_eq!(compacted.len(), 2);
-    let serialized = serde_json::to_string(compacted)?;
+    let serialized = serde_json::to_string(
+        &compacted
+            .iter()
+            .map(|envelope| &envelope.item)
+            .collect::<Vec<_>>(),
+    )?;
     assert!(!serialized.contains("data:image/png"));
     assert!(serialized.contains(&CompactedImageOmission::unavailable().render()));
     Ok(())

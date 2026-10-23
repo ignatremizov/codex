@@ -3610,7 +3610,7 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
     assert_eq!(
         Session::last_token_usage_record_from_rollout(&[
             RolloutItem::TokenUsageRecord(checkpoint_record.clone()),
-            checkpoint(Some(checkpoint_record.clone())),
+            checkpoint(Some(Box::new(checkpoint_record.clone()))),
         ]),
         Some(checkpoint_record.clone())
     );

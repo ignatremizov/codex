@@ -17,6 +17,7 @@ use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
 use codex_rollout::RolloutRecorder;
 use core_test_support::responses;
@@ -38,7 +39,13 @@ async fn cold_resume_repairs_media_once_without_rewriting_canonical_audit() -> R
         })
         .build_with_auto_env(&server)
         .await?;
-    let environments = test.codex.environment_selections().await;
+    let environments = test
+        .codex
+        .environment_selections()
+        .await
+        .into_iter()
+        .map(TurnEnvironmentSelection::into_request)
+        .collect::<Vec<_>>();
     let original = test
         .thread_manager
         .start_thread(StartThreadOptions {

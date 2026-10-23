@@ -1155,7 +1155,7 @@ mod tests {
         );
         assert!(is_retained_for_remote_compaction_v2(
             &ResponseItemEnvelope::new(history[0].clone()),
-            /*retain_client_developer_messages*/ false,
+            &Features::with_defaults(),
         ));
         assert!(!crate::context_manager::is_user_turn_boundary(&history[0]));
     }

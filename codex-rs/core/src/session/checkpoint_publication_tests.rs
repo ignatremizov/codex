@@ -42,9 +42,14 @@ async fn direct_checkpoint_publication_sanitizes_media_before_certification_and_
         .expect("published media-free checkpoint")
         .expect("complete checkpoint installed");
     assert!(
-        !serde_json::to_string(&installed)
-            .unwrap()
-            .contains("data:image/png")
+        !serde_json::to_string(
+            &installed
+                .iter()
+                .map(|envelope| &envelope.item)
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
+        .contains("data:image/png")
     );
     assert_eq!(installed, session.clone_history().await.annotated_items());
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
