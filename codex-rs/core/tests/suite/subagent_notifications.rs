@@ -4228,7 +4228,6 @@ async fn observed_response_delivery_does_not_block_a_later_close(
             response_handling: UserAgentResponseHandling::from_parts(
                 /*commentary*/ false,
                 codex_core::UserAgentFinalResponseHandling::None,
-                /*target_messages*/ false,
                 /*queue_input*/ false,
             ),
             ..Default::default()
@@ -7443,7 +7442,6 @@ async fn active_wait_delivers_subscribed_commentary_before_final_status(
         }),
         ChildResponseTiming::Immediate,
         /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
         |builder| builder.with_history_mode(history_mode),
     )
     .await?;

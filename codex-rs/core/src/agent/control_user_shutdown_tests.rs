@@ -2,6 +2,7 @@
 
 use super::AgentControlHarness;
 use crate::agent::AgentStatus;
+use crate::agent::control::AgentControlInput;
 use crate::agent::control::ResumeUserInputAdmission;
 use crate::agent::control::SessionPresentationId;
 use crate::agent::response_observation::FinalResponseObservation;
@@ -97,6 +98,7 @@ async fn cancelled_user_operation_keeps_shutdown_pending_until_lifecycle_release
                 .replace_durable_final_response_observation(
                     target,
                     observer,
+                    observer.thread_id,
                     FinalResponseObservation::Passive,
                 )
                 .await
@@ -108,12 +110,36 @@ async fn cancelled_user_operation_keeps_shutdown_pending_until_lifecycle_release
                 .map(drop),
             UserOperation::ScopedInput => harness
                 .control
-                .send_scoped_agent_input_observing_response(
-                    observer,
-                    "source-turn",
+                .send_agent_input_observing_response(
                     target,
-                    Vec::new(),
+                    AgentControlInput::AttributedAgentInput {
+                        content: Vec::new(),
+                        attribution: Box::new(codex_protocol::AgentInputAttribution {
+                            sender: codex_protocol::AgentInputIdentity {
+                                thread_id: observer.thread_id,
+                                nickname: None,
+                                agent_ref: None,
+                                task_path: None,
+                                role: None,
+                                model: None,
+                                reasoning_effort: None,
+                            },
+                            recipient: codex_protocol::AgentInputIdentity {
+                                thread_id: target,
+                                nickname: None,
+                                agent_ref: None,
+                                task_path: None,
+                                role: None,
+                                model: None,
+                                reasoning_effort: None,
+                            },
+                            sender_turn_id: "source-turn".to_string(),
+                            batch_id: None,
+                        }),
+                        presentation: Vec::new(),
+                    },
                     Default::default(),
+                    observer,
                     policy,
                 )
                 .await
@@ -208,10 +234,10 @@ async fn tree_shutdown_cancels_pending_queue_without_waiting_for_target_completi
     let accepted = control
         .queue_input_observing_response(QueuedInputObservationParams {
             agent_id: child.session.thread_id(),
-            input: vec![codex_protocol::user_input::UserInput::Text {
+            input: AgentControlInput::User(vec![codex_protocol::user_input::UserInput::Text {
                 text: "pending work must not delay shutdown".to_string(),
                 text_elements: Vec::new(),
-            }],
+            }]),
             start_options: Default::default(),
             observer: root.session.presentation_id(),
             response_observation: ResponseObservationPolicy::from_turn_parts(
