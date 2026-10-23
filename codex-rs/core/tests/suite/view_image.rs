@@ -90,10 +90,7 @@ fn disabled_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) ->
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     TurnInputRequest::user_input(items).with_thread_settings(ThreadSettingsOverrides {
-        environments: Some(
-            test.default_environment_selections(test.config.cwd.clone())
-                .into_requests(),
-        ),
+        environments: Some(test.default_environment_requests(test.config.cwd.clone())),
         approval_policy: Some(AskForApproval::Never),
         sandbox_policy: Some(sandbox_policy),
         permission_profile,

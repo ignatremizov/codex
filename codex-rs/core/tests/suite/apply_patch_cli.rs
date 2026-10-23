@@ -124,10 +124,7 @@ async fn submit_without_wait_with_turn_permissions(
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(
-                    test.default_environment_selections(test.config.cwd.clone())
-                        .into_requests(),
-                ),
+                environments: Some(test.default_environment_requests(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,

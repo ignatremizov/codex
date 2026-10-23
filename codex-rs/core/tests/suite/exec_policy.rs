@@ -73,10 +73,7 @@ async fn submit_user_turn(
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(
-                    test.default_environment_selections(test.config.cwd.clone())
-                        .into_requests(),
-                ),
+                environments: Some(test.default_environment_requests(test.config.cwd.clone())),
                 approval_policy: Some(approval_policy),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -583,10 +580,7 @@ async fn execpolicy_blocks_shell_invocation() -> Result<()> {
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(
-                    test.default_environment_selections(test.config.cwd.clone())
-                        .into_requests(),
-                ),
+                environments: Some(test.default_environment_requests(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,

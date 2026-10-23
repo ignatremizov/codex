@@ -1158,14 +1158,11 @@ impl TestCodex {
         &self._test_env
     }
 
-    pub fn default_environment_selections(
-        &self,
-        cwd: AbsolutePathBuf,
-    ) -> TurnEnvironmentSelections {
-        TurnEnvironmentSelections::new(
+    pub fn default_environment_requests(&self, cwd: AbsolutePathBuf) -> TurnEnvironmentRequests {
+        TurnEnvironmentRequests::new(
             cwd.clone(),
             self.thread_manager
-                .default_environment_selections(&cwd, &self.config.workspace_roots),
+                .default_environment_requests(&cwd, &self.config.workspace_roots),
         )
     }
 
