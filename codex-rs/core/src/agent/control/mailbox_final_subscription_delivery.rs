@@ -13,7 +13,7 @@ pub(super) fn wait_delivered_subscription(
     let Some(turn_id) = subscription.bound_turn_id.as_deref() else {
         return false;
     };
-    let removed = codex_history::rollout::exact_rollback_removed_items(history);
+    let removed = codex_history::exact_rollback_removed_items(history);
     history.iter().enumerate().any(|(index, item)| {
         if removed[index] {
             return false;
