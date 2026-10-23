@@ -1,13 +1,13 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
-assertion_line: 5217
+assertion_line: 5375
 expression: terminal.backend()
 ---
 "› /model          choose what model and reasoning effort to "
 "                  use                                       "
 "  /ide            include current selection, open files, and"
 "                  other context from your IDE               "
-"  /permissions    choose what Codex is allowed to do        "
+"  /approvals      choose what Codex is allowed to do        "
 "                                                            "
 "› /                                                         "
 "                                                            "
