@@ -109,6 +109,13 @@ impl ThreadStore for GatedChildMetadataStore {
         params: ResumeThreadParams,
     ) -> ThreadStoreFuture<'_, Arc<Vec<RolloutItem>>> {
         Box::pin(async move {
+            if !self.colliding_children.contains(&params.thread_id)
+                && params.thread_id != self.failed_child
+            {
+                // The root reopens from an explicitly selected rollout path. Child
+                // restoration must carry the revision from its ID-based preload.
+                return self.inner.resume_thread(params).await;
+            }
             assert!(
                 params.history_revision.is_some(),
                 "core must forward the revision"
