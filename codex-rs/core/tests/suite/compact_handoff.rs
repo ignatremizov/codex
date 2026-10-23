@@ -272,11 +272,8 @@ async fn remote_checkpoint_and_retained_inventory_are_independent_of_decoder(
         assert_eq!(decoder.inputs_of_type("compaction").len(), 1);
         assert!(decoder.inputs_of_type("compaction_trigger").is_empty());
         assert!(!decoder.body_contains_text("PARENT_BASE_INSTRUCTIONS"));
-        assert!(!decoder.body_contains_text("PARENT_MANAGED_INSTRUCTIONS"));
-        assert!(!decoder.body_contains_text("<current_time_reminder>"));
-        assert!(!decoder.body_contains_text("<rollout_budget>"));
-        assert!(decoder.inputs_of_type("configuration_update").is_empty());
-        assert!(!decoder.body_contains_text("<environment_context>"));
+        // Installed context is part of the checkpoint. Exact seed comparison below
+        // proves the helper adds no freshly discovered instructions or environment.
         assert!(decoder.body_contains_text(INVENTORY));
     }
     let followup = requests.last().context("follow-up request")?;
