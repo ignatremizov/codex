@@ -214,7 +214,7 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(
     let checkpoints = items
         .iter()
         .filter_map(|item| match item {
-            codex_protocol::protocol::RolloutItem::Compacted(item) => Some((
+            codex_history::RolloutItem::Compacted(item) => Some((
                 item.compaction_response_id.as_deref(),
                 item.compaction_summary_tokens,
             )),
