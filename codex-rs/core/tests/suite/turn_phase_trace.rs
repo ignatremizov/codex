@@ -237,10 +237,19 @@ async fn steer_joins_existing_turn_without_extending_sampling(
                     turn_id: call.turn_id.clone()
                 }
             );
+            // The interrupted run may still have a completion buffered for this same ID.
             wait_for_event(&test.codex, |event| {
+                matches!(event, EventMsg::TurnStarted(started) if started.turn_id == call.turn_id)
+            })
+            .await;
+            let completed = wait_for_event(&test.codex, |event| {
                 matches!(event, EventMsg::TurnComplete(_))
             })
             .await;
+            let EventMsg::TurnComplete(completed) = completed else {
+                unreachable!();
+            };
+            assert_eq!(completed.error, None);
             reply.single_request();
             drop(recovery);
             let recovery = wait_for_span(&exported, |span| span.name == "recovery_request").await?;

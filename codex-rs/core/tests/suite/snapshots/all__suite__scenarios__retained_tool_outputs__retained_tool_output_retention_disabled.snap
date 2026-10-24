@@ -1,7 +1,7 @@
 ---
 source: core/tests/suite/scenarios_retained_tool_outputs.rs
 assertion_line: 141
-expression: "context_snapshot::format_request_history_snapshot(if enabled\n{\n    \"Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 64K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged.\"\n} else\n{\n    \"With retention disabled, the client can still send retain=true. Tool outputs use ordinary emergency trimming and are not retained after compaction and cold resume.\"\n}, &requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+expression: "context_snapshot::format_request_history_snapshot(if enabled\n{\n    \"Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 128K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged.\"\n} else\n{\n    \"With retention disabled, the client can still send retain=true. Tool outputs use ordinary emergency trimming and are not retained after compaction and cold resume.\"\n}, &requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: With retention disabled, the client can still send retain=true. Tool outputs use ordinary emergency trimming and are not retained after compaction and cold resume.
 
@@ -38,7 +38,7 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
 -- request 2 (turn) --
 07:message/assistant:
     I will investigate the tests.
-08:function_call_output/codex_app.task_details:Investigate the failing tests carefully. Investigate the failing tests carefully. Investigate the failin...s carefully. Investigate the failing tests carefully. [hash=3c65017b6f98a38f]
+08:function_call_output/codex_app.task_details:Investigate the failing tests carefully. Investigate the failing tests carefully. Investigate the failin...s carefully. Investigate the failing tests carefully. [hash=6e18e7e80258c1bf]
 -- request 3 (turn) --
 09:message/assistant:
     I will use those task details.
@@ -76,7 +76,7 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
 06:function_call_output/codex_app.send_message_to_thread:Investigate the failing tests; report your findings without changing files.
 07:message/assistant:
     I will investigate the tests.
-08:function_call_output/codex_app.task_details:Investigate the failing tests carefully. Investigate the failing tests carefully. Investigate the failin...s carefully. Investigate the failing tests carefully. [hash=3c65017b6f98a38f]
+08:function_call_output/codex_app.task_details:Investigate the failing tests carefully. Investigate the failing tests carefully. Investigate the failin...s carefully. Investigate the failing tests carefully. [hash=6e18e7e80258c1bf]
 09:message/assistant:
     I will use those task details.
 10:function_call_output/codex_app.send_message_to_thread:Output exceeded the available model context and was truncated
