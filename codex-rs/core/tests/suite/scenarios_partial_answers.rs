@@ -303,7 +303,10 @@ async fn partial_answers_survive_forked_child_requests(
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
-            if let Some(content) = item["content"].as_array_mut() {
+            if let Some(content) = item
+                .get_mut("content")
+                .and_then(serde_json::Value::as_array_mut)
+            {
                 for (kind, fragment) in kinds.iter().zip(content) {
                     if kind == "generic.developer_instructions" {
                         assert_eq!(fragment["text"], "Coordinate the investigation.");
