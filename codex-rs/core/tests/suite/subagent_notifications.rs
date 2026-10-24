@@ -7949,16 +7949,6 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     );
 
     let parent_thread_id = initial.session_configured.thread_id;
-    let parent_history = initial
-        .thread_store
-        .load_latest_model_context(LoadThreadHistoryParams {
-            thread_id: parent_thread_id,
-            include_archived: false,
-        })
-        .await?;
-    // Delivery may be recorded after the last sampling request and before this barrier.
-    let inherited_history = initial.codex.conversation_history_snapshot().await;
-    let inherited_input = serde_json::to_string(&inherited_history.items().collect::<Vec<_>>())?;
     initial.thread_manager.remove_thread(&spawned_id).await;
     initial
         .thread_manager
@@ -7974,6 +7964,17 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         )
     })
     .await??;
+    // Shutdown drains accepted delivery after the barrier is released. Capture the
+    // final history so resume is compared with the same committed writer boundary.
+    let parent_history = initial
+        .thread_store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: parent_thread_id,
+            include_archived: false,
+        })
+        .await?;
+    let inherited_history = initial.codex.conversation_history_snapshot().await;
+    let inherited_input = serde_json::to_string(&inherited_history.items().collect::<Vec<_>>())?;
 
     let automatic_delivery = mount_sse_once_match(
         &server,
