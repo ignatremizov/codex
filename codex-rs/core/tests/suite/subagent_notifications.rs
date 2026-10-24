@@ -7985,13 +7985,16 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     .await;
     // Graceful root shutdown seals its owning control. A cold restart gets a
     // fresh manager while retaining the exact model window captured above.
-    let resumed_manager = codex_core::test_support::thread_manager_with_models_provider_and_home(
-        CodexAuth::from_api_key("test"),
-        initial.config.model_provider.clone(),
-        initial.config.codex_home.to_path_buf(),
-        initial.thread_manager.environment_manager(),
-    );
-    let resumed = resumed_manager
+    let resume_config = initial.config.clone();
+    let cold_runtime = test_codex()
+        .with_home(Arc::clone(&initial.home))
+        .with_thread_store(Arc::clone(&initial.thread_store))
+        .with_history_mode(history_mode)
+        .with_config(move |config| *config = resume_config)
+        .build_with_auto_env(&server)
+        .await?;
+    let resumed = cold_runtime
+        .thread_manager
         .resume_thread_with_history(
             initial.config.clone(),
             InitialHistory::Resumed(ResumedHistory {
@@ -8082,7 +8085,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         sse(vec![ev_completed("cold-reconfigured-wake")]),
     )
     .await;
-    let child = resumed_manager.get_thread(spawned_id).await?;
+    let child = cold_runtime.thread_manager.get_thread(spawned_id).await?;
     submit_turn_on_thread(child.as_ref(), "fresh task after cold reconfiguration").await?;
     let wake = wait_for_request_containing_text(&wake, next_final).await?;
     assert!(!wake.body_contains_text("durable child final"));
