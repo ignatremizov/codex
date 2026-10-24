@@ -343,7 +343,7 @@ fn preserves_user_text_that_matches_the_old_plain_omission_notice() {
     assert_eq!(
         items,
         vec![
-            annotated_user_message(vec![ContentItem::InputText {
+            user_message(vec![ContentItem::InputText {
                 text: ordinary_user_text,
             }]),
             annotated_user_message(vec![ContentItem::InputText {
