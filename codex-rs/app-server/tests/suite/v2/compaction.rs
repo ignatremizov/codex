@@ -415,6 +415,7 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
         config = config
             .with_provider_name("OpenAI")
             .with_provider_config("requires_openai_auth = true")
+            .with_root_config("skills.bundled.enabled = false")
             .with_root_config("remote_compaction_handoff_model = \"mock-model\"\nremote_compaction_handoff_fallback_model = \"mock-model\"");
         write_chatgpt_auth(
             codex_home.path(),
