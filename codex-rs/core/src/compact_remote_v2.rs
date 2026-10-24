@@ -602,7 +602,7 @@ pub(crate) fn truncate_retained_messages_for_remote_compaction(
             .attached_notice
             .as_ref()
             .map_or(0, |notice| message_text_token_count(&notice.item).max(1));
-        let source_tokens = if client_developer {
+        let source_tokens = if client_developer || is_retained_tool_output(&group.source) {
             usize::try_from(estimate_item_token_count(&group.source.item)).unwrap_or(usize::MAX)
         } else {
             message_text_token_count(&group.source.item).max(1)
