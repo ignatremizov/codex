@@ -237,7 +237,8 @@ async fn interrupted_v2_agent_reloads_after_residency_eviction() {
         .expect("second resident slot should evict the first interrupted idle agent");
     assert_eq!(
         control.get_status(first.thread_id).await,
-        codex_protocol::protocol::AgentStatus::Interrupted,
+        // This specialized source has no agent roster entry to retain its status.
+        codex_protocol::protocol::AgentStatus::NotFound,
     );
     match manager.get_thread(first.thread_id).await {
         Err(err) => match err.details() {
