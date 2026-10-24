@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools_resume.rs
+assertion_line: 136
 expression: "context_snapshot::format_request_history_snapshot(\"A resumed legacy window retains its generated prefix; rebuilding the next window emits no incremental notice. A later update appends one developer notice, changed definitions, then the removal notice. Unchanged turns and another restart preserve that pair without duplication.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: A resumed legacy window retains its generated prefix; rebuilding the next window emits no incremental notice. A later update appends one developer notice, changed definitions, then the removal notice. Unchanged turns and another restart preserve that pair without duplication.
@@ -15,9 +16,11 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
+  tools (1; hash=436fd2c773918985):
+    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=49f981f03ae5c5ce):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (2; hash=31122c30a1831d19):
+        - namespace/functions; hash=fbc124d739660848
           - custom/exec
           - function/wait
           - function/exec_command
@@ -25,7 +28,8 @@ Settings:
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
@@ -42,11 +46,12 @@ Settings:
 -- request 3 (compaction) --
 07:compaction_trigger
 
-## Window 2 (after request 3: input diverged at item 02)
-Settings: same as window 1
+## Window 2 (after request 3: input diverged at item 00)
+Settings: relative to window 1
+  tools: <removed>
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=49f981f03ae5c5ce):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (3; hash=a94cd4cb91124f09):
+        - namespace/functions; hash=fbc124d739660848
           - custom/exec
           - function/wait
           - function/exec_command
@@ -54,7 +59,9 @@ Settings: same as window 1
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/user:

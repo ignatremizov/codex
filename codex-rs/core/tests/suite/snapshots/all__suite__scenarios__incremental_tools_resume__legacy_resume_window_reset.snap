@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools_resume.rs
+assertion_line: 136
 expression: "context_snapshot::format_request_history_snapshot(\"A resumed legacy window retains its generated prefix; rebuilding the next window emits no incremental notice. A later update appends one developer notice, changed definitions, then the removal notice. Unchanged turns and another restart preserve that pair without duplication.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: A resumed legacy window retains its generated prefix; rebuilding the next window emits no incremental notice. A later update appends one developer notice, changed definitions, then the removal notice. Unchanged turns and another restart preserve that pair without duplication.
@@ -15,9 +16,11 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
+  tools (1; hash=436fd2c773918985):
+    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=30feffe01b108a65):
-        - namespace/functions; hash=dfb4b8684addc20d
+00:additional_tools/developer (2; hash=93e90dba1d135a76):
+        - namespace/functions; hash=81fd87a97f816c17
           - custom/exec
           - function/wait
           - function/exec_command
@@ -27,14 +30,15 @@ Settings:
           - function/get_context_remaining
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
 03:message/developer:
     <context_window>
-    Agent name: /root
+    Agent name: Main
     First context window id: <UUID 1>
     Current context window id: <UUID 1>
     </context_window>
@@ -48,11 +52,12 @@ Settings:
 07:message/user:
     Resume without moving the tool prefix.
 
-## Window 2 (after request 2: input diverged at item 03)
-Settings: same as window 1
+## Window 2 (after request 2: input diverged at item 00)
+Settings: relative to window 1
+  tools: <removed>
 -- request 3 (turn) --
-00:additional_tools/developer (2; hash=30feffe01b108a65):
-        - namespace/functions; hash=dfb4b8684addc20d
+00:additional_tools/developer (3; hash=8c69149575aed596):
+        - namespace/functions; hash=81fd87a97f816c17
           - custom/exec
           - function/wait
           - function/exec_command
@@ -62,14 +67,16 @@ Settings: same as window 1
           - function/get_context_remaining
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=400cd6ac61d524a9
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
 03:message/developer:
     <context_window>
-    Agent name: /root
+    Agent name: Main
     First context window id: <UUID 1>
     Current context window id: <UUID 2>
     Previous context window id: <UUID 1>
