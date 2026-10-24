@@ -7956,7 +7956,9 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
             include_archived: false,
         })
         .await?;
-    let inherited_input = initial_parent_followup.single_request().body_json()["input"].to_string();
+    // Delivery may be recorded after the last sampling request and before this barrier.
+    let inherited_history = initial.codex.conversation_history_snapshot().await;
+    let inherited_input = serde_json::to_string(&inherited_history.items().collect::<Vec<_>>())?;
     initial.thread_manager.remove_thread(&spawned_id).await;
     initial
         .thread_manager
