@@ -116,10 +116,8 @@ use core_test_support::responses::strip_response_item_ids;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use std::future::Future;
-use std::future::poll_fn;
 use std::sync::RwLock;
 use std::task::Context;
-use std::task::Poll;
 use std::task::Waker;
 use tempfile::TempDir;
 use tokio::time::Duration;
@@ -1112,17 +1110,17 @@ async fn cancelled_spawn_after_input_admission_discards_child() {
     // Only consuming the receipt commits ownership, including after admitted input.
     drop(prepared);
     child.wait_until_terminated().await;
-    assert!(
-        control.get_agent_metadata(child_id).is_none(),
-        "cancelled spawn must not leave an accepted child registered"
-    );
-    assert_thread_not_loaded(&harness.manager, child_id).await;
     control
         .runtime
         .request_shutdown()
         .wait()
         .await
         .expect("provisional cleanup releases tree membership");
+    assert!(
+        control.get_agent_metadata(child_id).is_none(),
+        "cancelled spawn must not leave an accepted child registered"
+    );
+    assert_thread_not_loaded(&harness.manager, child_id).await;
 }
 
 #[tokio::test]
@@ -1380,35 +1378,16 @@ async fn cancelled_v2_send_finishes_reload_registration() {
     };
     let mut created = harness.manager.subscribe_thread_created();
     let state = control.runtime.upgrade().unwrap();
+    let reload_gate = state.v2_spawn_resume_lock(child_id).lock_owned().await;
     let mut send = control.send(followup_request("cancelled follow-up"));
-    let (reloaded, pin_blocker) = poll_fn(|cx| {
-        if let Poll::Ready(result) = send.as_mut().poll(cx) {
-            panic!(
-                "send completed before reload registration could be intercepted: {:?}",
-                result.map(|_| ())
-            );
-        }
-        let Ok(threads) = state.threads.try_read() else {
-            return Poll::Pending;
-        };
-        let Some(reloaded) = threads.get(&child_id).cloned() else {
-            return Poll::Pending;
-        };
-        // On this single-thread runtime, intercept publication before the detached
-        // registration task can acquire its residency pin.
-        let pin_blocker = Arc::clone(&reloaded.residency_gate)
-            .try_write_owned()
-            .expect("reload registration has not acquired its pin yet");
-        Poll::Ready((reloaded, pin_blocker))
-    })
-    .await;
+    assert!(futures::poll!(&mut send).is_pending());
     tokio::task::yield_now().await;
     assert!(matches!(
         created.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
     drop(send);
-    drop(pin_blocker);
+    drop(reload_gate);
 
     assert_eq!(
         timeout(Duration::from_secs(5), created.recv())
@@ -1417,6 +1396,7 @@ async fn cancelled_v2_send_finishes_reload_registration() {
             .unwrap(),
         child_id,
     );
+    let reloaded = harness.manager.get_thread(child_id).await.unwrap();
     assert_eq!(
         control.runtime.registry.evicted_environments(child_id),
         None
