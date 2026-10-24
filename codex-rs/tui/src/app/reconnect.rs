@@ -19,6 +19,7 @@ pub(super) enum ReconnectPresentation {
 pub(super) struct ReconnectState {
     pub(super) offline: bool,
     pub(super) failed: bool,
+    pub(super) expected_daemon_restart: bool,
     pub(super) presentation: ReconnectPresentation,
     pub(super) seen_version_notice: Option<String>,
 }
@@ -615,6 +616,7 @@ impl App {
             server.reconnect(app_server.request_handle(), self.app_event_tx.clone());
         }
         self.reconnect.offline = false;
+        self.reconnect.expected_daemon_restart = false;
         if let Some(recovery) = local_recovery {
             self.continue_recovered_local_tree(app_server, recovery.plan)
                 .await;

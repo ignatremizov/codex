@@ -1261,7 +1261,9 @@ See the Codex keymap documentation for supported actions and examples."
                         app_server.remote_cwd_override().map(Path::to_path_buf),
                         app_server.thread_tool_transport(),
                         app.reconnect.presentation,
-                        if matches!(app.app_server_target, AppServerTarget::LocalDaemon { .. }) {
+                        if matches!(app.app_server_target, AppServerTarget::LocalDaemon { .. })
+                            && !app.reconnect.expected_daemon_restart
+                        {
                             app_server
                                 .local_peer_process()
                                 .zip(embedded_recovery.clone())
@@ -1304,6 +1306,7 @@ See the Codex keymap documentation for supported actions and examples."
                     }, if app.daemon_restart.is_some() => {
                         app.daemon_restart = None;
                         if let Err(err) = result.unwrap_or_else(|err| Err(err.into())) {
+                            app.reconnect.expected_daemon_restart = false;
                             app.chat_widget.add_error_message(format!("Could not restart the background server: {err:#}"));
                         }
                         AppRunControl::Continue
