@@ -5,9 +5,16 @@ use crate::app::TurnStatus;
 use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
+use codex_app_server_protocol::CommandExecutionOutputDeltaNotification;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::TerminalInteractionNotification;
+use codex_app_server_protocol::TerminalWait;
+use codex_app_server_protocol::TerminalWaitMode;
+use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::TurnDiffUpdatedNotification;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_protocol::ThreadId;
@@ -61,6 +68,32 @@ fn exec_approval_request(
     }
 }
 
+fn snapshot_events(store: &ThreadEventStore) -> Vec<serde_json::Value> {
+    store
+        .snapshot()
+        .events
+        .into_iter()
+        .map(|event| match event {
+            ThreadBufferedEvent::Notification(notification) => {
+                serde_json::to_value(notification).expect("notification should serialize")
+            }
+            ThreadBufferedEvent::Request(request) => {
+                serde_json::to_value(request).expect("request should serialize")
+            }
+            other => panic!("unexpected buffered event: {other:?}"),
+        })
+        .collect()
+}
+
+fn command_output(thread_id: ThreadId, item_id: &str, delta: String) -> ServerNotification {
+    ServerNotification::CommandExecutionOutputDelta(CommandExecutionOutputDeltaNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn".to_string(),
+        item_id: item_id.to_string(),
+        delta,
+    })
+}
+
 #[test]
 fn thread_event_store_coalesces_only_adjacent_matching_agent_message_deltas() {
     let thread_id = ThreadId::new();
@@ -81,23 +114,6 @@ fn thread_event_store_coalesces_only_adjacent_matching_agent_message_deltas() {
         item_id: "item-2".to_string(),
         delta: "other thread".to_string(),
     });
-    let snapshot_events = |store: &ThreadEventStore| {
-        store
-            .snapshot()
-            .events
-            .into_iter()
-            .map(|event| match event {
-                ThreadBufferedEvent::Notification(notification) => {
-                    serde_json::to_value(notification).expect("notification should serialize")
-                }
-                ThreadBufferedEvent::Request(request) => {
-                    serde_json::to_value(request).expect("request should serialize")
-                }
-                other => panic!("unexpected buffered event: {other:?}"),
-            })
-            .collect::<Vec<_>>()
-    };
-
     store.push_notification(delta("turn-1", "item-1", "hello"));
     store.push_notification_ref(&delta("turn-1", "item-1", " world"));
     store.push_notification(delta("turn-1", "item-2", "another"));
@@ -220,4 +236,214 @@ fn thread_event_store_coalesces_only_adjacent_matching_agent_message_deltas() {
         ]
     );
     assert!(store.has_pending_thread_approvals());
+}
+
+#[test]
+fn cumulative_diff_updates_preserve_useful_replay_events() {
+    let thread_id = ThreadId::new();
+    let mut store = ThreadEventStore::new(/*capacity*/ 2);
+    store.push_notification(turn_started_notification(thread_id, "turn"));
+    store.push_request(exec_approval_request(
+        thread_id, "turn", "approval", /*approval_id*/ None,
+    ));
+    let expected = snapshot_events(&store);
+    let expected_bytes = store.buffered_notification_bytes;
+    let notification = ServerNotification::TurnDiffUpdated(TurnDiffUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn".to_string(),
+        diff: "diff --git a/large.rs b/large.rs\n".repeat(32 * 1024),
+    });
+
+    for _ in 0..8 {
+        store.push_notification_ref(&notification);
+        store.push_notification(notification.clone());
+    }
+
+    assert_eq!(snapshot_events(&store), expected);
+    assert_eq!(store.buffered_notification_bytes, expected_bytes);
+    assert!(store.has_pending_thread_approvals());
+    assert_eq!(store.active_turn_id(), Some("turn"));
+}
+
+#[test]
+fn notification_byte_budget_preserves_requests_and_active_waits() {
+    let thread_id = ThreadId::new();
+    let mut store = ThreadEventStore::new(/*capacity*/ THREAD_EVENT_CHANNEL_CAPACITY);
+    store.push_notification(turn_started_notification(thread_id, "turn"));
+    let approval = exec_approval_request(thread_id, "turn", "approval", /*approval_id*/ None);
+    store.push_request(approval.clone());
+    let wait = ServerNotification::TerminalInteraction(TerminalInteractionNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn".to_string(),
+        item_id: "command".to_string(),
+        process_id: "process".to_string(),
+        stdin: String::new(),
+        deadline_at_ms: None,
+        wait: Some(TerminalWait::Started {
+            interaction_id: "wait".to_string(),
+            started_at_ms: 0,
+            mode: TerminalWaitMode::UntilExit,
+        }),
+    });
+    store.push_notification_ref(&wait);
+    store.turn_history_complete = true;
+    let payload = "x".repeat(MAX_BUFFERED_NOTIFICATION_BYTES / 3);
+    let middle = command_output(thread_id, "middle", payload.clone());
+    let newest = command_output(thread_id, "newest", payload.clone());
+
+    store.push_notification(command_output(thread_id, "oldest", payload));
+    store.push_notification_ref(&middle);
+    store.push_notification_ref(&newest);
+
+    assert_eq!(
+        snapshot_events(&store),
+        vec![
+            serde_json::to_value(approval).expect("approval should serialize"),
+            serde_json::to_value(&middle).expect("command output should serialize"),
+            serde_json::to_value(&newest).expect("command output should serialize"),
+            serde_json::to_value(wait).expect("wait should serialize"),
+        ]
+    );
+    assert_eq!(
+        store.buffered_notification_bytes,
+        serde_json::to_vec(&middle).expect("serialize output").len()
+            + serde_json::to_vec(&newest).expect("serialize output").len()
+    );
+    assert!(store.buffered_notification_bytes <= MAX_BUFFERED_NOTIFICATION_BYTES);
+    assert!(store.has_pending_thread_approvals());
+    assert_eq!(store.active_turn_id(), Some("turn"));
+    assert!(!store.turn_history_complete);
+}
+
+#[test]
+fn oversized_completed_item_preserves_the_replay_window_and_invalidates_cached_history() {
+    let thread_id = ThreadId::new();
+    let mut store = ThreadEventStore::new(/*capacity*/ 4);
+    store.push_notification(turn_started_notification(thread_id, "turn"));
+    store.push_request(exec_approval_request(
+        thread_id, "turn", "approval", /*approval_id*/ None,
+    ));
+    let expected = snapshot_events(&store);
+    let expected_bytes = store.buffered_notification_bytes;
+    store.turn_history_complete = true;
+    let oversized = ServerNotification::ItemCompleted(ItemCompletedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn".to_string(),
+        completed_at_ms: 0,
+        item: ThreadItem::Reasoning {
+            id: "reasoning".to_string(),
+            summary: vec!["x".repeat(MAX_BUFFERED_NOTIFICATION_BYTES)],
+            content: Vec::new(),
+        },
+    });
+
+    store.push_notification_ref(&oversized);
+    store.push_notification(oversized);
+
+    assert_eq!(snapshot_events(&store), expected);
+    assert_eq!(store.buffered_notification_bytes, expected_bytes);
+    assert!(store.has_pending_thread_approvals());
+    assert!(!store.turn_history_complete);
+}
+
+#[test]
+fn notification_accounting_tracks_escaped_coalesced_text_and_count_eviction() {
+    let thread_id = ThreadId::new();
+    let mut store = ThreadEventStore::new(/*capacity*/ 1);
+    let delta = |text: &str| {
+        ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "turn".to_string(),
+            item_id: "message".to_string(),
+            delta: text.to_string(),
+        })
+    };
+    store.push_notification(delta("é\n"));
+    store.push_notification_ref(&delta("\"🙂"));
+    let merged = delta("é\n\"🙂");
+    assert_eq!(
+        snapshot_events(&store),
+        vec![serde_json::to_value(&merged).expect("delta should serialize")]
+    );
+    assert_eq!(
+        store.buffered_notification_bytes,
+        serde_json::to_vec(&merged).expect("serialize delta").len()
+    );
+
+    let output = command_output(thread_id, "command", "remaining".to_string());
+    store.push_notification_ref(&output);
+    assert_eq!(
+        (
+            store.buffered_agent_message_delta_bytes,
+            store.buffered_notification_bytes
+        ),
+        (
+            0,
+            serde_json::to_vec(&output).expect("serialize output").len()
+        )
+    );
+    store.rebase_buffer_after_session_refresh();
+    assert_eq!(
+        (
+            snapshot_events(&store),
+            store.buffered_agent_message_delta_bytes,
+            store.buffered_notification_bytes
+        ),
+        (Vec::<serde_json::Value>::new(), 0, 0)
+    );
+}
+
+#[test]
+fn session_refresh_recounts_retained_questions_and_releases_hydrated_text() {
+    let thread_id = ThreadId::new();
+    let mut store = ThreadEventStore::new(/*capacity*/ 4);
+    store.push_notification(command_output(
+        thread_id,
+        "command",
+        "old output".to_string(),
+    ));
+    let mut completed = ItemCompletedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn".to_string(),
+        completed_at_ms: 0,
+        item: ThreadItem::AgentMessage {
+            id: "message".to_string(),
+            text: "x".repeat(1024 * 1024),
+            phase: None,
+            inter_agent_source: None,
+            memory_citation: None,
+            attribution: None,
+            input: None,
+            delivery: None,
+            questions: Some(Vec::new()),
+        },
+    };
+    store.push_notification(ServerNotification::ItemCompleted(completed.clone()));
+
+    store.rebase_buffer_after_session_refresh();
+
+    let ThreadItem::AgentMessage { text, .. } = &mut completed.item else {
+        panic!("expected agent message");
+    };
+    text.clear();
+    let expected = ServerNotification::ItemCompleted(completed);
+    assert_eq!(
+        snapshot_events(&store),
+        vec![serde_json::to_value(&expected).expect("item should serialize")]
+    );
+    assert_eq!(
+        store.buffered_notification_bytes,
+        serde_json::to_vec(&expected).expect("serialize item").len()
+    );
+    let Some(ThreadBufferedEvent::Notification(notification)) = store.buffer.front() else {
+        panic!("expected retained notification");
+    };
+    let ServerNotification::ItemCompleted(ItemCompletedNotification {
+        item: ThreadItem::AgentMessage { text, .. },
+        ..
+    }) = notification.as_ref()
+    else {
+        panic!("expected retained questions");
+    };
+    assert_eq!(text.capacity(), 0);
 }
