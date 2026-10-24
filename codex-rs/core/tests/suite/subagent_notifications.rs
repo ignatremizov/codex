@@ -7956,6 +7956,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
             include_archived: false,
         })
         .await?;
+    let inherited_input = initial_parent_followup.single_request().body_json()["input"].to_string();
     initial.thread_manager.remove_thread(&spawned_id).await;
     initial
         .thread_manager
@@ -7977,6 +7978,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         |request: &wiremock::Request| {
             (body_contains(request, "<subagent_commentary>")
                 || body_contains(request, "<subagent_notification>"))
+                && !body_contains(request, "reconfigure agents after cold resume")
                 && !body_contains(request, "explicit-cold-boundary-resume")
         },
         sse(vec![
@@ -8054,10 +8056,20 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     let request =
         wait_for_request_containing_text(&explicit_resume, "reconfigure agents after cold resume")
             .await?;
-    assert!(!request.body_contains_text("<subagent_commentary>"));
-    assert!(!request.body_contains_text("<subagent_notification>"));
-    assert!(!request.body_contains_text("durable acknowledgement"));
-    assert!(!request.body_contains_text("durable child final"));
+    // Inherited messages remain valid history; cold resume must not append another delivery.
+    let resumed_input = request.body_json()["input"].to_string();
+    for text in [
+        "<subagent_commentary>",
+        "<subagent_notification>",
+        "durable acknowledgement",
+        "durable child final",
+    ] {
+        assert_eq!(
+            resumed_input.matches(text).count(),
+            inherited_input.matches(text).count(),
+            "cold resume appended historical delivery for {text:?}",
+        );
+    }
     let result = wait_for_request_containing_text(&explicit_result, resume_call_id).await?;
     let output: Value = serde_json::from_str(
         &result
@@ -8065,7 +8077,13 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
             .context("explicit cold resume result")?,
     )?;
     assert_eq!(output["status"], json!("idle"));
-    assert!(!result.body_contains_text("durable child final"));
+    assert_eq!(
+        result.body_json()["input"]
+            .to_string()
+            .matches("durable child final")
+            .count(),
+        inherited_input.matches("durable child final").count(),
+    );
 
     // Resume reinstalls a next-turn observer, not historical final-answer delivery.
     let next_final = "fresh result after cold reconfiguration";
@@ -8091,7 +8109,13 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     let child = cold_runtime.thread_manager.get_thread(spawned_id).await?;
     submit_turn_on_thread(child.as_ref(), "fresh task after cold reconfiguration").await?;
     let wake = wait_for_request_containing_text(&wake, next_final).await?;
-    assert!(!wake.body_contains_text("durable child final"));
+    assert_eq!(
+        wake.body_json()["input"]
+            .to_string()
+            .matches("durable child final")
+            .count(),
+        inherited_input.matches("durable child final").count(),
+    );
 
     Ok(())
 }
