@@ -736,9 +736,9 @@ async fn compact_v2_uses_retry_after() -> Result<()> {
     Ok(())
 }
 
-/// Remote compaction v2 stream failures retry without using the enclosing response header.
+/// Remote compaction v2 preserves retry advice from the enclosing response header.
 #[tokio::test(flavor = "current_thread")]
-async fn compact_v2_stream_failure_uses_local_backoff_despite_retry_after() -> Result<()> {
+async fn compact_v2_stream_failure_uses_enclosing_retry_after() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let mut telemetry = RetryTelemetryCapture::install();
@@ -781,7 +781,7 @@ async fn compact_v2_stream_failure_uses_local_backoff_despite_retry_after() -> R
 
     test.codex.submit(Op::Compact).await?;
     let retry = telemetry.next_retry().await;
-    assert!((FIRST_RETRY_MIN_DELAY..FIRST_RETRY_MAX_DELAY).contains(&retry.delay));
+    assert!(retry.delay <= Duration::from_secs(/*secs*/ 1));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -1062,9 +1062,9 @@ async fn compact_v2_overload_without_retry_after_exhausts_capacity_retries() -> 
     Ok(())
 }
 
-/// SSE failures currently retry with local backoff instead of the enclosing response header.
+/// Retryable SSE failures preserve advice from the enclosing response header.
 #[tokio::test(flavor = "current_thread")]
-async fn sse_failure_uses_local_backoff_despite_retry_after() -> Result<()> {
+async fn sse_failure_uses_enclosing_retry_after() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let mut telemetry = RetryTelemetryCapture::install();
@@ -1111,7 +1111,7 @@ async fn sse_failure_uses_local_backoff_despite_retry_after() -> Result<()> {
 
     submit_user_input(&test, "retry the rate-limited stream").await?;
     let retry = telemetry.next_retry().await;
-    assert!((FIRST_RETRY_MIN_DELAY..FIRST_RETRY_MAX_DELAY).contains(&retry.delay));
+    assert!(retry.delay <= Duration::from_secs(/*secs*/ 1));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -2055,11 +2055,21 @@ async fn websocket_overload_exhausts_capacity_retries(with_header: bool) -> Resu
         "expected prewarm and six sampling attempts"
     );
     let first = connections[0][1].body_json();
+    let warmup = connections[0][0].body_json();
+    let effective_input = |body: &serde_json::Value| {
+        let mut input = Vec::new();
+        if let Some(previous_response_id) = body["previous_response_id"].as_str() {
+            assert_eq!(previous_response_id, "prewarm");
+            input.extend(warmup["input"].as_array().expect("prewarm input").clone());
+        }
+        input.extend(body["input"].as_array().expect("sampling input").clone());
+        input
+    };
     for request in &connections[0][2..] {
         let body = request.body_json();
         assert_eq!(
-            (&body["input"], &body["model"]),
-            (&first["input"], &first["model"])
+            (effective_input(&body), &body["model"]),
+            (effective_input(&first), &first["model"])
         );
     }
     server.shutdown().await;
