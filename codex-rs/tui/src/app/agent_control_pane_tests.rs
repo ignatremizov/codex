@@ -869,7 +869,7 @@ async fn agent_pane_uses_split_layout_at_94_columns_snapshot() {
     Pending mail: loading
     Enter opens this thread
     footer:
-    ctrl+t inspects transcript · Tab opens controls.
+    ⌃t inspects transcript · Tab opens controls.
     Tab opens controls
     ");
 }
@@ -960,7 +960,7 @@ async fn agent_pane_stacks_details_at_93_columns_snapshot() {
     Pending mail: loading
     Enter opens this thread
     footer:
-    ctrl+t inspects transcript · Tab opens controls.
+    ⌃t inspects transcript · Tab opens controls.
     Tab opens controls
     ");
 }
