@@ -615,8 +615,8 @@ pub(crate) fn truncate_retained_messages_for_remote_compaction(
             truncated_reversed.push(group.source);
             remaining = remaining.saturating_sub(token_count);
         } else if is_retained_tool_output(&group.source) {
-            // Keep outputs whole and stop before older items to preserve newest-first ordering.
-            break;
+            // Drop older budgeted items while still preserving explicit MCP inventories.
+            remaining = 0;
         } else if remaining > notice_tokens {
             let available_tokens = remaining - notice_tokens;
             let content_budget = if client_developer {

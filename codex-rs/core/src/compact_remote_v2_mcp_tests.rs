@@ -129,3 +129,37 @@ fn explicit_inventory_bypasses_budget_without_losing_attached_notice(max_tokens:
         expected,
     );
 }
+
+#[test]
+fn oversized_retained_output_preserves_older_explicit_inventory() {
+    let inventory = explicit_inventory("first", "linear", r#"["first"]"#);
+    let newest = message("user", "new");
+    let oversized = ResponseItemEnvelope {
+        item: ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: None,
+            name: Some("task_details".to_string()),
+            namespace: None,
+            output: codex_protocol::models::FunctionCallOutputPayload::from_text(
+                "details ".repeat(1_000),
+            ),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        metadata: Some(CodexHarnessMetadata {
+            client_authored: true,
+            ..Default::default()
+        }),
+    };
+    assert_eq!(
+        truncate_retained_messages_for_remote_compaction(
+            vec![
+                inventory.clone(),
+                message("user", "older budgeted text"),
+                oversized,
+                newest.clone(),
+            ],
+            /*max_tokens*/ 64,
+        ),
+        vec![inventory, newest],
+    );
+}
