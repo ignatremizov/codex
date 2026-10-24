@@ -325,6 +325,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
             args.extend([command.into(), "--strict-config".into()]);
             steps.push_back(("Nosessionsyet", b"\x1b"));
             steps.push_back(("gpt-5.6-terra", b"\x14"));
+            steps.push_back(("TRANSCRIPT·REVIEW", b"v"));
             if elevated {
                 "Runningasadministrator:sharedbackgroundserverdisabled."
             } else {
