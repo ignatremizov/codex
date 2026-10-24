@@ -814,11 +814,14 @@ async fn submit_turn_on_thread(codex: &codex_core::CodexThread, prompt: &str) ->
         _ => None,
     })
     .await;
-    wait_for_event_match(codex, |event| match event {
-        EventMsg::TurnComplete(event) if event.turn_id == turn_id => Some(()),
+    let completed = wait_for_event_match(codex, |event| match event {
+        EventMsg::TurnComplete(event) if event.turn_id == turn_id => Some(event.clone()),
         _ => None,
     })
     .await;
+    if let Some(error) = completed.error {
+        anyhow::bail!("turn failed: {}", error.message);
+    }
     Ok(())
 }
 
