@@ -22,6 +22,17 @@ The TUI also retains active waits across thread switches and bounded event-buffe
 eviction. Finished waits, terminated turns, and unloaded historical sessions do not
 restore an active wait.
 
+The per-thread live replay buffer retains at most 32,768 events and 8 MiB of
+serialized notification payloads, with a separate 256 KiB limit for agent text
+deltas. The payload limit is not an exact heap-size limit. Cumulative
+`turn/diff/updated` snapshots are not retained because replay does not use their
+contents. A single notification larger than the payload budget is skipped for
+replay without flushing the existing window; live delivery and durable history
+are unchanged. Payload-pressure eviction preserves request events and active
+wait identities. The existing event-count and agent-delta limits still apply.
+Session refresh recalculates retained payload bytes and releases hydrated
+question text rather than retaining its old allocation.
+
 Substantial reconstruction already exists in the integrated owners:
 
 - `app-server-protocol/src/protocol/thread_history/non_paginated_exec.rs` pairs Legacy `exec_command` and `write_stdin` calls with their outputs. It retains canonical call/turn identity, working-directory context, process/poll association, output and recoverable status, while preferring structured command items and respecting rollback.
@@ -135,3 +146,5 @@ tool call. Compare the live transcript before exit with Review and Full after
 resume, allowing only intentionally omitted transient states.
 
 No compilation, tests, snapshot generation or remote CI were run for this documentation change. Executable qualification and any implementation of the residual compatibility work remain outstanding.
+
+Session refresh preserves notifications accepted after its captured attachment boundary and recounts retained payload bytes before adding that live tail. Payload-budget eviction moves the boundary only when it removes an event before it.

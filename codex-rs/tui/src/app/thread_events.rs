@@ -123,6 +123,7 @@ pub(super) struct ThreadEventStore {
     /// Output received since deactivation can change the transcript rebuilt on replay.
     pub(super) replay_may_have_output: bool,
     pub(super) buffered_agent_message_delta_bytes: usize,
+    pub(super) buffered_notification_bytes: usize,
     delegated_turns: VecDeque<String>,
     recap_progress: recap::RecapProgress,
 }
@@ -139,7 +140,7 @@ impl ThreadEventStore {
             } = &mut notification.item.payload
         {
             // Refreshed turns contain the text; retain only the live question state.
-            text.clear();
+            *text = String::new();
             return true;
         }
         match event {
@@ -182,6 +183,7 @@ impl ThreadEventStore {
             active: false,
             replay_may_have_output: false,
             buffered_agent_message_delta_bytes: 0,
+            buffered_notification_bytes: 0,
             delegated_turns: VecDeque::new(),
             recap_progress: recap::RecapProgress::default(),
         }
@@ -209,8 +211,19 @@ impl ThreadEventStore {
             .attachment_prefix
             .take()
             .map(|prefix| self.buffer.split_off(prefix.min(self.buffer.len())));
-        self.buffer.retain_mut(Self::event_survives_session_refresh);
+        let mut notification_bytes = 0;
+        self.buffer.retain_mut(|event| {
+            if !Self::event_survives_session_refresh(event) {
+                return false;
+            }
+            if let ThreadBufferedEvent::Notification(notification) = event {
+                notification_bytes +=
+                    super::thread_event_buffer::replay_payload_bytes(notification.as_ref());
+            }
+            true
+        });
         self.buffered_agent_message_delta_bytes = 0;
+        self.buffered_notification_bytes = notification_bytes;
         for event in tail.into_iter().flatten() {
             self.push_buffered_event(event);
         }
@@ -366,6 +379,7 @@ impl ThreadEventStore {
         if matches!(
             notification.as_ref(),
             ServerNotification::RawResponseItemCompleted(_)
+                | ServerNotification::TurnDiffUpdated(_)
                 | ServerNotification::FileChangePatchUpdated(_)
                 | ServerNotification::ServerRequestResolved(_)
                 | ServerNotification::McpToolCallProgress(_)
