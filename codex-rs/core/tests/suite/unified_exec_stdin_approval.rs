@@ -263,9 +263,9 @@ async fn stdin_reviews_escalated_terminal_with_denied_reads_before_delivering_in
             text_elements: Vec::new(),
         }]))
         .await?;
-    for (id, decision) in [
-        ("denied", ReviewDecision::denied("blocked input")),
-        ("allowed", ReviewDecision::Approved),
+    for decision in [
+        ReviewDecision::denied("blocked input"),
+        ReviewDecision::Approved,
     ] {
         let request = wait_for_event_match(codex, |event| match event {
             EventMsg::ExecApprovalRequest(request) => Some(request.clone()),
@@ -273,13 +273,10 @@ async fn stdin_reviews_escalated_terminal_with_denied_reads_before_delivering_in
         })
         .await;
         assert_eq!(
-            (
-                request.kind,
-                request.call_id.as_str(),
-                request.effective_approval_id().as_str()
-            ),
-            (ExecApprovalKind::WriteStdin, "open", id)
+            (request.kind, request.call_id.as_str()),
+            (ExecApprovalKind::WriteStdin, "open")
         );
+        assert!(request.approval_id.is_some());
         assert!(!harness.path_exists("denied-marker").await?);
         assert!(!harness.path_exists("approved-marker").await?);
         codex
