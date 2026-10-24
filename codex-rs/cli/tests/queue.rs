@@ -268,6 +268,7 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
     .await;
     MockResponsesConfig::new(&model.uri())
         .with_root_config("features.plugins = false\nanalytics.enabled = false")
+        .with_root_config("cli_auth_credentials_store = \"file\"")
         .with_provider_config("env_key = \"CODEX_QUEUE_SERVER_API_KEY\"")
         .write(codex_home.path())?;
     let server = TestAppServer::builder()
@@ -286,14 +287,20 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         ])
         .build()
         .await?;
-    let socket_path = codex_app_server::app_server_control_socket_path(codex_home.path())?;
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home.path(), AuthCredentialsStoreMode::File);
+    let socket_path = codex_app_server::app_server_profile_socket_path(
+        codex_home.path(),
+        &profile.profile_opaque_id,
+    )?;
     timeout(Duration::from_secs(30), async {
         while !socket_path.as_path().try_exists()? {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok::<_, anyhow::Error>(())
     })
-    .await??;
+    .await
+    .context("profile socket was not created")??;
 
     let endpoint = format!("unix://{}", socket_path.as_path().display());
     let mut app = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
@@ -416,7 +423,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         Duration::from_secs(30),
         remote_command().args(["delete", &thread_id]).output(),
     )
-    .await??;
+    .await
+    .context("remote deletion confirmation timed out")??;
     assert!(!output.status.success());
     assert!(String::from_utf8(output.stderr)?.contains("cannot confirm session deletion"));
 
@@ -430,7 +438,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
             Duration::from_secs(30),
             remote_command().args(args).output(),
         )
-        .await??;
+        .await
+        .with_context(|| format!("remote lifecycle command timed out: {args:?}"))??;
         assert!(
             output.status.success(),
             "{args:?}: {}",
