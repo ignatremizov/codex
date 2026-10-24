@@ -270,7 +270,7 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         .with_root_config("features.plugins = false\nanalytics.enabled = false")
         .with_provider_config("env_key = \"CODEX_QUEUE_SERVER_API_KEY\"")
         .write(codex_home.path())?;
-    let _server = TestAppServer::builder()
+    let server = TestAppServer::builder()
         .with_program(&codex)
         .with_codex_home(codex_home.path())
         .with_plugin_startup_tasks()
@@ -309,7 +309,10 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
     let started: ThreadStartResponse = app
         .request_typed(ClientRequest::ThreadStart {
             request_id: RequestId::Integer(1),
-            params: ThreadStartParams::default(),
+            params: ThreadStartParams {
+                environments: Some(vec![server.auto_env_params()?]),
+                ..Default::default()
+            },
         })
         .await?;
     let thread_id = started.thread.id;
@@ -329,7 +332,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
             .args(["--thread", &thread_id, "--message", message])
             .output(),
     )
-    .await??;
+    .await
+    .context("queue command timed out")??;
     assert!(
         output.status.success(),
         "{}",
@@ -345,7 +349,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         }
         anyhow::bail!("app server disconnected before the queued turn completed")
     })
-    .await??;
+    .await
+    .context("queued turn did not complete")??;
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(completed.turn.status, TurnStatus::Completed);
     let queue: ThreadQueueListResponse = app
@@ -390,17 +395,17 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
             },
         })
         .await?;
-    // A separate caller home makes name resolution rely on the selected server.
-    let caller_home = TempDir::new()?;
+    // Unix-socket clients must match the server's home/profile. Workload identity
+    // remains caller-only and must not replace the selected server's credentials.
     let remote_command = || {
         let mut command = Command::new(&codex);
         command
-            .env("CODEX_HOME", caller_home.path())
-            .current_dir(caller_home.path())
+            .env("CODEX_HOME", codex_home.path())
+            .current_dir(codex_home.path())
             .env(OPENAI_FEDERATION_RULE_ID_ENV_VAR, "rule-test")
             .env(
                 OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR,
-                caller_home.path().join("missing-identity-token"),
+                codex_home.path().join("missing-identity-token"),
             )
             .env_remove("CODEX_QUEUE_SERVER_API_KEY")
             .kill_on_drop(true)
