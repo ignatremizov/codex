@@ -2909,8 +2909,11 @@ async fn try_run_sampling_request(
     if cancellation_token.is_cancelled() {
         return Err(CodexErr::TurnAborted);
     }
-    sess.mcp_prompt
-        .freeze(step_context.mcp.tools(), &prompt.tools);
+    // Incremental requests carry their declarations in history, leaving prompt.tools empty.
+    sess.mcp_prompt.freeze(
+        step_context.mcp.tools(),
+        &step_context.tool_router.model_visible_specs(),
+    );
     let mut stream = client_session
         .stream(
             prompt,

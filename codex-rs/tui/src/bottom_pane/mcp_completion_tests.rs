@@ -52,5 +52,5 @@ fn mcp_popup_filters_and_renders_server_completion() {
     let rendered = (0..area.width)
         .map(|x| buffer[(x, 0)].symbol())
         .collect::<String>();
-    insta::assert_snapshot!(rendered.trim_end(), @"› mcp use team docs  request explicit MCP context");
+    insta::assert_snapshot!(rendered.trim_end(), @"› /mcp use team docs  request explicit MCP context");
 }
