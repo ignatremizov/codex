@@ -6,12 +6,14 @@ use codex_core::StartIfIdleSubmission;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
+use core_test_support::ThreadIdle;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -28,6 +30,7 @@ use opentelemetry_sdk::trace::InMemorySpanExporter;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::trace::SpanData;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 use std::time::Duration;
 use test_case::test_case;
 use tokio::process::Command;
@@ -117,7 +120,12 @@ async fn steer_joins_existing_turn_without_extending_sampling(
         ]),
     )
     .await;
-    let mut test = test_codex().build_with_auto_env(&server).await?;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
+    let mut test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
     let thread = test
         .thread_manager
         .start_thread(StartThreadOptions {
@@ -204,6 +212,7 @@ async fn steer_joins_existing_turn_without_extending_sampling(
                 matches!(event, EventMsg::TurnAborted(_))
             })
             .await;
+            ThreadIdle::wait(&test.codex).await;
             let reply = mount_sse_once(
                 &server,
                 sse(vec![

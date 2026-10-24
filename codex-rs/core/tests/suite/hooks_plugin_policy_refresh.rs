@@ -39,8 +39,6 @@ use wiremock::matchers::body_partial_json;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-use super::rmcp_client::remote_aware_environment_id;
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -80,6 +78,29 @@ async fn native_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result<(
         home.path().join("config.toml"),
         "[features]\nplugins = true\nhooks = true\n\n[plugins.\"example@test\"]\n",
     )?;
+    let test = test_codex()
+        .with_home(home)
+        .with_config(move |config| {
+            config.bypass_hook_trust = true;
+            config
+                .features
+                .enable(Feature::DefaultModeRequestUserInput)
+                .expect("enable request_user_input");
+            config
+                .mcp_servers
+                .set(HashMap::from([(
+                    "hook_observer".to_string(),
+                    serde_json::from_value(json!({
+                        "url": format!("{}/api/codex/ps/mcp", observer.chatgpt_base_url),
+                    }))
+                    .expect("observer MCP configuration"),
+                )]))
+                .expect("configure independent hook observer");
+        })
+        // This native plugin and its loopback observer belong to the host.
+        .build_with_remote_and_local_env(&server)
+        .await?;
+    wait_for_mcp_server(&test.codex, "hook_observer").await?;
     let responses = mount_sse_sequence(
         &server,
         vec![
@@ -102,29 +123,6 @@ async fn native_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result<(
         ],
     )
     .await;
-    let test = test_codex()
-        .with_home(home)
-        .with_config(move |config| {
-            config.bypass_hook_trust = true;
-            config
-                .features
-                .enable(Feature::DefaultModeRequestUserInput)
-                .expect("enable request_user_input");
-            config
-                .mcp_servers
-                .set(HashMap::from([(
-                    "hook_observer".to_string(),
-                    serde_json::from_value(json!({
-                        "url": format!("{}/api/codex/ps/mcp", observer.chatgpt_base_url),
-                        "environment_id": remote_aware_environment_id(),
-                    }))
-                    .expect("observer MCP configuration"),
-                )]))
-                .expect("configure independent hook observer");
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    wait_for_mcp_server(&test.codex, "hook_observer").await?;
     test.submit_text_turn("finish the enabled baseline turn")
         .await?;
     assert_eq!(recorded_apps_tool_calls(&server).await.len(), 1);

@@ -7133,7 +7133,10 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
     let (window_number, window_ids) = session.advance_auto_compact_window().await;
     let installed_history = session
         .replace_compacted_history(
-            vec![ResponseItemEnvelope::new(user_message("compacted context"))],
+            vec![ResponseItemEnvelope {
+                item: user_message("compacted context"),
+                metadata: Some(Default::default()),
+            }],
             turn_context_baseline.clone(),
             world_state.render_full().0,
             CompactedHistoryMetadata {
