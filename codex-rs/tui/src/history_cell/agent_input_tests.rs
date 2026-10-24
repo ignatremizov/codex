@@ -366,7 +366,7 @@ fn inline_media_uses_attachment_markers_in_agent_transcripts() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) sends:
+    • Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) sends:
       └ [image]
         [audio]
     Sender: 019faa07-aa3d-78d3-9eca-66cd8626adad · Recipient: 019fbb08-bb4e-79e4-afdb-77de9737bebe · Sender turn: sender-turn
