@@ -50,6 +50,9 @@ impl ThreadRequestProcessor {
         let processor = self.clone();
         self.background_tasks.spawn(async move {
             let result = processor.unload_subtree(&request_id, thread_id).await;
+            if result.is_ok() {
+                crate::memory_reclamation::request();
+            }
             match result {
                 Ok(response) => processor.outgoing.send_response(request_id, response).await,
                 Err(error) => processor.outgoing.send_error(request_id, error).await,
