@@ -132,6 +132,17 @@ fragments, independent client instructions, and canonical audit records are not
 rewritten. Private helpers retain their separate instruction contract. Role-file
 validation is unchanged, including its rejection of blank developer instructions.
 
+## Steering and interruption
+
+The fork defaults `features.instant_interrupt` to `false`. Steering input is
+accepted while a turn is active and included at the next model-request boundary,
+allowing the current model response to finish. Set it to `true` to preempt model
+responses when new steering input arrives.
+
+The separate `features.code_mode_interrupt` setting defaults to `true` and
+terminates active code-mode cells when their turn is interrupted. It does not
+enable model-response preemption.
+
 ## Unified exec yield windows
 
 `exec_command_timeout_ms` was the fork's default deadline for the legacy
