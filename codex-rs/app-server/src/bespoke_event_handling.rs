@@ -1378,6 +1378,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             thread_watch_manager
                 .note_thread_shutdown(&conversation_id.to_string())
                 .await;
+            crate::memory_reclamation::request();
         }
 
         _ => {}
@@ -1459,6 +1460,7 @@ async fn emit_turn_completed_with_status(
     outgoing
         .send_server_notification(ServerNotification::TurnCompleted(notification))
         .await;
+    crate::memory_reclamation::request();
 }
 
 async fn apply_canonical_item_completed_side_effects(
@@ -1468,6 +1470,7 @@ async fn apply_canonical_item_completed_side_effects(
     event: &mut codex_protocol::protocol::ItemCompletedEvent,
 ) {
     match &event.item {
+        CoreTurnItem::ContextCompaction(_) => crate::memory_reclamation::request(),
         CoreTurnItem::CommandExecution(item) => {
             let observed_start = {
                 let mut state = thread_state.lock().await;
