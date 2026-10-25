@@ -56,10 +56,7 @@ fn under_development_features_are_disabled_by_default() {
     for spec in crate::FEATURES {
         // Fork defaults can retain their upstream development stage.
         if matches!(spec.stage, Stage::UnderDevelopment)
-            && !matches!(
-                spec.id,
-                Feature::InstantInterrupt | Feature::CodeModeToolSearch
-            )
+            && !matches!(spec.id, Feature::CodeModeToolSearch)
         {
             assert_eq!(
                 spec.default_enabled, false,
@@ -150,12 +147,7 @@ fn codex_apps_mcp_protocol_can_be_enabled_independently_of_generic_mcp() {
 fn default_enabled_features_are_stable() {
     for spec in crate::FEATURES {
         // Fork defaults can retain their upstream development stage.
-        if spec.default_enabled
-            && !matches!(
-                spec.id,
-                Feature::InstantInterrupt | Feature::CodeModeToolSearch
-            )
-        {
+        if spec.default_enabled && !matches!(spec.id, Feature::CodeModeToolSearch) {
             assert!(
                 matches!(spec.stage, Stage::Stable | Stage::Removed),
                 "feature `{}` is enabled by default but is not stable/removed ({:?})",
