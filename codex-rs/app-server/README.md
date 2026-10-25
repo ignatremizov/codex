@@ -736,6 +736,10 @@ Success acknowledges final persistence, writer-lease release, and removal of the
 
 The accepted operation continues if the requesting connection disappears. A failed durable drain returns an error and retains all captured runtime entries, including actors already stopped by that attempt. The retained instances reject ordinary input, spawn, reopening, close, eviction, and removal; retry `thread/unload` to finish cleanup. Accepted completion delivery remains able to acquire lifecycle locks while shutdown drains. A cancelled, never-acknowledged spawn also retains any failed alias rollback until retry finishes it; ordinary unloaded aliases stay open. A client must not report successful shutdown or silently exit after such an error.
 
+## Allocator memory reclamation
+
+GNU/Linux servers request best-effort glibc heap trimming after completed or interrupted turns, completed compaction, and thread shutdown or successful unload. Threads can remain loaded: trimming returns whole pages already freed by the allocator and leaves live conversation state intact. Requests share one process-wide reservation, wait five seconds for temporary state to drop, and run on a blocking worker at most once per minute after a completed pass. This can release resident or swapped free pages; partially occupied pages can remain allocated. Other platforms and musl builds retain their existing allocator behavior.
+
 # Thread rollback
 
 `thread/rollback` is retained as a Legacy-history compatibility route. Paginated threads continue to use `thread/revert`; rollback rejects them rather than changing their history mode. Neither operation undoes filesystem changes.

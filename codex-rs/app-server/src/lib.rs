@@ -131,6 +131,7 @@ mod log_write_warning;
 #[cfg(unix)]
 mod managed_daemon;
 mod mcp_refresh;
+mod memory_reclamation;
 mod message_processor;
 mod model_catalog;
 mod models;
