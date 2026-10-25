@@ -1365,7 +1365,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::InstantInterrupt,
         key: "instant_interrupt",
         stage: Stage::UnderDevelopment,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::InterruptOnCancel,
