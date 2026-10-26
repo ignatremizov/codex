@@ -1,3 +1,4 @@
+mod command_layout;
 mod live_output;
 mod model;
 mod preview;

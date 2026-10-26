@@ -401,6 +401,68 @@ fn full_reply_caption_preserves_links_and_partial_selections() {
 }
 
 #[test]
+fn labelled_prefix_keeps_statement_breaks_after_intervening_indentation() {
+    let width = 64;
+    let label = "Re: ";
+    let retained = "Re:   ";
+    let rows =
+        crate::markdown_render::render_markdown_lines_with_width_cwd_and_hidden_link_destinations(
+            "**echo a;** echo b",
+            None,
+            Some(Path::new("/")),
+            &crate::markdown_render::hide_web_link_destination,
+        );
+    assert_eq!(rows.len(), 1);
+    let label_rows = |rows| {
+        let mut rows = crate::terminal_hyperlinks::prefix_hyperlink_lines(
+            rows,
+            retained.into(),
+            "      ".into(),
+        );
+        crate::terminal_hyperlinks::retain_initial_prefix(&mut rows, label);
+        rows
+    };
+    let baseline = TextLayout::new(label_rows(rows.clone()), width);
+    let mut rows = rows;
+    let origin = rows[0].source.as_mut().expect("Markdown source");
+    assert!(origin.copy.is_some());
+    let break_at = origin.text.find(';').unwrap() + 1;
+    origin.display_breaks = vec![break_at].into();
+    let original = origin.clone();
+    let rows = label_rows(rows);
+    let source = rows[0].source.as_ref().expect("labelled source");
+    assert_eq!(source.text.as_ref(), format!("{retained}{}", original.text));
+    assert_eq!(source.range, 0..source.text.len());
+    assert_eq!(source.prefix_bytes, 0);
+    assert_eq!(source.display_breaks.as_ref(), &[retained.len() + break_at]);
+    let (label_end, body) = source
+        .labelled_body
+        .as_deref()
+        .expect("labelled Markdown body");
+    assert_eq!(*label_end, label.len());
+    let mut prefixed_original = original.clone();
+    prefixed_original.prefix_bytes = retained.len();
+    prefixed_original.continuation_indent = "      ".into();
+    assert_eq!(body, &prefixed_original);
+    let layout = TextLayout::new(rows, width);
+    assert_eq!(layout.text(), baseline.text());
+    assert_eq!(layout.row_count(), 2);
+    assert_eq!(
+        layout.position_at(/*row*/ 1, /*column*/ 0),
+        retained.len() + original.text.find("echo b").unwrap(),
+    );
+    assert_eq!(
+        payload(&layout, 0..layout.text().len()),
+        payload(&baseline, 0..baseline.text().len()),
+    );
+    let start = layout.text().find("echo b").unwrap();
+    assert_eq!(
+        payload(&layout, start..layout.text().len()),
+        payload(&baseline, start..baseline.text().len()),
+    );
+}
+
+#[test]
 fn mixed_user_prose_preserves_literal_text_without_code_fences() {
     let cell = crate::history_cell::new_user_prompt(
         "    Explain *literal*\nnext <tag>".into(),

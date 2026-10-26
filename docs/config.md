@@ -436,6 +436,8 @@ Remote V2 rollout checkpoints retain the service's reported output-token count a
 
 `tui.command_output_preview_lines` limits inline agent/tool command output and `/ps` previews to 30 screen rows by default. `tui.user_shell_output_preview_lines` independently limits user-shell output to 50 rows. Truncated previews retain a head and tail where space permits, with an omission row; command text is not shortened.
 
+Command previews and expanded transcripts show shell statements on separate rows at semicolon separators. Quoted text, substitutions and arithmetic loop headers stay together. Literal, quoted Node stdin heredocs also use JavaScript colors and statement breaks, preserving strings, regex literals, templates and comments. These are display breaks: selection and copying retain the original command, as do raw history exports and executed tool arguments. Unknown syntax and commands beyond the syntax highlighter's size limits keep their original wrapping.
+
 These are local TUI presentation settings: live command cells and reconstructed
 history use the same local limits, even when the connected server has different
 configuration values.

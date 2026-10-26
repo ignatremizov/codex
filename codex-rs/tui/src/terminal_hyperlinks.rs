@@ -371,6 +371,11 @@ pub(crate) fn retain_initial_prefix(lines: &mut [HyperlinkLine], prefix: &str) {
         )
     }));
     let styles = std::sync::Arc::from(styles);
+    let display_breaks: std::sync::Arc<[usize]> = origin
+        .display_breaks
+        .iter()
+        .map(|offset| offset + retained.len())
+        .collect();
     let text: std::sync::Arc<str> = format!("{retained}{}", origin.text).into();
     let labelled_body = origin
         .copy
@@ -387,6 +392,7 @@ pub(crate) fn retain_initial_prefix(lines: &mut [HyperlinkLine], prefix: &str) {
         source.text = std::sync::Arc::clone(&text);
         source.styles = std::sync::Arc::clone(&styles);
         source.labelled_body = labelled_body.clone();
+        source.display_breaks = std::sync::Arc::clone(&display_breaks);
         source.line_style = ratatui::style::Style::default();
         source.span_style = ratatui::style::Style::default();
         source.range = source.range.start + retained.len()..source.range.end + retained.len();
