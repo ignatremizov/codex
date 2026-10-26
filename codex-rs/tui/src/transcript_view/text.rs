@@ -12,6 +12,9 @@ use std::ops::Range;
 #[path = "text_logical.rs"]
 mod logical;
 
+#[path = "text_display_breaks.rs"]
+mod display_breaks;
+
 #[path = "text_tabs.rs"]
 mod tabs;
 
@@ -511,14 +514,8 @@ impl TextLayout {
                 text.push('\n');
             }
             let start = text.len();
-            text.extend(
-                line.line
-                    .line
-                    .spans
-                    .iter()
-                    .map(|span| span.content.as_ref()),
-            );
-            rows.extend(layout_line(line, start, width));
+            text.push_str(&line.origin.text[line.origin.range.clone()]);
+            rows.extend(display_breaks::layout_line(line, start, width));
             if let Some(row) = rows.last_mut() {
                 row.line_end = Some(text.len());
             }
@@ -688,3 +685,7 @@ mod prompt_style_tests;
 #[cfg(test)]
 #[path = "text_tabs_tests.rs"]
 mod tab_tests;
+
+#[cfg(test)]
+#[path = "text_display_breaks_tests.rs"]
+mod display_break_tests;

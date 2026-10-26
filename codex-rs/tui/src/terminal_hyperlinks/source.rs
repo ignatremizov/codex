@@ -28,6 +28,9 @@ pub(crate) struct LogicalLineSource {
     pub(crate) copy_as_prose: bool,
     /// Span styles share the text's byte coordinates, including whitespace omitted by wrapping.
     pub(crate) styles: Arc<[(Range<usize>, Style)]>,
+    /// Sorted byte offsets in `text` where a new display row begins without a copied newline.
+    /// Spaces and tabs immediately after these offsets remain source text but are not painted.
+    pub(crate) display_breaks: Arc<[usize]>,
     /// Row style, applied beneath explicit span styles just like ratatui's `Line`.
     pub(crate) line_style: Style,
     /// A later uniform span-style patch, such as the dim/italic reasoning treatment.
@@ -48,6 +51,7 @@ impl LogicalLineSource {
             copy: None,
             copy_as_prose: false,
             styles: vec![(0..end, Style::default())].into(),
+            display_breaks: Arc::default(),
             line_style: Style::default(),
             span_style: Style::default(),
             range: 0..end,
@@ -108,6 +112,7 @@ impl LogicalLineSource {
             copy: self.copy.clone(),
             copy_as_prose: self.copy_as_prose,
             styles: Arc::clone(&self.styles),
+            display_breaks: Arc::clone(&self.display_breaks),
             line_style: self.line_style,
             span_style: self.span_style,
             range: self.range.start + start - source_start..self.range.start + end - source_start,
