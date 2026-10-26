@@ -14,7 +14,6 @@ use crate::transcript_mode::TranscriptMode;
 use app_test_support::create_fake_paginated_rollout;
 use app_test_support::rollout_path;
 use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
@@ -162,20 +161,27 @@ async fn history_hydration_metadata_tracks_missing_turns_and_stale_completions_k
             .collect::<Vec<_>>(),
         vec!["item-12-0"]
     );
-    let old_cursor = server
+    let load = server
         .begin_older_history_page(target.thread_id)
         .expect("older page");
+    let old_cursor = load.request.clone();
     let page = server
         .thread_items_page(
             target.thread_id,
             /*turn_id*/ None,
-            Some(old_cursor.clone()),
+            Some(old_cursor.cursor.clone()),
             /*limit*/ 2,
         )
         .await?;
-    let items = server
-        .apply_older_history_page(target.thread_id, &old_cursor, page, &mut thread.turns)
+    let page = load
+        .prepare(page, std::mem::take(&mut thread.turns))
         .await?;
+    let stale_page = page.clone();
+    let contents = server
+        .apply_older_history_page(target.thread_id, &old_cursor, page)
+        .expect("admitted page");
+    let items = contents.items;
+    thread.turns = contents.turns;
     assert_eq!(
         items.iter().map(ThreadItem::id).collect::<Vec<_>>(),
         vec!["item-3-0", "item-5-0"]
@@ -208,27 +214,24 @@ async fn history_hydration_metadata_tracks_missing_turns_and_stale_completions_k
         }]
     );
 
-    let cursor = server
+    let load = server
         .begin_older_history_page(target.thread_id)
         .expect("next page");
-    assert_ne!(old_cursor, cursor);
+    let cursor = load.request.clone();
+    assert_ne!(old_cursor.cursor, cursor.cursor);
     let mut tui = crate::tui::test_support::make_test_tui()?;
     // The response is stale even when its thread is no longer displayed. Ignore its error first.
     app.transcript_view.history = TranscriptHistoryState::LoadingOlder;
     for result in [
         Err("obsolete transport failure".to_string()),
-        Ok(ThreadItemsListResponse {
-            data: Vec::new(),
-            next_cursor: None,
-            backwards_cursor: None,
-        }),
+        Ok(stale_page),
     ] {
         app.handle_event(
             &mut tui,
             &mut server,
             AppEvent::OlderThreadHistoryLoaded {
                 thread_id: target.thread_id,
-                cursor: old_cursor.clone(),
+                request: old_cursor.clone(),
                 result,
             },
         )
