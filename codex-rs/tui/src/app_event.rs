@@ -38,7 +38,6 @@ use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadGoalStatus;
-use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadMailboxReadResponse;
 use codex_connectors::AppInfo;
 use codex_file_search::FileMatch;
@@ -55,6 +54,8 @@ use uuid::Uuid;
 
 use crate::app_command::AppCommand;
 use crate::app_server_session::AppServerStartedThread;
+use crate::app_server_session::LoadedOlderHistoryPage;
+use crate::app_server_session::OlderHistoryPageRequest;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
@@ -579,11 +580,11 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
     },
 
-    /// One background-loaded page of older Ctrl+T transcript history.
+    /// One older page with all dependent turn metadata already loaded in the background.
     OlderThreadHistoryLoaded {
         thread_id: ThreadId,
-        cursor: String,
-        result: Result<ThreadItemsListResponse, String>,
+        request: OlderHistoryPageRequest,
+        result: Result<LoadedOlderHistoryPage, String>,
     },
 
     /// Open the filename prompt for an on-demand Markdown transcript export.

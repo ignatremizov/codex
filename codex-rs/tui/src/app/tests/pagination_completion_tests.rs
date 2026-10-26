@@ -2,6 +2,8 @@
 
 use super::session_lifecycle_requests::start_recording_app_server;
 use super::*;
+use crate::app_server_session::LoadedOlderHistoryPage;
+use crate::app_server_session::OlderHistoryPageLoad;
 use crate::pager_overlay::TranscriptHistoryState;
 use app_test_support::create_fake_paginated_rollout;
 use app_test_support::rollout_path;
@@ -16,6 +18,23 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_state::SqliteConfig;
 use pretty_assertions::assert_eq;
+
+pub(super) async fn prepare_page(
+    app: &App,
+    thread_id: ThreadId,
+    load: OlderHistoryPageLoad,
+    page: ThreadItemsListResponse,
+) -> Result<LoadedOlderHistoryPage> {
+    let turns = {
+        let store = app.thread_event_channels[&thread_id].store.lock().await;
+        let mut turns = store.turns.clone();
+        for turn in &mut turns {
+            turn.items.clear();
+        }
+        turns
+    };
+    load.prepare(page, turns).await
+}
 
 pub(super) async fn completed_history_app(
     names: &[&str],
@@ -154,14 +173,15 @@ async fn older_pagination_completion_footers_follow_answers_without_overlap_dupl
     let mut overlapping_answer = None;
     let mut snapshots = Vec::new();
     for limit in [1, 100] {
-        let cursor = app_server
+        let load = app_server
             .begin_older_history_page(thread_id)
             .expect("older page");
+        let cursor = load.request.clone();
         let mut page: ThreadItemsListResponse = app_server
             .thread_items_page(
                 thread_id,
                 /*turn_id*/ None,
-                Some(cursor.clone()),
+                Some(cursor.cursor.clone()),
                 limit,
             )
             .await?;
@@ -171,6 +191,7 @@ async fn older_pagination_completion_footers_follow_answers_without_overlap_dupl
         } else {
             overlapping_answer = page.data.first().cloned();
         }
+        let page = prepare_page(&app, thread_id, load, page).await?;
         app.handle_older_history_page(&mut tui, &mut app_server, thread_id, &cursor, Ok(page))
             .await?;
         snapshots.push(
@@ -245,14 +266,15 @@ async fn beginning_navigation_holds_the_view_until_the_last_page_arrives() -> Re
         let before = render(&mut app, &mut tui)?;
 
         // Hold a small first page so the test can inspect each request/completion boundary.
-        let cursor = app_server
+        let load = app_server
             .begin_older_history_page(thread_id)
             .expect("older page");
+        let cursor = load.request.clone();
         let first_page = app_server
             .thread_items_page(
                 thread_id,
                 /*turn_id*/ None,
-                Some(cursor.clone()),
+                Some(cursor.cursor.clone()),
                 /*limit*/ 1,
             )
             .await?;
@@ -267,6 +289,7 @@ async fn beginning_navigation_holds_the_view_until_the_last_page_arrives() -> Re
             (render(&mut app, &mut tui)?, app.transcript_view.history),
             (before.clone(), TranscriptHistoryState::LoadingBeginning),
         );
+        let first_page = prepare_page(&app, thread_id, load, first_page).await?;
         app.handle_older_history_page(
             &mut tui,
             &mut app_server,
@@ -275,15 +298,18 @@ async fn beginning_navigation_holds_the_view_until_the_last_page_arrives() -> Re
             Ok(first_page),
         )
         .await?;
-        assert!(app_server.is_older_history_page_pending(thread_id, &final_cursor));
         let final_event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), event_rx.recv())
             .await?
             .expect("final page completion");
         assert!(matches!(
             &final_event,
-            AppEvent::OlderThreadHistoryLoaded { result: Ok(page), .. }
-                if page.next_cursor.is_none()
+            AppEvent::OlderThreadHistoryLoaded { request, result: Ok(_), .. }
+                if request.cursor == final_cursor
         ));
+        let AppEvent::OlderThreadHistoryLoaded { request, .. } = &final_event else {
+            unreachable!()
+        };
+        assert!(app_server.is_older_history_page_pending(thread_id, request));
         // A draw while the completion is waiting must leave the viewport and loading intent intact.
         app.handle_owned_transcript_event(&mut tui, &mut app_server, &TuiEvent::Draw)?;
         assert_eq!(
@@ -354,23 +380,24 @@ async fn returning_to_latest_retains_pending_pages_without_continuing_to_the_beg
             KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL),
             &app.transcript_cells,
         );
-        let cursor = app_server
+        let load = app_server
             .begin_older_history_page(thread_id)
             .expect("older page");
+        let cursor = load.request.clone();
         let page = app_server
             .thread_items_page(
                 thread_id,
                 /*turn_id*/ None,
-                Some(cursor.clone()),
+                Some(cursor.cursor.clone()),
                 limit,
             )
             .await?;
-        let next_cursor = page.next_cursor.clone();
         let before = app.transcript_cells.len();
         app.transcript_view.handle_key(
             KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL),
             &app.transcript_cells,
         );
+        let page = prepare_page(&app, thread_id, load, page).await?;
         app.handle_older_history_page(&mut tui, &mut app_server, thread_id, &cursor, Ok(page))
             .await?;
         assert!(
@@ -384,9 +411,7 @@ async fn returning_to_latest_retains_pending_pages_without_continuing_to_the_beg
             ),
             (expected_history, true),
         );
-        if let Some(next_cursor) = next_cursor {
-            assert!(!app_server.is_older_history_page_pending(thread_id, &next_cursor));
-        }
+        assert!(!app_server.is_older_history_page_pending(thread_id, &cursor));
     }
     tui.set_owned_screen(/*owned*/ false)?;
     app_server.shutdown().await?;
@@ -419,23 +444,32 @@ async fn stale_history_completions_preserve_the_current_request_and_failure_can_
     app.transcript_view.history = TranscriptHistoryState::LoadingBeginning;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     tui.set_owned_screen(/*owned*/ true)?;
-    let cursor = app_server
+    let obsolete_load = app_server
         .begin_older_history_page(thread_id)
         .expect("older page");
+    let obsolete_request = obsolete_load.request.clone();
+    app_server.cancel_older_history_page(thread_id, &obsolete_request);
+    let load = app_server
+        .begin_older_history_page(thread_id)
+        .expect("same cursor can be retried");
+    let cursor = load.request.clone();
+    assert_eq!(cursor.cursor, obsolete_request.cursor);
+    assert_ne!(cursor, obsolete_request);
     let page = app_server
         .thread_items_page(
             thread_id,
             /*turn_id*/ None,
-            Some(cursor.clone()),
+            Some(cursor.cursor.clone()),
             /*limit*/ 1,
         )
         .await?;
-    for result in [Ok(page.clone()), Err("obsolete request failed".to_string())] {
+    let stale_page = prepare_page(&app, thread_id, load, page.clone()).await?;
+    for result in [Ok(stale_page), Err("obsolete request failed".to_string())] {
         app.handle_older_history_page(
             &mut tui,
             &mut app_server,
             thread_id,
-            "obsolete-cursor",
+            &obsolete_request,
             result,
         )
         .await?;
@@ -450,7 +484,7 @@ async fn stale_history_completions_preserve_the_current_request_and_failure_can_
     }
     let failure = AppEvent::OlderThreadHistoryLoaded {
         thread_id,
-        cursor: cursor.clone(),
+        request: cursor.clone(),
         result: Err("current request failed".to_string()),
     };
     Box::pin(app.handle_event(&mut tui, &mut app_server, failure)).await?;
@@ -462,11 +496,12 @@ async fn stale_history_completions_preserve_the_current_request_and_failure_can_
         ),
         (TranscriptHistoryState::Failed, false),
     );
-    assert_eq!(
-        app_server.begin_older_history_page(thread_id),
-        Some(cursor.clone())
-    );
-    app_server.cancel_older_history_page(thread_id, "obsolete-cursor");
+    let load = app_server
+        .begin_older_history_page(thread_id)
+        .expect("failed request can be retried");
+    assert_eq!(load.request.cursor, cursor.cursor);
+    let cursor = load.request.clone();
+    app_server.cancel_older_history_page(thread_id, &obsolete_request);
     assert!(app_server.is_older_history_page_pending(thread_id, &cursor));
     app.transcript_view.history = TranscriptHistoryState::LoadingOlder;
     // Initialize the viewport as the app's first draw does before accepting Find input.
@@ -482,12 +517,17 @@ async fn stale_history_completions_preserve_the_current_request_and_failure_can_
     app.transcript_view.paste_search("Middle answer");
     app.transcript_view.advance_search(&app.transcript_cells);
     let next_cursor = page.next_cursor.clone().expect("another older page");
+    let page = prepare_page(&app, thread_id, load, page).await?;
     app.handle_older_history_page(&mut tui, &mut app_server, thread_id, &cursor, Ok(page))
         .await?;
     assert_eq!(app.transcript_view.history, TranscriptHistoryState::Partial);
     assert!(!app.transcript_cells.is_empty());
     // The received page must be searched before another page can start, even near the top.
-    assert!(!app_server.is_older_history_page_pending(thread_id, &next_cursor));
+    let next_load = app_server
+        .begin_older_history_page(thread_id)
+        .expect("Find has not started another request");
+    assert_eq!(next_load.request.cursor, next_cursor);
+    app_server.cancel_older_history_page(thread_id, &next_load.request);
     // Scanning yields after the completion footer before reaching the answer in the same page.
     for _ in 0..8 {
         if !app.transcript_view.advance_search(&app.transcript_cells) {
@@ -503,10 +543,11 @@ async fn stale_history_completions_preserve_the_current_request_and_failure_can_
         .collect::<String>();
     assert!(rendered.contains("Middle answer"), "rendered: {rendered:?}",);
 
-    assert_eq!(
-        app_server.begin_older_history_page(thread_id),
-        Some(next_cursor.clone())
-    );
+    let next_load = app_server
+        .begin_older_history_page(thread_id)
+        .expect("next page");
+    assert_eq!(next_load.request.cursor, next_cursor);
+    let next_cursor = next_load.request.clone();
     app.handle_older_history_page(
         &mut tui,
         &mut app_server,
