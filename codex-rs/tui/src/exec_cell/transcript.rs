@@ -1,10 +1,10 @@
 //! Expanded command history with source-backed selection and chronological activity details.
 //! Raw history omits transcript-only reasoning while retaining full command output.
 
+use super::command_layout::CommandLayout;
 use super::model::ExecCell;
 use crate::exec_command::command_display;
 use crate::history_cell::HistoryRenderMode;
-use crate::render::highlight::highlight_bash_to_lines;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::adaptive_wrap_hyperlink_lines;
 use crate::terminal_hyperlinks::plain_hyperlink_lines;
@@ -26,9 +26,9 @@ impl ExecCell {
                 lines.push("".into());
             }
             let script = command_display(&call.command, &call.parsed);
-            let mut highlighted_script = highlight_bash_to_lines(&script);
+            let mut command_layout = CommandLayout::new(&script);
             if let Some(response_handling) = call.user_shell_response_handling
-                && let Some(first) = highlighted_script.first_mut()
+                && let Some(first) = command_layout.lines.first_mut()
             {
                 first.spans.push(" ".into());
                 first.spans.push(
@@ -39,8 +39,12 @@ impl ExecCell {
                     .dim(),
                 );
             }
+            let command_lines = match mode {
+                HistoryRenderMode::Rich => command_layout.into_lines(),
+                HistoryRenderMode::Raw => plain_hyperlink_lines(command_layout.lines),
+            };
             let cmd_display = adaptive_wrap_hyperlink_lines(
-                &plain_hyperlink_lines(highlighted_script),
+                &command_lines,
                 RtOptions::new(width as usize)
                     .initial_indent("$ ".magenta().into())
                     .subsequent_indent("    ".into()),

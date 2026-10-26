@@ -304,6 +304,11 @@ pub(crate) fn retain_initial_prefix(lines: &mut [HyperlinkLine], prefix: &str) {
         )
     }));
     let styles = std::sync::Arc::from(styles);
+    let display_breaks: std::sync::Arc<[usize]> = origin
+        .display_breaks
+        .iter()
+        .map(|offset| offset + prefix.len())
+        .collect();
     let text: std::sync::Arc<str> = format!("{prefix}{}", origin.text).into();
     for (index, line) in lines.iter_mut().enumerate() {
         let Some(source) = line
@@ -315,6 +320,7 @@ pub(crate) fn retain_initial_prefix(lines: &mut [HyperlinkLine], prefix: &str) {
         };
         source.text = std::sync::Arc::clone(&text);
         source.styles = std::sync::Arc::clone(&styles);
+        source.display_breaks = std::sync::Arc::clone(&display_breaks);
         source.line_style = ratatui::style::Style::default();
         source.span_style = ratatui::style::Style::default();
         source.range = source.range.start + prefix.len()..source.range.end + prefix.len();
