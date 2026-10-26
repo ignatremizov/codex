@@ -1,6 +1,7 @@
 //! Bounded app-server transcript loading for resume, fork, and transcript views.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::AppServerSession;
 use crate::exec_cell::OutputPreviewLineLimits;
@@ -30,6 +31,16 @@ use codex_app_server_protocol::TurnItemsView;
 use codex_protocol::ThreadId;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
+
+#[path = "history_page.rs"]
+mod page;
+
+pub(crate) use page::LoadedOlderHistoryPage;
+pub(crate) use page::OlderHistoryPageContents;
+#[cfg(test)]
+pub(crate) use page::OlderHistoryPageLoad;
+pub(crate) use page::OlderHistoryPageRequest;
+use page::PendingOlderHistoryPage;
 
 pub(crate) const INITIAL_HISTORY_TURN_LIMIT: u32 = 5;
 pub(crate) const HISTORY_ITEM_PAGE_LIMIT: u32 = 100;
@@ -103,7 +114,7 @@ impl HistoryLoadBudget {
     }
 }
 
-pub(crate) fn thread_items_page_params(
+fn thread_items_page_params(
     thread_id: ThreadId,
     turn_id: Option<&str>,
     cursor: Option<String>,
@@ -136,7 +147,7 @@ pub(crate) struct ThreadHistoryPagination {
     next_item_cursor: Option<String>,
     seen_turn_cursors: HashSet<String>,
     seen_item_cursors: HashSet<String>,
-    loading_older: bool,
+    loading_older: Option<Arc<PendingOlderHistoryPage>>,
 }
 
 impl AppServerSession {
@@ -170,7 +181,7 @@ impl AppServerSession {
                 },
             );
         } else if let Some(page) = self.history_pagination.get_mut(&thread_id) {
-            page.loading_older = false;
+            page.loading_older = None;
         }
         Ok(response)
     }
@@ -179,52 +190,6 @@ impl AppServerSession {
         self.history_pagination
             .get(&thread_id)
             .is_some_and(|page| page.next_item_cursor.is_some())
-    }
-
-    pub(crate) fn begin_older_history_page(&mut self, thread_id: ThreadId) -> Option<String> {
-        let page = self.history_pagination.get_mut(&thread_id)?;
-        if page.loading_older {
-            return None;
-        }
-        let cursor = page.next_item_cursor.clone()?;
-        page.loading_older = true;
-        Some(cursor)
-    }
-
-    /// Match a completion to the page still pending for this thread, before interpreting its result.
-    pub(crate) fn is_older_history_page_pending(&self, thread_id: ThreadId, cursor: &str) -> bool {
-        self.history_pagination.get(&thread_id).is_some_and(|page| {
-            page.loading_older && page.next_item_cursor.as_deref() == Some(cursor)
-        })
-    }
-
-    pub(crate) fn cancel_older_history_page(&mut self, thread_id: ThreadId, cursor: &str) {
-        if let Some(page) = self.history_pagination.get_mut(&thread_id)
-            && page.next_item_cursor.as_deref() == Some(cursor)
-        {
-            page.loading_older = false;
-        }
-    }
-
-    pub(crate) async fn apply_older_history_page(
-        &mut self,
-        thread_id: ThreadId,
-        cursor: &str,
-        page: ThreadItemsListResponse,
-        turns: &mut Vec<Turn>,
-    ) -> Result<Vec<ThreadItem>> {
-        if !self.is_older_history_page_pending(thread_id, cursor) {
-            return Ok(Vec::new());
-        }
-        let Some(mut state) = self.history_pagination.get(&thread_id).cloned() else {
-            return Ok(Vec::new());
-        };
-        let items = self
-            .merge_thread_item_page(thread_id, page, &mut state, turns)
-            .await?;
-        state.loading_older = false;
-        self.history_pagination.insert(thread_id, state);
-        Ok(items)
     }
 
     pub(crate) async fn thread_items_page(
@@ -272,58 +237,6 @@ impl AppServerSession {
             self.history_support = super::ThreadHistorySupport::LegacyOnly;
         }
         response.wrap_err("failed to load a bounded thread history page")
-    }
-
-    async fn merge_thread_item_page(
-        &mut self,
-        thread_id: ThreadId,
-        page: ThreadItemsListResponse,
-        state: &mut ThreadHistoryPagination,
-        turns: &mut Vec<Turn>,
-    ) -> Result<Vec<ThreadItem>> {
-        state.next_item_cursor = advancing_cursor(
-            state.next_item_cursor.as_deref(),
-            page.next_cursor,
-            &mut state.seen_item_cursors,
-        );
-        let mut missing_turn_ids = page
-            .data
-            .iter()
-            .filter(|entry| !turns.iter().any(|turn| turn.id == entry.turn_id))
-            .map(|entry| entry.turn_id.clone())
-            .collect::<HashSet<_>>();
-        let mut items = Vec::new();
-        for entry in page.data {
-            while !turns.iter().any(|turn| turn.id == entry.turn_id) {
-                let Some(cursor) = state.next_turn_cursor.take() else {
-                    break;
-                };
-                // Fetch only the remaining item-backed turns so metadata does not run ahead
-                // of this page. Empty turns between them may require another bounded request.
-                let limit = missing_turn_ids.len().min(HISTORY_ITEM_PAGE_LIMIT as usize) as u32;
-                let page = self
-                    .thread_turns_page(thread_id, Some(cursor.clone()), limit)
-                    .await?;
-                state.next_turn_cursor = advancing_cursor(
-                    Some(&cursor),
-                    page.next_cursor,
-                    &mut state.seen_turn_cursors,
-                );
-                for turn in &page.data {
-                    missing_turn_ids.remove(&turn.id);
-                }
-                turns.splice(0..0, page.data.into_iter().rev());
-            }
-            if let Some(turn) = turns.iter_mut().find(|turn| turn.id == entry.turn_id)
-                && !turn.items.iter().any(|item| item.id() == entry.item.id())
-            {
-                items.push(entry.item.clone());
-                turn.items.insert(/*index*/ 0, entry.item);
-                turn.items_view = TurnItemsView::Summary;
-            }
-        }
-        items.reverse();
-        Ok(items)
     }
 
     /// Hydrates paginated threads through bounded turn and item pages.
@@ -380,9 +293,15 @@ impl AppServerSession {
                 break;
             }
             scanned_items = scanned_items.saturating_add(page.data.len());
-            let items = self
-                .merge_thread_item_page(thread_id, page, &mut state, &mut thread.turns)
-                .await?;
+            let items = page::merge_thread_item_page(
+                &self.request_handle(),
+                thread_id,
+                page,
+                &mut state,
+                &mut thread.turns,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await?;
             // Finish the anchor turn so prompt editing can detect earlier steers,
             // but do not scan history older than the displayed transcript.
             if let HistoryHydrationScope::ThroughTurn(anchor) = scope

@@ -32,7 +32,11 @@ pub(crate) use history::HISTORY_ITEM_PAGE_LIMIT;
 pub(crate) use history::HISTORY_ITEM_SCAN_LIMIT;
 pub(crate) use history::HistoryHydrationScope;
 pub(crate) use history::INITIAL_HISTORY_TURN_LIMIT;
-pub(crate) use history::thread_items_page_params;
+pub(crate) use history::LoadedOlderHistoryPage;
+pub(crate) use history::OlderHistoryPageContents;
+#[cfg(test)]
+pub(crate) use history::OlderHistoryPageLoad;
+pub(crate) use history::OlderHistoryPageRequest;
 pub(crate) use rollback::LegacyRollbackOutcome;
 pub(crate) use startup_launch::StartupLaunchChoices;
 

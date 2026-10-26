@@ -50,6 +50,10 @@ When switching threads or agents in inline mode, the TUI reconstructs only a rec
 
 Alternate-screen surfaces do not have standard terminal scrollback. They provide their own navigation over the content they render; for example, the transcript pager opened with Ctrl+T navigates Codex's retained transcript.
 
+In the owned conversation viewport, rapid wheel input shares the normal frame scheduler instead of repainting for every wheel event. Clicks and drags still refresh selection geometry immediately. Interrupt and quit shortcuts do not require an eager repaint; transcript selection keeps its existing copy shortcuts.
+
+Older transcript pages, including any additional turn metadata they need, load in the background so the input loop stays available. A page has a 30-second loading deadline and can be retried after failure. Late replies from a cancelled or replaced request cannot advance the current cursor or replace the current loading state.
+
 ## Terminal multiplexers
 
 Multiplexers such as Zellij may strictly disable scrollback while an application is in the alternate screen. That affects the owned transcript and temporary alternate-screen surfaces, not the inline conversation.

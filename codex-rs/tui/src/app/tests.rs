@@ -14,6 +14,8 @@ mod copy_mode_tests;
 mod math_interruption_tests;
 #[path = "tests/mcp_login_tests.rs"]
 mod mcp_login_tests;
+#[path = "tests/scroll_responsiveness_tests.rs"]
+mod scroll_responsiveness_tests;
 #[path = "tests/security_setup_tests.rs"]
 mod security_setup_tests;
 #[path = "tests/thread_switch_replay_tests.rs"]
@@ -97,6 +99,8 @@ mod backend_sessions;
 mod continue_turn_tests;
 #[path = "tests/history_hydration_tests.rs"]
 mod history_hydration_tests;
+#[path = "tests/history_loading_tests.rs"]
+mod history_loading_tests;
 #[path = "tests/permission_shortcuts_tests.rs"]
 mod permission_shortcuts_tests;
 mod plugin_catalog;
@@ -7319,17 +7323,19 @@ async fn ctrl_l_clears_owned_history_and_preserves_the_draft() -> Result<()> {
         .await?;
     app.scrollback_has_older_history = app_server.has_older_history(thread_id);
     assert!(app.scrollback_has_older_history);
-    let cursor = app_server
+    let load = app_server
         .begin_older_history_page(thread_id)
         .expect("older page");
+    let cursor = load.request.clone();
     let page = app_server
         .thread_items_page(
             thread_id,
             /*turn_id*/ None,
-            Some(cursor.clone()),
+            Some(cursor.cursor.clone()),
             /*limit*/ 100,
         )
         .await?;
+    let page = pagination_completion_tests::prepare_page(&app, thread_id, load, page).await?;
     app.chat_widget.set_model("gpt-test");
     app.chat_widget.insert_str("draft survives");
     app.transcript_cells = vec![Arc::new(history_cell::PlainHistoryCell::new(
@@ -9925,17 +9931,20 @@ async fn prompt_edit_reverts_earlier_and_first_visible_prompts_in_place_scenario
         prompt: prompt.clone(),
     };
     // A queued page shifts both identical prompts before confirmation is dispatched.
-    let cursor = app_server
+    let load = app_server
         .begin_older_history_page(source_thread_id)
         .expect("older page");
+    let cursor = load.request.clone();
     let page = app_server
         .thread_items_page(
             source_thread_id,
             /*turn_id*/ None,
-            Some(cursor.clone()),
+            Some(cursor.cursor.clone()),
             /*limit*/ 1,
         )
         .await?;
+    let page =
+        pagination_completion_tests::prepare_page(&app, source_thread_id, load, page).await?;
     app.handle_older_history_page(
         &mut tui,
         &mut app_server,

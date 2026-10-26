@@ -511,10 +511,17 @@ enum AgentControlRequestBehavior {
     Forward,
 }
 
+pub(super) struct BlockedOlderTurnMetadata {
+    pub(super) arm: oneshot::Receiver<()>,
+    pub(super) entered: oneshot::Sender<()>,
+    pub(super) release: oneshot::Receiver<()>,
+}
+
 /// Routing fixtures use synthetic controls; lifecycle tests forward to the embedded owner.
 pub(super) struct RecordingRequestBehavior {
     realtime: RealtimeRequestBehavior,
     agent_control: AgentControlRequestBehavior,
+    pub(super) blocked_older_turn_metadata: Option<BlockedOlderTurnMetadata>,
 }
 
 impl From<RealtimeRequestBehavior> for RecordingRequestBehavior {
@@ -522,6 +529,7 @@ impl From<RealtimeRequestBehavior> for RecordingRequestBehavior {
         Self {
             realtime,
             agent_control: AgentControlRequestBehavior::Synthetic,
+            blocked_older_turn_metadata: None,
         }
     }
 }
@@ -554,6 +562,7 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
     let RecordingRequestBehavior {
         realtime: realtime_behavior,
         agent_control: agent_control_behavior,
+        mut blocked_older_turn_metadata,
     } = request_behavior;
     let state_db =
         crate::init_state_db_for_app_server_target(config, &crate::AppServerTarget::Embedded)
@@ -715,6 +724,16 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                             RealtimeRequestBehavior::AcceptSpeech
                                 | RealtimeRequestBehavior::AcceptSpeechAndStallStop
                         ) && request.method == "thread/realtime/appendSpeech");
+                    if request.method == "thread/turns/list"
+                        && params.is_some_and(|params| params["cursor"].is_string())
+                        && blocked_older_turn_metadata
+                            .as_mut()
+                            .is_some_and(|gate| gate.arm.try_recv().is_ok())
+                        && let Some(gate) = blocked_older_turn_metadata.take()
+                    {
+                        let _ = gate.entered.send(());
+                        let _ = gate.release.await;
+                    }
                     let response = if fake_realtime_response {
                         JSONRPCMessage::Response(JSONRPCResponse {
                             id: request_id,
@@ -2470,6 +2489,7 @@ async fn interrupt_without_follow_up_refreshes_and_tracks_target_liveness() -> R
         RecordingRequestBehavior {
             realtime: RealtimeRequestBehavior::Forward,
             agent_control: AgentControlRequestBehavior::Forward,
+            blocked_older_turn_metadata: None,
         },
         LoaderOverrides::default(),
     )
@@ -4545,9 +4565,10 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.open_transcript_overlay(&mut tui);
     app.apply_backtrack_selection_internal(app.backtrack.nth_user_message);
-    let cursor = app_server
+    let load = app_server
         .begin_older_history_page(thread_id)
         .expect("review-mode marker should remain on an older page");
+    let cursor = load.request.clone();
     let request_id = app_server.next_request_id();
     let page: ThreadItemsListResponse = app_server
         .request_handle()
@@ -4556,12 +4577,14 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
             params: ThreadItemsListParams {
                 thread_id: thread_id.to_string(),
                 turn_id: None,
-                cursor: Some(ThreadItemsListCursor::Opaque(cursor.clone())),
+                cursor: Some(ThreadItemsListCursor::Opaque(cursor.cursor.clone())),
                 limit: Some(crate::app_server_session::HISTORY_ITEM_PAGE_LIMIT),
                 sort_direction: Some(SortDirection::Desc),
             },
         })
         .await?;
+    let page =
+        super::pagination_completion_tests::prepare_page(&app, thread_id, load, page).await?;
     app.handle_older_history_page(&mut tui, &mut app_server, thread_id, &cursor, Ok(page))
         .await?;
 
