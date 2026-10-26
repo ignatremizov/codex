@@ -743,7 +743,7 @@ async fn prompt_fork_keeps_exact_selection_when_an_older_page_arrives() -> Resul
             let event = events.recv().await.expect("attachment event");
             if let AppEvent::OlderThreadHistoryLoaded {
                 thread_id,
-                cursor,
+                request: cursor,
                 result,
             } = event
             {
