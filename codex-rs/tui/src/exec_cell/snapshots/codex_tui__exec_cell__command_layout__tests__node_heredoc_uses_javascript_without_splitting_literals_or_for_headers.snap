@@ -1,0 +1,11 @@
+---
+source: tui/src/exec_cell/command_layout_tests.rs
+expression: "layout.into_lines().iter().map(|row|\nrow.line.to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+node <<'NODE'
+const text = "a;b";
+const pattern = /[;()]/;
+for (let i=0;i<2;i++) { console.log(`x;${i}`);
+} // comment; stays
+NODE
+printf done
