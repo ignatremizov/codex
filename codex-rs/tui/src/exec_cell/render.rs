@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use super::command_layout::CommandLayout;
 use super::model::ActiveExecCall;
 use super::model::CommandOutput;
 use super::model::ExecCall;
@@ -15,12 +16,9 @@ use crate::history_cell::plain_lines;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
-use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::highlight::syntax_theme_revision;
-use crate::render::line_utils::line_to_static;
 use crate::style::accent_color;
 use crate::terminal_hyperlinks::HyperlinkLine;
-use crate::terminal_hyperlinks::LogicalLineSource;
 use crate::terminal_hyperlinks::adaptive_wrap_hyperlink_lines;
 use crate::terminal_hyperlinks::prefix_hyperlink_lines;
 use crate::terminal_hyperlinks::remap_source_wrapped_line;
@@ -525,7 +523,8 @@ impl ExecCell {
         } else {
             command_display(&call.command, &call.parsed)
         };
-        let mut highlighted_lines = highlight_bash_to_lines(&cmd_display);
+        let mut command_layout = CommandLayout::new(&cmd_display);
+        let highlighted_lines = &mut command_layout.lines;
         if let Some(output) = call.output.as_ref()
             && call.duration.is_some()
             && let Some(status) = command_exit_status(call, output.exit_code)
@@ -552,6 +551,7 @@ impl ExecCell {
 
         let mut continuation_lines: Vec<HyperlinkLine> = Vec::new();
 
+        let highlighted_lines = command_layout.into_lines();
         if let Some((first, rest)) = highlighted_lines.split_first() {
             let available_first_width = (width as usize)
                 .saturating_sub(header_prefix_width)
@@ -559,35 +559,32 @@ impl ExecCell {
             let first_opts =
                 RtOptions::new(available_first_width).word_splitter(WordSplitter::NoHyphenation);
 
-            let source = LogicalLineSource::from_line(first);
-            let first_wrapped = adaptive_wrap_line_with_source(first, first_opts);
+            let first_wrapped = remap_source_wrapped_line(
+                first,
+                adaptive_wrap_line_with_source(&first.line, first_opts),
+            );
             let mut first_wrapped_iter = first_wrapped.into_iter();
-            if let Some(first_segment) = first_wrapped_iter.next() {
-                let mut header_source = source.clone();
-                header_source.range = first_segment.range;
-                header_source.prefix_bytes = first_segment.prefix_bytes
-                    + header_line
+            if let Some(mut first_segment) = first_wrapped_iter.next() {
+                if let Some(source) = first_segment.source.as_mut() {
+                    source.prefix_bytes += header_line
                         .spans
                         .iter()
                         .map(|span| span.content.len())
                         .sum::<usize>();
-                header_source.continuation_indent =
-                    Line::from(layout.command_continuation.subsequent_prefix);
-                let mut line = line_to_static(&first_segment.line);
-                line.spans.splice(0..0, header_line.spans.clone());
-                header = HyperlinkLine::new(line);
-                header.source = Some(header_source);
+                    source.continuation_indent =
+                        Line::from(layout.command_continuation.subsequent_prefix);
+                }
+                first_segment
+                    .line
+                    .spans
+                    .splice(0..0, header_line.spans.clone());
+                header = first_segment;
             }
-            let mut command = HyperlinkLine::new(first.clone());
-            command.source = Some(source);
-            continuation_lines.extend(remap_source_wrapped_line(
-                &command,
-                first_wrapped_iter.collect(),
-            ));
+            continuation_lines.extend(first_wrapped_iter);
 
             for line in rest {
                 continuation_lines.extend(adaptive_wrap_hyperlink_lines(
-                    &[line.clone().into()],
+                    std::slice::from_ref(line),
                     continuation_opts.clone(),
                 ));
             }

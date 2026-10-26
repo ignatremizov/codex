@@ -59,6 +59,10 @@ mod streaming;
 
 pub(crate) use streaming::StreamingCodeHighlighter;
 
+#[path = "highlight_javascript.rs"]
+mod javascript;
+pub(crate) use javascript::statement_breaks as javascript_statement_breaks;
+
 // -- Global singletons -------------------------------------------------------
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
