@@ -486,14 +486,14 @@ impl App {
             }
             AppEvent::OlderThreadHistoryLoaded {
                 thread_id,
-                cursor,
+                request,
                 result,
             } => {
                 if let Err(err) = self
-                    .handle_older_history_page(tui, app_server, thread_id, &cursor, result)
+                    .handle_older_history_page(tui, app_server, thread_id, &request, result)
                     .await
                 {
-                    app_server.cancel_older_history_page(thread_id, &cursor);
+                    app_server.cancel_older_history_page(thread_id, &request);
                     if self.chat_widget.thread_id() == Some(thread_id) {
                         self.transcript_view.history = TranscriptHistoryState::Failed;
                         if let Some(overlay) = self
@@ -1087,7 +1087,7 @@ impl App {
                     );
                     self.scrollback_has_older_history = app_server.has_older_history(id);
                     if self.transcript_view.history == TranscriptHistoryState::LoadingOlder
-                        && app_server.pending_older_history_cursor(id).is_none()
+                        && app_server.pending_older_history_request(id).is_none()
                     {
                         self.transcript_view.history = if self.scrollback_has_older_history {
                             TranscriptHistoryState::Partial

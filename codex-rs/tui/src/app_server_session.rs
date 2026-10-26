@@ -40,7 +40,11 @@ pub(crate) use history::HISTORY_ITEM_PAGE_LIMIT;
 pub(crate) use history::HISTORY_ITEM_SCAN_LIMIT;
 pub(crate) use history::HistoryHydrationScope;
 pub(crate) use history::INITIAL_HISTORY_TURN_LIMIT;
-pub(crate) use history::thread_items_page_params;
+pub(crate) use history::LoadedOlderHistoryPage;
+pub(crate) use history::OlderHistoryPageContents;
+#[cfg(test)]
+pub(crate) use history::OlderHistoryPageLoad;
+pub(crate) use history::OlderHistoryPageRequest;
 pub(crate) use rollback::LegacyRollbackOutcome;
 pub(crate) use side_chat_history::SideChat;
 pub(crate) use side_chat_history::side_chat_prompt_preview;
@@ -5719,7 +5723,12 @@ mod tests {
         let lines = cells[0].display_lines(/*width*/ 80);
         insta::assert_snapshot!(lines.get(1).map(ToString::to_string).unwrap_or_default(), @"› hello from history");
         let next = server.begin_older_history_page(thread_id);
-        assert_eq!(next.as_deref(), Some("oldest"));
+        assert_eq!(
+            next.as_ref().map(|load| load.request.cursor.as_str()),
+            Some("oldest")
+        );
+        // A pending load captures a client handle; release it before awaiting server teardown.
+        drop(next);
         drop(server);
         worker.await.unwrap();
     }
