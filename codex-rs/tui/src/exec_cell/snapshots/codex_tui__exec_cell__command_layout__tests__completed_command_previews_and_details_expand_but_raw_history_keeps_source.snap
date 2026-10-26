@@ -1,0 +1,14 @@
+---
+source: tui/src/exec_cell/command_layout_tests.rs
+expression: "format!(\"Preview\\n{preview}\\n\\nDetails\\n{details}\")"
+---
+Preview
+• Ran printf '%s;' '界';
+  │ echo done
+  └ 界;done
+
+Details
+$ printf '%s;' '界';
+    echo done
+界;done
+✓ • 5ms

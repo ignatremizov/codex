@@ -1,0 +1,12 @@
+---
+source: tui/src/exec_cell/command_layout_tests.rs
+expression: rendered
+---
+set -e;
+printf '%s;' "界;";
+for ((i=0; i<2; i++)); do echo "$i";
+done;
+case "$x" in a) echo one;;
+*) echo two;;
+esac;
+echo "$(echo nested; echo substitution)"

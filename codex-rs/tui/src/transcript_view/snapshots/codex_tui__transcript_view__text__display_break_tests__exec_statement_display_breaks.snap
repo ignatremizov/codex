@@ -1,0 +1,54 @@
+---
+source: tui/src/transcript_view/text_display_breaks_tests.rs
+expression: "frames.join(\"\\n\\n\")"
+---
+review
+Buffer {
+    area: Rect { x: 0, y: 0, width: 64, height: 2 },
+    content: [
+        "• Running printf '%s;' '界';                                    ", // hidden by multi-width symbols: [(25, " ")]
+        "  │ echo done                                                   ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 1, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 2, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 9, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 10, y: 0, fg: Rgb(137, 180, 250), bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 0, fg: Rgb(205, 214, 244), bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 0, fg: Rgb(166, 227, 161), bg: Reset, underline: Reset, modifier: NONE,
+        x: 22, y: 0, fg: Rgb(205, 214, 244), bg: Reset, underline: Reset, modifier: NONE,
+        x: 23, y: 0, fg: Rgb(166, 227, 161), bg: Reset, underline: Reset, modifier: NONE,
+        x: 25, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 26, y: 0, fg: Rgb(166, 227, 161), bg: Reset, underline: Reset, modifier: NONE,
+        x: 27, y: 0, fg: Rgb(148, 226, 213), bg: Reset, underline: Reset, modifier: NONE,
+        x: 28, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 1, fg: Rgb(137, 180, 250), bg: Reset, underline: Reset, modifier: NONE,
+        x: 8, y: 1, fg: Rgb(205, 214, 244), bg: Reset, underline: Reset, modifier: NONE,
+        x: 13, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}
+
+transcript
+Buffer {
+    area: Rect { x: 0, y: 0, width: 64, height: 2 },
+    content: [
+        "$ printf '%s;' '界';                                            ", // hidden by multi-width symbols: [(17, " ")]
+        "    echo done                                                   ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Magenta, bg: Reset, underline: Reset, modifier: NONE,
+        x: 2, y: 0, fg: Rgb(137, 180, 250), bg: Reset, underline: Reset, modifier: NONE,
+        x: 8, y: 0, fg: Rgb(205, 214, 244), bg: Reset, underline: Reset, modifier: NONE,
+        x: 9, y: 0, fg: Rgb(166, 227, 161), bg: Reset, underline: Reset, modifier: NONE,
+        x: 14, y: 0, fg: Rgb(205, 214, 244), bg: Reset, underline: Reset, modifier: NONE,
+        x: 15, y: 0, fg: Rgb(166, 227, 161), bg: Reset, underline: Reset, modifier: NONE,
+        x: 17, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 18, y: 0, fg: Rgb(166, 227, 161), bg: Reset, underline: Reset, modifier: NONE,
+        x: 19, y: 0, fg: Rgb(148, 226, 213), bg: Reset, underline: Reset, modifier: NONE,
+        x: 20, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 4, y: 1, fg: Rgb(137, 180, 250), bg: Reset, underline: Reset, modifier: NONE,
+        x: 8, y: 1, fg: Rgb(205, 214, 244), bg: Reset, underline: Reset, modifier: NONE,
+        x: 13, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}

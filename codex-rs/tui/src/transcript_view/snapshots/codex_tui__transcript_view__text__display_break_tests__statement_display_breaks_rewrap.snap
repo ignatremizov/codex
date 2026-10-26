@@ -1,0 +1,14 @@
+---
+source: tui/src/transcript_view/text_display_breaks_tests.rs
+expression: "format!(\"{expected:?}\")"
+---
+Buffer {
+    area: Rect { x: 0, y: 0, width: 12, height: 2 },
+    content: [
+        "› echo a;   ",
+        "  echo b    ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}

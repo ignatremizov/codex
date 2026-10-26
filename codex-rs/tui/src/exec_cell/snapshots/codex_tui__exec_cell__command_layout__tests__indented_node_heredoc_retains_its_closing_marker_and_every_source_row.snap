@@ -1,0 +1,9 @@
+---
+source: tui/src/exec_cell/command_layout_tests.rs
+expression: "layout.into_lines().iter().map(|row|\nrow.line.to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+node <<-'JS'
+	const a=1;
+const b=2;
+	JS
+printf done
