@@ -5,16 +5,15 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use super::*;
-use crate::app_server_session::HISTORY_ITEM_PAGE_LIMIT;
-use crate::app_server_session::thread_items_page_params;
+use crate::app_server_session::LoadedOlderHistoryPage;
+use crate::app_server_session::OlderHistoryPageContents;
+use crate::app_server_session::OlderHistoryPageRequest;
 use crate::exec_cell::OutputPreviewLineLimits;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::is_session_history_prefix_cell;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::thread_items_to_transcript_cells_with_preview_line_limits;
-use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::ThreadItemsListResponse;
 
 #[path = "history_completion.rs"]
 mod completion;
@@ -26,78 +25,29 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> bool {
-        let Some(cursor) = app_server.begin_older_history_page(thread_id) else {
-            return false;
-        };
-        tracing::debug!(
-            %thread_id,
-            %cursor,
-            overlay = self.overlay.is_some(),
-            "loading older transcript history page"
-        );
-        let request_id = app_server.next_request_id();
-        let request_handle = app_server.request_handle();
-        let app_event_tx = self.app_event_tx.clone();
-        tokio::spawn(async move {
-            let result = request_handle
-                .request_typed::<ThreadItemsListResponse>(ClientRequest::ThreadItemsList {
-                    request_id,
-                    params: thread_items_page_params(
-                        thread_id,
-                        /*turn_id*/ None,
-                        Some(cursor.clone()),
-                        HISTORY_ITEM_PAGE_LIMIT,
-                    ),
-                })
-                .await
-                .map_err(|err| err.to_string());
-            app_event_tx.send(AppEvent::OlderThreadHistoryLoaded {
-                thread_id,
-                cursor,
-                result,
-            });
-        });
-        true
-    }
-
-    pub(super) async fn handle_older_history_page(
-        &mut self,
-        tui: &mut tui::Tui,
-        app_server: &mut AppServerSession,
-        thread_id: ThreadId,
-        cursor: &str,
-        result: Result<ThreadItemsListResponse, String>,
-    ) -> Result<()> {
-        if !app_server.is_older_history_page_pending(thread_id, cursor) {
-            return Ok(());
-        }
-        if self.chat_widget.thread_id() != Some(thread_id)
-            || (tui.is_owned_screen() && !self.scrollback_has_older_history)
-        {
-            app_server.cancel_older_history_page(thread_id, cursor);
-            return Ok(());
-        }
-        let page = result.map_err(|err| color_eyre::eyre::eyre!(err))?;
         let Some(store) = self
             .thread_event_channels
             .get(&thread_id)
             .map(|channel| Arc::clone(&channel.store))
         else {
-            app_server.cancel_older_history_page(thread_id, cursor);
-            return Ok(());
+            return false;
         };
-        let (cwd, snapshotted_turn_ids, mut turns) = {
-            let store = store.lock().await;
-            (
-                store
-                    .session
-                    .as_ref()
-                    .map_or_else(|| self.config.cwd.clone(), |session| session.cwd.clone()),
-                store
-                    .turns
-                    .iter()
-                    .map(|turn| turn.id.clone())
-                    .collect::<HashSet<_>>(),
+        let Some(load) = app_server.begin_older_history_page(thread_id) else {
+            return false;
+        };
+        let request = load.request.clone();
+        tracing::debug!(
+            %thread_id,
+            cursor = %request.cursor,
+            overlay = self.overlay.is_some(),
+            "loading older transcript history page"
+        );
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            // Only metadata is needed to associate the bounded item page with its turns.
+            // Never retain this store guard while waiting for server responses.
+            let turns = {
+                let store = store.lock().await;
                 store
                     .turns
                     .iter()
@@ -112,13 +62,57 @@ impl App {
                         completed_at: turn.completed_at,
                         duration_ms: turn.duration_ms,
                     })
-                    .collect(),
-            )
+                    .collect()
+            };
+            let result = load.fetch(turns).await.map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::OlderThreadHistoryLoaded {
+                thread_id,
+                request,
+                result,
+            });
+        });
+        true
+    }
+
+    pub(super) async fn handle_older_history_page(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        request: &OlderHistoryPageRequest,
+        result: Result<LoadedOlderHistoryPage, String>,
+    ) -> Result<()> {
+        if !app_server.is_older_history_page_pending(thread_id, request) {
+            return Ok(());
+        }
+        if self.chat_widget.thread_id() != Some(thread_id)
+            || (tui.is_owned_screen() && !self.scrollback_has_older_history)
+        {
+            app_server.cancel_older_history_page(thread_id, request);
+            return Ok(());
+        }
+        let page = result.map_err(|err| color_eyre::eyre::eyre!(err))?;
+        let Some(store) = self
+            .thread_event_channels
+            .get(&thread_id)
+            .map(|channel| Arc::clone(&channel.store))
+        else {
+            app_server.cancel_older_history_page(thread_id, request);
+            return Ok(());
         };
-        let items = app_server
-            .apply_older_history_page(thread_id, cursor, page, &mut turns)
-            .await?;
         let mut locked_store = store.lock().await;
+        let Some(OlderHistoryPageContents {
+            turns,
+            items,
+            snapshotted_turn_ids,
+        }) = app_server.apply_older_history_page(thread_id, request, page)
+        else {
+            return Ok(());
+        };
+        let cwd = locked_store
+            .session
+            .as_ref()
+            .map_or_else(|| self.config.cwd.clone(), |session| session.cwd.clone());
         let inserted = reconcile_older_turns(&mut locked_store.turns, turns, &snapshotted_turn_ids);
         let mut items = items;
         items.retain(|item| inserted.contains(item.id()));

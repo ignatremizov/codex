@@ -14,6 +14,8 @@ mod copy_mode_tests;
 mod math_interruption_tests;
 #[path = "tests/mcp_login_tests.rs"]
 mod mcp_login_tests;
+#[path = "tests/scroll_responsiveness_tests.rs"]
+mod scroll_responsiveness_tests;
 #[path = "tests/security_setup_tests.rs"]
 mod security_setup_tests;
 #[path = "tests/thread_switch_replay_tests.rs"]
@@ -99,6 +101,8 @@ mod backend_sessions;
 mod continue_turn_tests;
 #[path = "tests/history_hydration_tests.rs"]
 mod history_hydration_tests;
+#[path = "tests/history_loading_tests.rs"]
+mod history_loading_tests;
 #[path = "tests/permission_shortcuts_tests.rs"]
 mod permission_shortcuts_tests;
 mod plugin_catalog;
@@ -7527,17 +7531,19 @@ async fn ctrl_l_preserves_the_transcript_and_draft_after_clearing_the_screen() -
         .await?;
     app.scrollback_has_older_history = app_server.has_older_history(thread_id);
     assert!(app.scrollback_has_older_history);
-    let cursor = app_server
+    let load = app_server
         .begin_older_history_page(thread_id)
         .expect("older page");
+    let cursor = load.request.clone();
     let page = app_server
         .thread_items_page(
             thread_id,
             /*turn_id*/ None,
-            Some(cursor.clone()),
+            Some(cursor.cursor.clone()),
             /*limit*/ 100,
         )
         .await?;
+    let page = pagination_completion_tests::prepare_page(&app, thread_id, load, page).await?;
     app.chat_widget.set_model("gpt-test");
     app.chat_widget.insert_str("draft survives");
     app.transcript_cells = vec![Arc::new(history_cell::new_user_prompt(
@@ -7594,6 +7600,8 @@ async fn ctrl_l_preserves_the_transcript_and_draft_after_clearing_the_screen() -
         transcript_composer::buffer_text(&buffer).trim()
     );
 
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.app_event_tx = crate::app_event_sender::AppEventSender::new(event_tx);
     let home = KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL);
     app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Key(home))
         .await?;
@@ -7601,6 +7609,24 @@ async fn ctrl_l_preserves_the_transcript_and_draft_after_clearing_the_screen() -
         app.transcript_view.history,
         crate::pager_overlay::TranscriptHistoryState::LoadingBeginning
     );
+    // Ctrl-Home admits a new request even when it uses the same cursor.
+    let event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), event_rx.recv())
+        .await?
+        .expect("older page completion");
+    let AppEvent::OlderThreadHistoryLoaded {
+        thread_id: loaded_thread_id,
+        request,
+        result,
+    } = event
+    else {
+        panic!("expected older history completion");
+    };
+    assert_eq!(loaded_thread_id, thread_id);
+    assert_eq!(request.cursor, cursor.cursor);
+    assert_ne!(request, cursor);
+    assert!(!app_server.is_older_history_page_pending(thread_id, &cursor));
+    let cursor = request;
+    let page = result.expect("new older page");
     assert!(app_server.is_older_history_page_pending(thread_id, &cursor));
     app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Key(ctrl_t))
         .await?;
@@ -10227,17 +10253,20 @@ async fn prompt_edit_reverts_earlier_and_first_visible_prompts_in_place_scenario
         prompt: prompt.clone(),
     };
     // A queued page shifts both identical prompts before confirmation is dispatched.
-    let cursor = app_server
+    let load = app_server
         .begin_older_history_page(source_thread_id)
         .expect("older page");
+    let cursor = load.request.clone();
     let page = app_server
         .thread_items_page(
             source_thread_id,
             /*turn_id*/ None,
-            Some(cursor.clone()),
+            Some(cursor.cursor.clone()),
             /*limit*/ 1,
         )
         .await?;
+    let page =
+        pagination_completion_tests::prepare_page(&app, source_thread_id, load, page).await?;
     app.handle_older_history_page(
         &mut tui,
         &mut app_server,

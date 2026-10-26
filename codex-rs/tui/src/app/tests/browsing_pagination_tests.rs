@@ -77,7 +77,10 @@ async fn browsing_loads_before_the_oldest_prompt_after_a_partial_answer() -> Res
         let first_event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), event_rx.recv())
             .await?
             .expect("older history completion");
-        let AppEvent::OlderThreadHistoryLoaded { cursor, .. } = first_event else {
+        let AppEvent::OlderThreadHistoryLoaded {
+            request: cursor, ..
+        } = first_event
+        else {
             panic!("expected an older history completion")
         };
         // Repeated navigation while loading must keep a single request in flight.
@@ -88,15 +91,24 @@ async fn browsing_loads_before_the_oldest_prompt_after_a_partial_answer() -> Res
         assert!(app_server.is_older_history_page_pending(thread_id, &cursor));
         assert!(event_rx.try_recv().is_err());
         // Complete only an answer item first: browsing must continue to a page with a prompt.
+        app_server.cancel_older_history_page(thread_id, &cursor);
+        let load = app_server
+            .begin_older_history_page(thread_id)
+            .expect("replace the held response with a one-item fixture");
+        assert_eq!(load.request.cursor, cursor.cursor);
+        let cursor = load.request.clone();
         let first_page = app_server
             .thread_items_page(
                 thread_id,
                 /*turn_id*/ None,
-                Some(cursor.clone()),
+                Some(cursor.cursor.clone()),
                 /*limit*/ 1,
             )
             .await?;
         let next_cursor = first_page.next_cursor.clone().expect("older prompt page");
+        let first_page =
+            super::pagination_completion_tests::prepare_page(&app, thread_id, load, first_page)
+                .await?;
         if cancel_before_completion {
             app.handle_tui_event(
                 &mut tui,
@@ -113,11 +125,12 @@ async fn browsing_loads_before_the_oldest_prompt_after_a_partial_answer() -> Res
             Ok(first_page),
         )
         .await?;
-        assert_eq!(
-            app_server.is_older_history_page_pending(thread_id, &next_cursor),
-            !cancel_before_completion
-        );
         if cancel_before_completion {
+            let next_load = app_server
+                .begin_older_history_page(thread_id)
+                .expect("cancelled browsing did not start another page");
+            assert_eq!(next_load.request.cursor, next_cursor);
+            app_server.cancel_older_history_page(thread_id, &next_load.request);
             assert_eq!(
                 (
                     app.backtrack.overlay_preview_active,
@@ -130,6 +143,11 @@ async fn browsing_loads_before_the_oldest_prompt_after_a_partial_answer() -> Res
                 tokio::time::timeout(Duration::from_secs(/*secs*/ 5), event_rx.recv())
                     .await?
                     .expect("older prompt completion");
+            let AppEvent::OlderThreadHistoryLoaded { request, .. } = &final_event else {
+                panic!("expected an older prompt completion")
+            };
+            assert_eq!(request.cursor, next_cursor);
+            assert!(app_server.is_older_history_page_pending(thread_id, request));
             Box::pin(app.handle_event(&mut tui, &mut app_server, final_event)).await?;
             assert_eq!(
                 (app.backtrack.nth_user_message, app.transcript_view.history),

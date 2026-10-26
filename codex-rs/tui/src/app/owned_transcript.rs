@@ -610,7 +610,14 @@ impl App {
         }
         if let TuiEvent::Mouse(mouse) = event {
             let composer_ready = self.chat_widget.prepare_composer_mouse(*mouse);
-            if mouse.kind != crossterm::event::MouseEventKind::Moved {
+            // Wheel input uses the last painted viewport and the coalesced frame scheduler.
+            // Clicks and drags still need current hit-test geometry before changing selection.
+            if matches!(
+                mouse.kind,
+                crossterm::event::MouseEventKind::Down(_)
+                    | crossterm::event::MouseEventKind::Up(_)
+                    | crossterm::event::MouseEventKind::Drag(_)
+            ) {
                 self.refresh_owned_transcript(tui)?;
             }
             if self.chat_widget.no_modal_or_popup_active()
@@ -673,6 +680,12 @@ impl App {
         // Keys owned by the transcript and non-text keys still need fresh geometry immediately.
         if let TuiEvent::Key(key) = event
             && key.kind != KeyEventKind::Release
+            // Interrupt and quit shortcuts must not wait for an eager repaint. Transcript
+            // interactions retain priority, including Ctrl+C when it copies selected text.
+            && (self.transcript_view.owns_interaction_key(*key)
+                || !(self.keymap.chat.interrupt_turn.is_pressed(*key)
+                    || (key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('c' | 'C' | 'd' | 'D')))))
             && (!self.chat_widget.is_in_paste_burst()
                 || self.transcript_view.is_search_editing()
                 || self.transcript_view.is_review_browser()
