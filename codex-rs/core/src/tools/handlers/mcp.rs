@@ -622,6 +622,10 @@ fn build_mcp_search_text(info: &ToolInfo, agent_plugin: bool) -> String {
         info.tool.name.to_string(),
         info.server_name.clone(),
     ];
+    let advertised_name = codex_tools::code_mode_name_for_tool_name(&tool_name);
+    if !parts.contains(&advertised_name) {
+        parts.push(advertised_name);
+    }
     if let Some(title) = info.tool.title.as_deref().map(str::trim)
         && !title.is_empty()
     {

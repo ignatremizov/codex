@@ -3,6 +3,9 @@
 #[path = "code_mode_dynamic_tools_tests.rs"]
 mod dynamic_tools;
 
+#[path = "code_mode_mcp_search_tests.rs"]
+mod mcp_search;
+
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
