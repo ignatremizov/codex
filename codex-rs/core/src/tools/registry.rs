@@ -154,6 +154,12 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     /// Observes a tool result only after all PostToolUse hooks accept it.
     fn on_tool_result_accepted(&self, _invocation: &ToolInvocation, _result: &dyn ToolOutput) {}
 
+    /// Identifies the trusted operation for hook matching without changing invocation identity.
+    /// Namespace and description wrappers must forward the underlying runtime's classification.
+    fn function_hook_tool_name(&self, invocation: &ToolInvocation) -> HookToolName {
+        function_hook_tool_name(invocation)
+    }
+
     fn post_tool_use_payload(
         &self,
         invocation: &ToolInvocation,
@@ -164,7 +170,7 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         };
 
         Some(PostToolUsePayload {
-            tool_name: function_hook_tool_name(invocation),
+            tool_name: self.function_hook_tool_name(invocation),
             tool_use_id: result.post_tool_use_id(&invocation.call_id),
             tool_input: result
                 .post_tool_use_input(&invocation.payload)
@@ -194,7 +200,7 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         };
 
         Some(PreToolUsePayload {
-            tool_name: function_hook_tool_name(invocation),
+            tool_name: self.function_hook_tool_name(invocation),
             tool_input: function_hook_tool_input(arguments),
         })
     }
