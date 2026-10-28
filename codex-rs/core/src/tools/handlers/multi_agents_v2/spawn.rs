@@ -8,6 +8,7 @@ use crate::tools::handlers::multi_agents::collab_tool_call_status;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::prepare_agent_message;
+use crate::tools::hook_names::HookToolName;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -207,6 +208,10 @@ async fn handle_spawn_agent(
 }
 
 impl CoreToolRuntime for Handler {
+    fn function_hook_tool_name(&self, _invocation: &ToolInvocation) -> HookToolName {
+        HookToolName::spawn_agent()
+    }
+
     fn is_agent_message_tool(&self) -> bool {
         true
     }
