@@ -7,6 +7,9 @@ mod dynamic_tools;
 #[path = "code_mode_host_recovery_tests.rs"]
 mod host_recovery;
 
+#[path = "code_mode_mcp_search_tests.rs"]
+mod mcp_search;
+
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;

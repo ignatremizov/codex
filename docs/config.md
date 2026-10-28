@@ -217,6 +217,10 @@ Tool exclusions, direct-only namespaces, and invocation policy still apply.
 Nested search returns `{ tools: [{ name, description }] }`; use the returned name
 with `tools[name](arguments)`. Native tool search keeps its Responses wire format.
 
+MCP discovery accepts the complete advertised name, such as
+`mcp__calendar__create_event`, alongside the short name and descriptive terms.
+Configured namespaces without the `mcp__` prefix use their advertised name too.
+
 Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the configuration reference for the latest MCP server options:
 
 - https://developers.openai.com/codex/config-reference
