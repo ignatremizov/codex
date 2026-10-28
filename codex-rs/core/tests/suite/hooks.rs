@@ -85,6 +85,9 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 use tracing_test::traced_test;
 
+#[path = "hooks_native_spawn_tests.rs"]
+mod native_spawn;
+
 const FIRST_CONTINUATION_PROMPT: &str = "Retry with exactly the phrase meow meow meow.";
 const SECOND_CONTINUATION_PROMPT: &str = "Now tighten it to just: meow.";
 const BLOCKED_PROMPT_CONTEXT: &str = "Remember the blocked lighthouse note.";

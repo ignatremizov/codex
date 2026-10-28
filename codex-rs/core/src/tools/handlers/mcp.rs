@@ -720,13 +720,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_pre_tool_use_payload_keeps_builtin_like_tool_names_namespaced() {
+    #[test_case::test_case("exec_command"; "shell")]
+    #[test_case::test_case("spawn_agent"; "agent")]
+    async fn mcp_pre_tool_use_payload_keeps_builtin_like_tool_names_namespaced(name: &str) {
         let payload = ToolPayload::Function {
             arguments: json!({ "message": "hello" }).to_string(),
         };
         let (session, turn) = make_session_and_context().await;
         let turn = Arc::new(turn);
-        let handler = McpHandler::new(tool_info("foo", "mcp__foo", "exec_command"))
+        let handler = McpHandler::new(tool_info("foo", "mcp__foo", name))
             .expect("MCP tool spec should build");
 
         assert_eq!(
@@ -737,13 +739,13 @@ mod tests {
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "call-mcp-pre-builtin-like".to_string(),
-                tool_name: codex_tools::ToolName::namespaced("mcp__foo", "exec_command"),
+                tool_name: codex_tools::ToolName::namespaced("mcp__foo", name),
                 source: ToolCallSource::Direct,
                 payload,
                 environments: Default::default(),
             }),
             Some(PreToolUsePayload {
-                tool_name: HookToolName::new("mcp__foo__exec_command"),
+                tool_name: HookToolName::new(format!("mcp__foo__{name}")),
                 tool_input: json!({ "message": "hello" }),
             })
         );

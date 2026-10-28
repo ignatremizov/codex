@@ -559,6 +559,61 @@ async fn spawn_agent_function_tools_use_agent_matcher_alias() {
 }
 
 #[tokio::test]
+async fn native_spawn_hook_identity_survives_namespace_overrides() {
+    use crate::tools::handlers::multi_agents::SpawnAgentHandler as ForkSpawn;
+    use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as V2Spawn;
+    use crate::tools::multi_agent_tool::multi_agent_v2_handler;
+
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let handlers: Vec<Arc<dyn CoreToolRuntime>> = vec![
+        Arc::new(ForkSpawn::default()),
+        Arc::new(V2Spawn::default()),
+        multi_agent_v2_handler(
+            V2Spawn::default(),
+            Some("collaboration"),
+            /*description_override*/ None,
+        ),
+        multi_agent_v2_handler(
+            V2Spawn::default(),
+            Some("custom_agents"),
+            Some("Configured spawn description."),
+        ),
+    ];
+    for handler in handlers {
+        let name = handler.tool_name();
+        let invocation = ToolInvocation {
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+            ..test_invocation(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                "spawn-call",
+                name.clone(),
+            )
+        };
+        let output = FunctionToolOutput::from_text("done".to_string(), Some(true));
+        assert_eq!(
+            handler.pre_tool_use_payload(&invocation),
+            Some(PreToolUsePayload {
+                tool_name: HookToolName::spawn_agent(),
+                tool_input: serde_json::json!({}),
+            })
+        );
+        assert_eq!(
+            handler
+                .post_tool_use_payload(&invocation, &output)
+                .map(|payload| (payload.tool_name, payload.tool_use_id)),
+            Some((HookToolName::spawn_agent(), "spawn-call".to_string()))
+        );
+        assert_eq!(invocation.tool_name, name);
+        assert_eq!(invocation.call_id, "spawn-call");
+    }
+}
+
+#[tokio::test]
 async fn code_mode_wait_does_not_expose_default_hook_payloads() {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
     let output = crate::tools::context::FunctionToolOutput::from_text("ok".to_string(), Some(true));
