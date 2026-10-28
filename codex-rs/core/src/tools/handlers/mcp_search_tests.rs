@@ -3,6 +3,35 @@ use codex_tools::LoadableToolSpec;
 use codex_tools::ToolSearchSourceInfo;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use test_case::test_case;
+
+#[test_case("mcp__calendar", "create_event", "mcp__calendar__create_event"; "prefixed")]
+#[test_case("calendar", "create_event", "calendar__create_event"; "configured_namespace")]
+#[test_case("mcp__calendar__", "_create_event", "mcp__calendar___create_event"; "legacy_delimiters")]
+fn search_info_indexes_the_advertised_name_without_changing_identity(
+    namespace: &str,
+    callable_name: &str,
+    advertised_name: &str,
+) {
+    let mut info = tool_info();
+    info.callable_namespace = namespace.to_string();
+    info.callable_name = callable_name.to_string();
+    let handler = McpHandler::new(info).expect("MCP tool spec should build");
+    let search_info = handler.search_info().expect("MCP search info");
+    assert_eq!(
+        search_info
+            .entry
+            .search_text
+            .split_whitespace()
+            .filter(|term| *term == advertised_name)
+            .collect::<Vec<_>>(),
+        vec![advertised_name]
+    );
+    assert_eq!(
+        search_info.entry.tool_names().collect::<Vec<_>>(),
+        vec![codex_tools::ToolName::namespaced(namespace, callable_name)]
+    );
+}
 
 #[test]
 fn search_info_uses_mcp_tool_metadata_and_parameter_names() {
