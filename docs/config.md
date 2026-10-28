@@ -208,6 +208,11 @@ still allowing managed hooks from requirements and managed config layers. This
 setting is only supported in `requirements.toml`; putting it in `config.toml`
 does not enable managed-hooks-only mode.
 
+Native agent creation uses the hook name `spawn_agent` and the compatibility
+matcher `Agent`, including V2 tools exposed through a configured namespace.
+PreToolUse denial prevents admission. MCP tools with the same short name retain
+their MCP identity and do not acquire the native matcher alias.
+
 ## Connecting to MCP servers
 
 Ranked tool discovery is enabled by default in this fork's JavaScript Code Mode
