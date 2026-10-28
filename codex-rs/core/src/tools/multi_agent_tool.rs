@@ -3,6 +3,7 @@
 
 use crate::session::session::Session;
 use crate::tools::context::ToolInvocation;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -87,6 +88,10 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2ToolOverrides {
 }
 
 impl CoreToolRuntime for MultiAgentV2ToolOverrides {
+    fn function_hook_tool_name(&self, invocation: &ToolInvocation) -> HookToolName {
+        self.handler.function_hook_tool_name(invocation)
+    }
+
     fn is_agent_message_tool(&self) -> bool {
         self.handler.is_agent_message_tool()
     }
