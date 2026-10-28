@@ -357,6 +357,10 @@ impl ToolSearchHandler {
 }
 
 #[cfg(test)]
+#[path = "tool_search_mcp_name_tests.rs"]
+mod mcp_name_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::handlers::DynamicToolHandler;

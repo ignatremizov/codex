@@ -76,6 +76,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use test_case::test_case;
 
 use super::rmcp_client::remote_aware_environment_id;
 use super::rmcp_client::remote_aware_stdio_server_bin;
@@ -1269,7 +1270,10 @@ async fn tool_search_returns_deferred_dynamic_tool_and_routes_follow_up_call() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
+#[test_case("mcp__rmcp__echo"; "advertised_name")]
+#[test_case("echo"; "short_name")]
+#[test_case("Echo back the provided message and include environment data."; "ranked_terms")]
+async fn tool_search_indexes_only_enabled_non_app_mcp_tools(query: &str) -> Result<()> {
     skip_if_wine_exec!(
         Ok(()),
         "requires a Windows test_stdio_server in the Wine-exec environment"
@@ -1288,7 +1292,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                 ev_tool_search_call(
                     echo_call_id,
                     &json!({
-                        "query": "Echo back the provided message and include environment data.",
+                        "query": query,
                         "limit": 8,
                     }),
                 ),
