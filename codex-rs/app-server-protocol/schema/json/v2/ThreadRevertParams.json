@@ -2,6 +2,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nThis only changes persisted conversation history. It does not revert local file changes.",
   "properties": {
+    "beforeItemId": {
+      "description": "Optional user-message item to exclude instead of the whole selected turn. Earlier items in that turn remain in the replacement history.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "beforeTurnId": {
       "description": "Turn excluded from the replacement history, together with every later turn.",
       "type": "string"

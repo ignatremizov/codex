@@ -25,6 +25,9 @@ use crate::StoredTurnItemsView;
 use crate::ThreadPersistenceMetadata;
 use crate::ThreadStore;
 
+#[path = "revert_steer_tests.rs"]
+mod steers;
+
 #[tokio::test]
 async fn revert_keeps_thread_id_and_hides_suffix_across_repeated_reverts() {
     let home = TempDir::new().expect("temp dir");
@@ -74,6 +77,7 @@ async fn revert_keeps_thread_id_and_hides_suffix_across_repeated_reverts() {
         .revert_thread(RevertThreadParams {
             thread_id,
             before_turn_id: "turn-2".to_string(),
+            before_item_id: None,
             multi_agent_version: None,
         })
         .await
@@ -149,6 +153,7 @@ async fn revert_keeps_thread_id_and_hides_suffix_across_repeated_reverts() {
         .revert_thread(RevertThreadParams {
             thread_id,
             before_turn_id: "turn-1".to_string(),
+            before_item_id: None,
             multi_agent_version: None,
         })
         .await
@@ -258,6 +263,7 @@ async fn revert_preserves_resolved_multi_agent_version_in_session_metadata() {
                 .revert_thread(RevertThreadParams {
                     thread_id,
                     before_turn_id: before_turn_id.to_string(),
+                    before_item_id: None,
                     multi_agent_version,
                 })
                 .await

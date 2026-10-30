@@ -19,6 +19,11 @@ numTurns: number,
  */
 expectedStartTurnId?: string | null,
 /**
+ * Optional user-message item in the expected first turn to exclude.
+ * Retains earlier items in that turn. Requires both expected turn guards.
+ */
+expectedStartItemId?: string | null,
+/**
  * Optional materialized turn count observed when the rollback target was selected.
  */
 expectedTurnCount?: number | null, };

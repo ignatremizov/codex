@@ -33,7 +33,9 @@ pub(crate) use prompt_projection::truncate_before_prompt;
 pub(crate) use prompt_projection::user_count;
 pub(crate) use prompt_projection::user_positions_iter;
 pub(crate) use prompt_target::LegacyRollbackTarget;
-pub(crate) use prompt_target::selected_prompt_turn_index;
+pub(crate) use prompt_target::PromptEditBoundary;
+pub(crate) use prompt_target::PromptEditTarget;
+pub(crate) use prompt_target::selected_prompt_target;
 
 #[cfg(test)]
 use std::any::TypeId;
@@ -661,13 +663,8 @@ pub(crate) fn backtrack_revert_before_turn_id(
         } else {
             0
         };
-        // Clipped items affect whether an input is a steer, but were never displayed and
-        // therefore must not change the transcript's review visibility or prompt ordinals.
-        let mut user_messages_in_turn = turn
-            .item_payloads()
-            .take(first_item)
-            .filter(|item| matches!(item, ThreadItemPayload::UserMessage { .. }))
-            .count();
+        // Clipped items were never displayed and therefore must not change the transcript's
+        // review visibility or prompt ordinals.
         for item in turn.item_payloads().skip(first_item) {
             let content = match item {
                 ThreadItemPayload::EnteredReviewMode { .. } => {
@@ -681,8 +678,6 @@ pub(crate) fn backtrack_revert_before_turn_id(
                 ThreadItemPayload::UserMessage { content, .. } => content,
                 _ => continue,
             };
-            let is_steer = user_messages_in_turn > 0;
-            user_messages_in_turn = user_messages_in_turn.saturating_add(/*rhs*/ 1);
             if review_mode {
                 continue;
             }
@@ -706,9 +701,6 @@ pub(crate) fn backtrack_revert_before_turn_id(
                 continue;
             }
 
-            if is_steer {
-                bail!("the selected prompt is a steer and cannot be edited independently");
-            }
             if matches!(turn.status, TurnStatus::InProgress) {
                 bail!("the selected prompt belongs to a turn that is still in progress");
             }
@@ -926,46 +918,40 @@ mod tests {
     }
 
     #[test]
-    fn backtrack_revert_before_turn_id_rejects_mid_turn_steers() {
+    fn backtrack_revert_before_turn_id_locates_mid_turn_steers() {
         let turns = vec![turn(
             "turn-1",
             TurnStatus::Completed,
             /*user_messages*/ 2,
         )];
 
-        let error = backtrack_revert_before_turn_id(
+        let selected = backtrack_revert_before_turn_id(
             &turns,
             /*start_item*/ None,
             /*nth_user_message*/ 1,
             &mut prompt("turn-1-prompt-1"),
         )
-        .expect_err("a steer cannot be edited independently");
+        .expect("locate the steer's containing turn");
 
-        assert_eq!(
-            error.to_string(),
-            "the selected prompt is a steer and cannot be edited independently"
-        );
+        assert_eq!(selected, "turn-1");
     }
 
     #[test]
-    fn backtrack_revert_partial_history_does_not_make_a_steer_editable() {
+    fn backtrack_revert_partial_history_locates_a_visible_steer() {
         let turns = vec![turn(
             "turn-1",
             TurnStatus::Completed,
             /*user_messages*/ 2,
         )];
         let start_item = (turns[0].id.clone(), turns[0].items[1].id().to_string());
-        let error = backtrack_revert_before_turn_id(
+        let selected = backtrack_revert_before_turn_id(
             &turns,
             Some(&start_item),
             /*nth_user_message*/ 0,
             &mut prompt("turn-1-prompt-1"),
         )
-        .expect_err("the loaded page starts mid-turn");
-        assert_eq!(
-            error.to_string(),
-            "the selected prompt is a steer and cannot be edited independently"
-        );
+        .expect("the loaded page starts at the selected steer");
+        assert_eq!(selected, "turn-1");
     }
 
     #[test]

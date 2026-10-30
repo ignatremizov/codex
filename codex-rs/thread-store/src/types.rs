@@ -274,6 +274,8 @@ pub enum ForkBoundary {
     ThroughTurn(String),
     /// Inherit history preceding the original visible occurrence of this turn.
     BeforeTurn(String),
+    /// Inherit history preceding a user-message item within the original source turn.
+    BeforeItem { turn_id: String, item_id: String },
 }
 
 /// Parameters for freezing the source history used to initialize a fork.
@@ -292,6 +294,8 @@ pub struct RevertThreadParams {
     pub thread_id: ThreadId,
     /// First turn excluded from the retained history.
     pub before_turn_id: String,
+    /// User-message item excluded within the selected turn, or the whole turn when absent.
+    pub before_item_id: Option<String>,
     /// Resolved runtime version to preserve when its turn context is removed.
     /// When absent, keep the version in the existing session metadata.
     pub multi_agent_version: Option<MultiAgentVersion>,

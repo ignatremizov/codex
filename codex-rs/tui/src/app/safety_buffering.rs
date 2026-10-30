@@ -203,7 +203,11 @@ impl App {
                 retry_config,
                 thread_id,
                 /*last_turn_id*/ None,
-                /*before_turn_id*/ Some(turn_id),
+                /*before_prompt*/
+                Some(crate::app_backtrack::PromptEditBoundary {
+                    turn_id,
+                    before_item_id: None,
+                }),
                 ForkGoalContinuation::InheritForSafetyRetry,
                 selected_profile.as_ref(),
             )

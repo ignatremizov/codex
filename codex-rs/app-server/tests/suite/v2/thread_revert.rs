@@ -91,6 +91,7 @@ async fn thread_revert_rejects_ephemeral_without_losing_context(
             Some(serde_json::to_value(ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: completed.turn.id,
+                before_item_id: None,
             })?),
         )
         .await?;
@@ -179,6 +180,7 @@ async fn thread_revert_preserves_model_selected_multi_agent_version(restart: boo
             params: ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: completed.turn.id,
+                before_item_id: None,
             },
         })
         .await?;
@@ -346,6 +348,7 @@ async fn thread_revert_preserves_fork_cutoff_after_cold_resume() -> Result<()> {
                 params: ThreadRevertParams {
                     thread_id: child.id.clone(),
                     before_turn_id,
+                    before_item_id: None,
                 },
             })
             .await?;
@@ -470,6 +473,7 @@ async fn thread_revert_replaces_paginated_history_before_turn() -> Result<()> {
             params: ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: turn_ids[1].clone(),
+                before_item_id: None,
             },
         })
         .await?;
@@ -556,6 +560,7 @@ async fn thread_revert_replaces_paginated_history_before_turn() -> Result<()> {
             Some(serde_json::to_value(ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: "missing-turn".to_string(),
+                before_item_id: None,
             })?),
         )
         .await?;
@@ -679,6 +684,7 @@ async fn thread_revert_interrupts_active_turn_and_keeps_thread_loaded() -> Resul
             params: ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: active_turn.id.clone(),
+                before_item_id: None,
             },
         })
         .await?;

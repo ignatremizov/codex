@@ -14,6 +14,8 @@ pub(in crate::local) struct TurnRow {
     pub rollout_end_ordinal: Option<i64>,
     pub rollout_end_byte_offset: Option<i64>,
     pub status: String,
+    pub root_turn_id: Option<String>,
+    pub started_at: Option<i64>,
     pub first_user_item_id: Option<String>,
     pub final_agent_item_id: Option<String>,
 }
@@ -66,6 +68,8 @@ SELECT
     rollout_end_ordinal,
     rollout_end_byte_offset,
     status,
+    root_turn_id,
+    started_at,
     first_user_item_id,
     final_agent_item_id
 FROM thread_turns
@@ -93,6 +97,8 @@ WHERE thread_id = ?
             rollout_end_ordinal: row.get("rollout_end_ordinal"),
             rollout_end_byte_offset: row.get("rollout_end_byte_offset"),
             status: row.get("status"),
+            root_turn_id: row.get("root_turn_id"),
+            started_at: row.get("started_at"),
             first_user_item_id: row.get("first_user_item_id"),
             final_agent_item_id: row.get("final_agent_item_id"),
         })

@@ -20,7 +20,6 @@ use crate::external_agent_config_migration::flow::ExternalAgentConfigMigrationFl
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::session_resume::cwds_differ;
 use crate::status::StatusAccountDisplay;
-use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadStatus;
 #[cfg(target_os = "windows")]
@@ -686,7 +685,7 @@ impl App {
                         fork_config,
                         thread_id,
                         /*last_turn_id*/ None,
-                        /*before_turn_id*/ None,
+                        /*before_prompt*/ None,
                         ForkGoalContinuation::GoalFree,
                         selected_profile.as_ref(),
                     ).await {
@@ -834,7 +833,7 @@ impl App {
                     }
                     return Ok(AppRunControl::Continue);
                 }
-                let selection: Result<(String, Vec<Turn>)> = async {
+                let selection: Result<(crate::app_backtrack::PromptEditBoundary, Vec<Turn>)> = async {
                     let channel = self.thread_event_channels.get(&thread_id)
                         .ok_or_else(|| color_eyre::eyre::eyre!("the selected thread is no longer available"))?;
                     let (start_item, loaded_tail, latest_turn_id) = {
@@ -868,17 +867,36 @@ impl App {
                                 .map(|item| (turn.id.clone(), item.id().to_string())))
                         })
                     }));
-                    let cut = crate::app_backtrack::selected_prompt_turn_index(
+                    let target = crate::app_backtrack::selected_prompt_target(
                         &thread.turns,
                         selected_cell.as_any().downcast_ref::<crate::history_cell::UserHistoryCell>()
                             .and_then(|cell| cell.identity.get()),
+                        /*legacy_client_id*/ None,
                         start_item.as_ref(),
                         nth_user_message,
                         &mut prompt,
                     )?;
-                    let before_turn_id = thread.turns[cut].id.clone();
+                    if target.before_item_id.is_some() {
+                        app_server.require_prompt_item_boundaries().await?;
+                    }
+                    let boundary = crate::app_backtrack::PromptEditBoundary {
+                        turn_id: thread.turns[target.turn_index].id.clone(),
+                        before_item_id: target.before_item_id,
+                    };
                     // Keep the store aligned with the displayed prefix, including retained live turns.
-                    thread.turns.truncate(cut);
+                    if let Some(item_id) = boundary.before_item_id.as_ref() {
+                        let turn = &mut thread.turns[target.turn_index];
+                        let item_index = turn.items.iter().position(|item| item.id() == item_id)
+                            .ok_or_else(|| color_eyre::eyre::eyre!("selected prompt disappeared"))?;
+                        turn.items.truncate(item_index);
+                        turn.status = codex_app_server_protocol::TurnStatus::Interrupted;
+                        turn.error = None;
+                        turn.completed_at = None;
+                        turn.duration_ms = None;
+                        thread.turns.truncate(target.turn_index + 1);
+                    } else {
+                        thread.turns.truncate(target.turn_index);
+                    }
                     if let Some((turn_id, item_id)) = &start_item {
                         for turn in &mut thread.turns {
                             if &turn.id == turn_id {
@@ -890,9 +908,9 @@ impl App {
                             turn.items.clear();
                         }
                     }
-                    Ok((before_turn_id, thread.turns))
+                    Ok((boundary, thread.turns))
                 }.await;
-                let (before_turn_id, retained_turns) = match selection {
+                let (boundary, retained_turns) = match selection {
                     Ok(selection) => selection,
                     Err(err) => {
                         self.restore_backtrack_prompt_after_revert_error(prompt, err);
@@ -901,11 +919,12 @@ impl App {
                     }
                 };
                 if self.config.features.enabled(Feature::ForkPromptEdits) {
-                    self.fork_for_prompt_edit(tui, app_server, thread_id, before_turn_id, prompt)
+                    self.fork_for_prompt_edit(tui, app_server, thread_id, boundary, prompt)
                         .await;
                     return Ok(AppRunControl::Continue);
                 }
-                let reverted = match app_server.revert_thread(thread_id, before_turn_id, &retained_turns).await {
+                let is_steer = boundary.before_item_id.is_some();
+                let reverted = match app_server.revert_thread(thread_id, boundary, &retained_turns).await {
                     Ok(reverted) => reverted,
                     Err(err) => {
                     // Validation and unsupported-method errors leave history unchanged. Other
@@ -921,24 +940,28 @@ impl App {
                     }
                 };
                 self.chat_widget.restore_user_message_to_composer(prompt.clone());
-                // Stop on any post-mutation failure: accepting input against the old displayed
-                // transcript would hide the fact that server history has already changed.
-                tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
-                    while let Some(event) = app_server.next_event().await {
-                        let is_reverted = event.backend_id == app_server.backend_id() && matches!(
-                            &event.event,
-                            AppServerEvent::ServerNotification(notification)
-                                if matches!(notification.as_ref(), ServerNotification::ThreadReverted(notification)
-                                    if notification.thread_id == thread_id.to_string())
-                        );
-                        self.handle_backend_event(app_server, event).await;
-                        if is_reverted {
-                            return Ok(());
-                        }
+                if is_steer {
+                    self.history_recovery_required.insert(thread_id);
+                    self.pending_thread_switch_resets += 1;
+                    self.chat_widget.set_queue_autosend_suppressed(/*suppressed*/ true);
+                    let refresh: Result<()> = async {
+                        self.wait_for_prompt_revert(app_server, thread_id).await?;
+                        self.reconcile_steer_revert(app_server, reverted, retained_turns, prompt).await
+                    }.await;
+                    if let Err(error) = refresh {
+                        // Keep the stale thread read-only, but release this edit's input barrier
+                        // so navigation and quit still work, including after a reconnect.
+                        self.pending_thread_switch_resets -= 1;
+                        self.recover_transport_error(&error);
+                        self.chat_widget.add_error_message(format!(
+                            "Could not finish editing this prompt: {error:#}. Your draft is preserved. Start a new conversation, or quit and reopen this conversation in a new Codex process."
+                        ));
+                        tui.frame_requester().schedule_frame();
                     }
-                    Err(color_eyre::eyre::eyre!("app-server disconnected"))
-                }).await
-                    .wrap_err("history was reverted, but refreshing the session timed out; resume this session to reload it")??;
+                    return Ok(AppRunControl::Continue);
+                }
+                // Whole-turn edits retain the existing post-mutation failure handling.
+                self.wait_for_prompt_revert(app_server, thread_id).await?;
                 // Preserve the widget and unrelated threads; only replace this replay store.
                 self.chat_widget.restore_thread_input_state(
                     /*input_state*/ None,

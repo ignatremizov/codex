@@ -31,6 +31,13 @@ pub(super) fn materialized_thread_turns(store: &ThreadEventStore) -> Option<Vec<
                     .find(|item| item.id() == completed.item.id())
                 {
                     *item = completed.item.clone();
+                } else if matches!(
+                    &completed.item.payload,
+                    ThreadItemPayload::UserMessage { .. }
+                ) {
+                    // A live Legacy receipt's UUID is not its replay item-N boundary.
+                    // Fetch canonical history before selecting any new prompt.
+                    return None;
                 } else {
                     turn.items.push(completed.item.clone());
                 }

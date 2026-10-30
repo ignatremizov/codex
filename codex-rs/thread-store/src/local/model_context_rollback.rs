@@ -47,7 +47,7 @@ pub(in crate::local) fn read_canonical_segment(
     Ok(items)
 }
 
-pub(super) fn load_full_lineage(
+pub(in crate::local) fn load_full_lineage(
     lineage: &RolloutLineage,
     session_meta: SessionMetaLine,
     is_cancelled: impl Fn() -> bool,

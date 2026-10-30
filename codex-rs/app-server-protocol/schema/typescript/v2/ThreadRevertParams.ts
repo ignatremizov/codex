@@ -11,4 +11,9 @@ export type ThreadRevertParams = { threadId: string,
 /**
  * Turn excluded from the replacement history, together with every later turn.
  */
-beforeTurnId: string, };
+beforeTurnId: string,
+/**
+ * Optional user-message item to exclude instead of the whole selected turn.
+ * Earlier items in that turn remain in the replacement history.
+ */
+beforeItemId?: string | null, };

@@ -41,6 +41,7 @@ pub use codex_history::RetainedInputSource;
 pub use codex_history::RolloutItem;
 pub use codex_history::RolloutLine;
 pub use codex_history::TurnRecoveryMode;
+pub use codex_history::UserPromptSource;
 pub use codex_history::exact_rollback_removed_items;
 pub use codex_history::exact_rollback_retained_item;
 pub use codex_history::resume_multi_agent_version;
