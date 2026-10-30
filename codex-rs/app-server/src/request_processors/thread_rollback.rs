@@ -32,6 +32,13 @@ impl thread_processor::ThreadRequestProcessor {
         if params.num_turns == 0 {
             return Err(invalid_request("num_turns must be >= 1"));
         }
+        if params.expected_start_item_id.is_some()
+            && (params.expected_start_turn_id.is_none() || params.expected_turn_count.is_none())
+        {
+            return Err(invalid_request(
+                "expectedStartItemId requires expectedStartTurnId and expectedTurnCount",
+            ));
+        }
         let (thread_id, thread) = self.load_thread(&params.thread_id).await?;
         if thread.config_snapshot().await.history_mode != ThreadHistoryMode::Legacy {
             return Err(invalid_request(
@@ -69,6 +76,7 @@ impl thread_processor::ThreadRequestProcessor {
             Op::ThreadRollbackMaterialized {
                 num_turns: params.num_turns,
                 expected_start_turn_id: params.expected_start_turn_id,
+                expected_start_item_id: params.expected_start_item_id,
                 expected_turn_count: params.expected_turn_count,
             }
         } else {

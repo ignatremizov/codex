@@ -11736,6 +11736,7 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
             .revert_thread(codex_thread_store::RevertThreadParams {
                 thread_id,
                 before_turn_id: before_turn_id.clone(),
+                before_item_id: None,
                 multi_agent_version: test.codex.multi_agent_version(),
             })
             .await?;

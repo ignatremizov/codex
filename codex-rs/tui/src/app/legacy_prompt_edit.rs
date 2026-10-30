@@ -6,6 +6,8 @@ use super::app_server_event_targets::server_notification_thread_target;
 use super::app_server_event_targets::server_request_thread_id;
 use super::*;
 use crate::app_backtrack::LegacyRollbackTarget;
+use crate::app_backtrack::PromptEditBoundary;
+use crate::app_backtrack::PromptEditTarget;
 use crate::app_server_session::LegacyRollbackOutcome;
 use crate::chatwidget::UserMessage;
 use crate::history_cell::HistoryCell;
@@ -74,7 +76,7 @@ impl App {
         mut prompt: UserMessage,
     ) -> Result<()> {
         let thread_id = ThreadId::from_string(&thread.id)?;
-        let selection: Result<usize> = async {
+        let selection: Result<PromptEditTarget> = async {
             let channel = self
                 .thread_event_channels
                 .get(&thread_id)
@@ -109,7 +111,7 @@ impl App {
             if thread.turns.last().map(|turn| &turn.id) != latest_turn_id.as_ref() {
                 bail!("thread history changed; reload the session before editing this prompt");
             }
-            crate::app_backtrack::selected_prompt_turn_index(
+            let target = crate::app_backtrack::selected_prompt_target(
                 &thread.turns,
                 selected_cell
                     .as_any()
@@ -118,7 +120,11 @@ impl App {
                 start_item.as_ref(),
                 nth_user_message,
                 &mut prompt,
-            )
+            )?;
+            if target.before_item_id.is_some() {
+                app_server.require_prompt_item_boundaries().await?;
+            }
+            Ok(target)
         }
         .await;
         let selected = match selection {
@@ -134,13 +140,18 @@ impl App {
                 tui,
                 app_server,
                 thread_id,
-                thread.turns[selected].id.clone(),
+                PromptEditBoundary {
+                    turn_id: thread.turns[selected.turn_index].id.clone(),
+                    before_item_id: selected.before_item_id,
+                },
                 prompt,
             )
             .await;
             return Ok(());
         }
-        let target = LegacyRollbackTarget::new(&thread.turns, selected)?;
+        let target = LegacyRollbackTarget::new(&thread.turns, &selected)?;
+        let retained_turn_count =
+            selected.turn_index + usize::from(selected.before_item_id.is_some());
         self.chat_widget
             .restore_user_message_to_composer(prompt.clone());
         self.chat_widget
@@ -181,13 +192,13 @@ impl App {
         };
         if canonical.id != thread_id.to_string()
             || canonical.history_mode != ThreadHistoryMode::Legacy
-            || canonical.turns.len() != selected
+            || canonical.turns.len() != retained_turn_count
         {
             bail!(
                 "history changed but its new boundary could not be verified; reopen this session before continuing"
             );
         }
-        self.install_legacy_prompt_edit(thread_id, canonical, prompt)
+        self.install_prompt_edit(thread_id, canonical, prompt)
             .await?;
         tui.frame_requester().schedule_frame();
         Ok(())
@@ -227,90 +238,6 @@ impl App {
         })
         .await
         .wrap_err("history changed but refresh timed out; reopen this session before continuing")?
-    }
-
-    async fn install_legacy_prompt_edit(
-        &mut self,
-        thread_id: ThreadId,
-        canonical: Thread,
-        prompt: UserMessage,
-    ) -> Result<()> {
-        let mut session = self
-            .thread_event_channels
-            .get(&thread_id)
-            .ok_or_else(|| eyre!("edited thread is no longer available"))?
-            .store
-            .lock()
-            .await
-            .session
-            .clone()
-            .ok_or_else(|| eyre!("edited thread has no session"))?;
-        self.abort_thread_event_listener(thread_id);
-        // The client fence was consumed; discard already-routed events rather than replaying
-        // stale item completions. Removing the store also invalidates its replay buffer.
-        self.active_thread_rx = None;
-        self.thread_event_channels.remove(&thread_id);
-        self.active_thread_id = None;
-        session.rollout_path = canonical.path.clone();
-        if self.primary_thread_id == Some(thread_id) {
-            self.primary_session_configured = Some(session.clone());
-        }
-        self.chat_widget.restore_thread_input_state(
-            /*input_state*/ None,
-            crate::chatwidget::ThreadInputStateRestoreMode {
-                preserve_in_flight_turn: false,
-            },
-        );
-        self.recap.reset_for_new_thread(Instant::now());
-        self.recap.seed_from_turns(&canonical.turns, Instant::now());
-        self.retain_realtime_replay_state_before_replace();
-        self.forget_realtime_replay_thread(thread_id);
-        self.chat_widget
-            .reset_after_prompt_revert(canonical.path.clone(), &canonical.turns);
-        self.chat_widget.restore_user_message_to_composer(prompt);
-        self.chat_widget
-            .set_queue_autosend_suppressed(/*suppressed*/ true);
-        {
-            let mut store = self.ensure_thread_channel(thread_id).store.lock().await;
-            store.set_session(session, canonical.turns.clone());
-            store.turn_history_complete = true;
-        }
-        self.activate_thread_channel(thread_id).await;
-        let visibility = if self.config.show_raw_agent_reasoning {
-            crate::thread_transcript::RawReasoningVisibility::Visible
-        } else {
-            crate::thread_transcript::RawReasoningVisibility::Hidden
-        };
-        let mut config = self.config.clone();
-        config.show_compact_summary = self.local_settings.tui.show_compact_summary;
-        config.tui_agent_prompt_preview_lines = self.local_settings.tui.agent_prompt_preview_lines;
-        config.tui_agent_response_preview_lines =
-            self.local_settings.tui.agent_response_preview_lines;
-        config.tui_command_output_preview_lines =
-            self.local_settings.tui.command_output_preview_lines;
-        config.tui_user_shell_output_preview_lines =
-            self.local_settings.tui.user_shell_output_preview_lines;
-        let mut cells = self
-            .transcript_cells
-            .iter()
-            .rev()
-            .find(|cell| cell.as_any().is::<crate::history_cell::SessionInfoCell>())
-            .cloned()
-            .into_iter()
-            .collect::<Vec<_>>();
-        cells.extend(crate::thread_transcript::thread_to_transcript_cells(
-            canonical,
-            visibility,
-            Some(&config),
-        ));
-        // Widget shutdown can have queued transcript inserts. Install the authoritative
-        // replacement after them, using the same input/reset barrier as Paginated revert.
-        self.app_event_tx.send(AppEvent::FinishPromptRevert {
-            thread_id,
-            nth_user_message: 0,
-            canonical_cells: Some(cells),
-        });
-        Ok(())
     }
 }
 

@@ -1,6 +1,10 @@
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::TurnAbortedEvent;
 use codex_rollout::RolloutConfig;
+use codex_rollout::RolloutItem;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::RolloutRecorderParams;
 
@@ -23,6 +27,7 @@ pub(super) async fn revert(
     let RevertThreadParams {
         thread_id,
         before_turn_id,
+        before_item_id,
         multi_agent_version,
     } = params;
     let state_db = store
@@ -102,13 +107,36 @@ pub(super) async fn revert(
         )
         .await?;
     }
-    let history_base = paginated_fork::history_base_at_boundary(
-        store,
-        thread_id,
-        ForkBoundary::BeforeTurn(before_turn_id),
-        &lineage,
-    )
-    .await?;
+    let interrupted_turn = if before_item_id.is_some() {
+        let turn = super::thread_history::find_source_turn(
+            store.thread_history_db().await?,
+            &lineage,
+            &before_turn_id,
+        )
+        .await?;
+        Some(RolloutItem::EventMsg(EventMsg::TurnAborted(
+            TurnAbortedEvent {
+                root_turn_id: turn.root_turn_id,
+                turn_id: Some(before_turn_id.clone()),
+                reason: TurnAbortReason::Interrupted,
+                error: None,
+                started_at: turn.started_at,
+                completed_at: None,
+                duration_ms: None,
+            },
+        )))
+    } else {
+        None
+    };
+    let boundary = match before_item_id {
+        Some(item_id) => ForkBoundary::BeforeItem {
+            turn_id: before_turn_id,
+            item_id,
+        },
+        None => ForkBoundary::BeforeTurn(before_turn_id),
+    };
+    let history_base =
+        paginated_fork::history_base_at_boundary(store, thread_id, boundary, &lineage).await?;
 
     let forked_from_ordinal_exclusive =
         codex_rollout::forked_from_ordinal_exclusive(&source_meta, Some(source_path.as_path()))
@@ -131,6 +159,12 @@ pub(super) async fn revert(
     )
     .await?;
     let replacement_path = recorder.rollout_path().to_path_buf();
+    if let Some(interrupted_turn) = interrupted_turn {
+        recorder
+            .record_canonical_items(&[interrupted_turn])
+            .await
+            .map_err(thread_store_io_error)?;
+    }
     recorder.persist().await.map_err(thread_store_io_error)?;
     recorder.shutdown().await.map_err(thread_store_io_error)?;
 

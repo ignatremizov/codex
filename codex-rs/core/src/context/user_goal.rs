@@ -24,8 +24,8 @@ pub enum UserGoalUpdate {
 }
 
 impl UserGoalUpdate {
-    pub(crate) const KIND: &str = "user.goal";
-    pub(crate) const OMITTED_OBJECTIVE_KIND: &str = "user.goal.omitted";
+    pub(crate) const KIND: &str = codex_history::USER_GOAL_CONTENT_KIND;
+    pub(crate) const OMITTED_OBJECTIVE_KIND: &str = codex_history::USER_GOAL_OMITTED_CONTENT_KIND;
 
     /// Captures accepted goal instructions at a compaction input boundary.
     pub(crate) fn message_ids<'a>(
@@ -40,23 +40,7 @@ impl UserGoalUpdate {
 
     /// Reads only a host-annotated goal instruction, never a matching text wrapper alone.
     pub(crate) fn message_text(item: &ResponseItem) -> Option<&str> {
-        let ResponseItem::Message {
-            role,
-            content,
-            internal_chat_message_metadata_passthrough: Some(metadata),
-            ..
-        } = item
-        else {
-            return None;
-        };
-        let [kind] = metadata.content_item_kinds.as_deref()? else {
-            return None;
-        };
-        let [ContentItem::InputText { text }] = content.as_slice() else {
-            return None;
-        };
-        (role == "user" && matches!(kind.0.as_str(), Self::KIND | Self::OMITTED_OBJECTIVE_KIND))
-            .then_some(text)
+        codex_history::user_goal_update_text(item)
     }
 }
 

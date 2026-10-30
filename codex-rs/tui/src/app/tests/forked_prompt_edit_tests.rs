@@ -196,6 +196,7 @@ async fn inherited_fork_prompts_use_the_current_mutation_and_keep_the_latest_hea
                             "threadId": fork_id,
                             "numTurns": 4 - selected,
                             "expectedStartTurnId": format!("turn-{selected}"),
+                            "expectedStartItemId": null,
                             "expectedTurnCount": 4,
                         })]
                     );
@@ -207,6 +208,7 @@ async fn inherited_fork_prompts_use_the_current_mutation_and_keep_the_latest_hea
                         vec![serde_json::json!({
                             "threadId": fork_id,
                             "beforeTurnId": format!("turn-{selected}"),
+                            "beforeItemId": null,
                         })]
                     );
                     assert!(!recorded_params(&requests, "thread/turns/list").is_empty());

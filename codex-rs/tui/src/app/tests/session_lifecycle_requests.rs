@@ -425,6 +425,11 @@ pub(super) enum HistoryCapabilities {
     RollbackRejected,
     RollbackUnknown,
     RollbackCommittedRefreshFails,
+    RevertRefreshFails,
+    RevertRefreshDisconnects,
+    RevertRefreshStalls,
+    PromptItemBoundariesUnavailable,
+    PromptItemBoundariesOmitted,
 }
 
 #[path = "legacy_rollback_proxy.rs"]
@@ -609,6 +614,7 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
         let mut inventories = usize::from(failed_thread_name == Some("background"));
         let mut reject_detach = false;
         let mut rollback_attempted = false;
+        let mut revert_refresh_pending = false;
         let mut reject_thread_list = history_capabilities == HistoryCapabilities::ThreadListFails;
         loop {
             let frame = tokio::select! {
@@ -664,6 +670,42 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                         .lock()
                         .expect("request recorder lock")
                         .push(request.clone());
+                    if revert_refresh_pending
+                        && matches!(
+                            request.method.as_str(),
+                            "thread/turns/list" | "thread/items/list"
+                        )
+                    {
+                        // Fault only the edit's first refresh request; later reads can inspect
+                        // the actual committed history without retrying the mutation.
+                        revert_refresh_pending = false;
+                        match history_capabilities {
+                            HistoryCapabilities::RevertRefreshFails => {
+                                websocket
+                                    .send(Message::Text(
+                                        serde_json::to_string(&JSONRPCMessage::Error(
+                                            JSONRPCError {
+                                                id: request.id,
+                                                error: JSONRPCErrorError {
+                                                    code: -32603,
+                                                    data: None,
+                                                    message: "canonical refresh unavailable".into(),
+                                                },
+                                            },
+                                        ))?
+                                        .into(),
+                                    ))
+                                    .await?;
+                                continue;
+                            }
+                            HistoryCapabilities::RevertRefreshDisconnects => {
+                                websocket.close(/*msg*/ None).await?;
+                                break;
+                            }
+                            HistoryCapabilities::RevertRefreshStalls => continue,
+                            _ => {}
+                        }
+                    }
                     if let Some(error) = legacy_rollback_proxy::fault(
                         history_capabilities,
                         &request,
@@ -1216,7 +1258,24 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                     &request,
                                     ClientRequest::ThreadRealtimeListVoices { .. }
                                 );
+                            let omit_prompt_boundary_capability = history_capabilities
+                                == HistoryCapabilities::PromptItemBoundariesOmitted
+                                && matches!(&request, ClientRequest::ServerRead { .. });
+                            let is_revert = matches!(&request, ClientRequest::ThreadRevert { .. });
                             let mut result = embedded.request(request).await?;
+                            if is_revert && result.is_ok() {
+                                revert_refresh_pending = matches!(
+                                    history_capabilities,
+                                    HistoryCapabilities::RevertRefreshFails
+                                        | HistoryCapabilities::RevertRefreshDisconnects
+                                        | HistoryCapabilities::RevertRefreshStalls
+                                );
+                            }
+                            if omit_prompt_boundary_capability
+                                && let Ok(serde_json::Value::Object(value)) = &mut result
+                            {
+                                value.remove("supportsPromptItemBoundaries");
+                            }
                             if unknown_voice && let Ok(value) = &mut result {
                                 value["config"]["realtime"]["voice"] =
                                     serde_json::json!("future_voice");

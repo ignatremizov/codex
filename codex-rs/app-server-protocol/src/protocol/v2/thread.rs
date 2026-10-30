@@ -574,6 +574,12 @@ pub struct ThreadForkParams {
     #[ts(optional = nullable)]
     pub before_turn_id: Option<String>,
 
+    /// Optional user-message item within `beforeTurnId` to fork before.
+    /// Retains the earlier part of that turn. Requires `beforeTurnId`.
+    #[experimental("thread/fork.beforeItemId")]
+    #[ts(optional = nullable)]
+    pub before_item_id: Option<String>,
+
     /// [UNSTABLE] Specify the rollout path to fork from.
     /// If specified, the thread_id param will be ignored.
     #[experimental("thread/fork.path")]
@@ -1381,6 +1387,10 @@ pub struct ThreadRollbackParams {
     /// Optional first turn expected in the selected rollback suffix.
     #[ts(optional = nullable)]
     pub expected_start_turn_id: Option<String>,
+    /// Optional user-message item in the expected first turn to exclude.
+    /// Retains earlier items in that turn. Requires both expected turn guards.
+    #[ts(optional = nullable)]
+    pub expected_start_item_id: Option<String>,
     /// Optional materialized turn count observed when the rollback target was selected.
     #[ts(optional = nullable)]
     pub expected_turn_count: Option<u32>,
@@ -1429,6 +1439,10 @@ pub struct ThreadRevertParams {
     pub thread_id: String,
     /// Turn excluded from the replacement history, together with every later turn.
     pub before_turn_id: String,
+    /// Optional user-message item to exclude instead of the whole selected turn.
+    /// Earlier items in that turn remain in the replacement history.
+    #[ts(optional = nullable)]
+    pub before_item_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

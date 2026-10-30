@@ -5000,6 +5000,13 @@ class ServerReadResponse(BaseModel):
         populate_by_name=True,
     )
     auth_profile: Annotated[ServerAuthProfile, Field(alias="authProfile")]
+    supports_prompt_item_boundaries: Annotated[
+        bool | None,
+        Field(
+            alias="supportsPromptItemBoundaries",
+            description="Supports exact user-item boundaries for prompt rollback, revert, and fork. Older servers omit this field; clients must not send item cuts unless it is true.",
+        ),
+    ] = False
 
 
 class ServerRequestResolvedNotification(BaseModel):
@@ -6316,6 +6323,13 @@ class ThreadRevertParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    before_item_id: Annotated[
+        str | None,
+        Field(
+            alias="beforeItemId",
+            description="Optional user-message item to exclude instead of the whole selected turn. Earlier items in that turn remain in the replacement history.",
+        ),
+    ] = None
     before_turn_id: Annotated[
         str,
         Field(
@@ -6337,6 +6351,13 @@ class ThreadRollbackParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    expected_start_item_id: Annotated[
+        str | None,
+        Field(
+            alias="expectedStartItemId",
+            description="Optional user-message item in the expected first turn to exclude. Retains earlier items in that turn. Requires both expected turn guards.",
+        ),
+    ] = None
     expected_start_turn_id: Annotated[
         str | None,
         Field(

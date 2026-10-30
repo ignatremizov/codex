@@ -746,6 +746,12 @@ GNU/Linux servers request best-effort glibc heap trimming after completed or int
 
 The request contains `threadId` and `numTurns` (at least one). For guarded prompt editing, send both `expectedStartTurnId` and `expectedTurnCount`: `numTurns` then selects a materialized suffix, whose first turn and total observed turn count are revalidated against canonical history. Without guards, the route retains its historical user-instruction-count behavior. Running turns, concurrent history mutations, and busy submission admission reject rollback without accepting the mutation. A successful response contains the updated `thread` with canonical turns populated and its current live status, rather than the stored summary's `notLoaded` status.
 
+To edit a steer within that first turn, also send `expectedStartItemId`, identifying its canonical user-message item. Both turn guards are required. The mutation retains earlier items in the selected turn and excludes the steer's presentation and model input together, followed by the remaining suffix. Identical prompt text does not substitute for item identity. Ambiguous prompt/model source pairs are rejected before mutation.
+
+Paginated `thread/revert` accepts an optional `beforeItemId` together with `beforeTurnId` for the same steer boundary. It closes the retained partial turn as interrupted. Experimental `thread/fork.beforeItemId` selects that boundary for a source-preserving fork and requires `beforeTurnId`; omit the item field to exclude the whole turn. Inherited history limits remain binding, including compressed source rollouts and repeated cuts.
+
+Clients must first call `server/read` and require `supportsPromptItemBoundaries: true` before sending any of these item fields. An absent or false capability means steer edits are unsupported. Older servers may ignore unknown fields, so sending an item cut without this check can exclude the entire containing turn.
+
 The Legacy mutation appends a rollback marker using a single-attempt recorder command, followed by any required reconstruction repairs, before installing the live history. A failed marker or required-repair barrier is not proof that nothing was written. The session remains quarantined until its writer is closed and canonical history can be reloaded; timeout does not authorize discarding a writer.
 
 Error responses distinguish recovery from retry:

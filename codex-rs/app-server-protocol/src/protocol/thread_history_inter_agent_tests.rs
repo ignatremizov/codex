@@ -311,7 +311,7 @@ fn materialized_boundary_preserves_duplicate_turn_occurrences() {
         })),
     ];
     assert_eq!(
-        materialized_rollback_start(&items, 1),
+        materialized_rollback_start(&items, /*num_turns*/ 1, /*before_item_id*/ None),
         Some(super::MaterializedRollbackStart {
             rollout_index: 2,
             turn_id: "duplicate".into(),
@@ -378,7 +378,7 @@ fn materialized_boundary_keeps_original_positions_after_exact_removal() {
         RolloutItem::EventMsg(start("retained")),
     ];
     assert_eq!(
-        materialized_rollback_start(&items, 1),
+        materialized_rollback_start(&items, /*num_turns*/ 1, /*before_item_id*/ None),
         Some(super::MaterializedRollbackStart {
             rollout_index: 2,
             turn_id: "retained".into(),

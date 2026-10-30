@@ -95,6 +95,7 @@ async fn revert_reconciles_inventory_without_blocking_unrecorded_preparations() 
             .revert_thread(RevertThreadParams {
                 thread_id: receiver,
                 before_turn_id: notification.id.clone(),
+                before_item_id: None,
                 multi_agent_version: None,
             })
             .await;

@@ -276,6 +276,7 @@ mod pets;
 mod platform_actions;
 mod plugin_mentions;
 mod prompt_edit;
+mod prompt_edit_reset;
 mod rate_limit_refresh;
 mod realtime_delivery;
 mod realtime_settings;

@@ -51,6 +51,58 @@ fn assistant_msg(text: &str) -> ResponseItem {
     }
 }
 
+#[test]
+fn prompt_fork_cuts_before_the_steers_model_input_in_both_rollout_formats() {
+    for canonical in [false, true] {
+        let thread_id = codex_protocol::ThreadId::new();
+        let presentation = |id: &str| {
+            let mut user = codex_protocol::items::UserMessageItem::new(&[
+                codex_protocol::user_input::UserInput::Text {
+                    text: "same prompt".into(),
+                    text_elements: Vec::new(),
+                },
+            ]);
+            user.id = id.into();
+            RolloutItem::EventMsg(if canonical {
+                EventMsg::ItemCompleted(codex_protocol::protocol::ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn".into(),
+                    item: TurnItem::UserMessage(user),
+                    started_at_ms: None,
+                    completed_at_ms: 0,
+                })
+            } else {
+                user.as_legacy_event()
+            })
+        };
+        let items = vec![
+            turn_started("turn"),
+            response_item(user_msg("same prompt")),
+            presentation("initial"),
+            response_item(assistant_msg("keep this answer")),
+            response_item(user_msg("same prompt")),
+            presentation("steer"),
+            turn_completed("turn"),
+        ];
+        let selected = if canonical {
+            "steer".to_string()
+        } else {
+            build_turns_from_rollout_items(&items)[0]
+                .items
+                .last()
+                .expect("selected legacy steer")
+                .id()
+                .to_string()
+        };
+        let retained = truncate_rollout_before_turn_id(items.clone(), "turn", Some(&selected))
+            .expect("exact prompt cut");
+        assert_eq!(
+            serde_json::to_value(retained).expect("retained source"),
+            serde_json::to_value(&items[..4]).expect("expected prefix"),
+        );
+    }
+}
+
 fn developer_msg(text: &str) -> ResponseItem {
     ResponseItem::Message {
         status: None,
@@ -142,13 +194,14 @@ fn truncates_rollout_before_terminal_canonical_turn_id() {
     ];
 
     let truncated =
-        truncate_rollout_before_turn_id(rollout.clone(), "turn-2").expect("truncate before turn-2");
+        truncate_rollout_before_turn_id(rollout.clone(), "turn-2", /*before_item_id*/ None)
+            .expect("truncate before turn-2");
     assert_eq!(
         serde_json::to_value(&truncated).unwrap(),
         serde_json::to_value(&rollout[..2]).unwrap()
     );
     assert!(
-        truncate_rollout_before_turn_id(rollout, "turn-1")
+        truncate_rollout_before_turn_id(rollout, "turn-1", /*before_item_id*/ None)
             .expect("truncate before turn-1")
             .is_empty()
     );
@@ -162,8 +215,9 @@ fn truncates_rollout_before_in_progress_canonical_turn_id() {
         turn_started("turn-2"),
     ];
 
-    let truncated = truncate_rollout_before_turn_id(rollout.clone(), "turn-2")
-        .expect("truncate before in-progress turn-2");
+    let truncated =
+        truncate_rollout_before_turn_id(rollout.clone(), "turn-2", /*before_item_id*/ None)
+            .expect("truncate before in-progress turn-2");
 
     assert_eq!(
         serde_json::to_value(&truncated).unwrap(),
@@ -187,7 +241,7 @@ fn truncate_rollout_before_turn_id_rejects_rolled_back_turn() {
         turn_completed("turn-3"),
     ];
 
-    let err = truncate_rollout_before_turn_id(rollout, "turn-2")
+    let err = truncate_rollout_before_turn_id(rollout, "turn-2", /*before_item_id*/ None)
         .expect_err("rolled-back turn should not be a fork anchor");
 
     assert!(matches!(
@@ -206,7 +260,7 @@ fn truncate_rollout_before_turn_id_rejects_synthetic_legacy_turn_id() {
         },
     ))];
 
-    let err = truncate_rollout_before_turn_id(rollout, "rollout-0")
+    let err = truncate_rollout_before_turn_id(rollout, "rollout-0", /*before_item_id*/ None)
         .expect_err("synthetic turn should not be a fork anchor");
 
     assert!(matches!(

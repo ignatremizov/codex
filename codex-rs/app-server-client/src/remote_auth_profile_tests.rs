@@ -48,6 +48,7 @@ async fn verifies_metadata_from_the_connected_server() -> Result<(), Box<dyn std
     let mut client = client(
         "/home",
         Ok(serde_json::to_value(ServerReadResponse {
+            supports_prompt_item_boundaries: true,
             auth_profile: expected.clone(),
         })?),
     );
@@ -91,6 +92,7 @@ async fn matching_home_and_label_do_not_hide_a_different_profile()
     let mut client = client(
         "/home",
         Ok(serde_json::to_value(ServerReadResponse {
+            supports_prompt_item_boundaries: true,
             auth_profile: ServerAuthProfile {
                 profile_opaque_id: "other".to_string(),
                 display_label: "codex".to_string(),
@@ -121,6 +123,7 @@ async fn local_matching_rejects_a_different_initialized_home()
     let mut client = client(
         "/other-home",
         Ok(serde_json::to_value(ServerReadResponse {
+            supports_prompt_item_boundaries: true,
             auth_profile: expected.clone(),
         })?),
     );

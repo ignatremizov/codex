@@ -464,7 +464,7 @@ impl App {
                     config.clone(),
                     thread_id,
                     /*last_turn_id*/ None,
-                    /*before_turn_id*/ None,
+                    /*before_prompt*/ None,
                     GoalFree,
                     selected_profile.as_ref(),
                 )

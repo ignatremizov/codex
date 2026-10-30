@@ -7,6 +7,7 @@ use crate::context_manager::is_user_turn_boundary;
 use crate::event_mapping;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::build_turns_from_rollout_items;
+use codex_app_server_protocol::materialized_rollback_start;
 use codex_history::InitialHistory;
 use codex_history::RolloutItem;
 use codex_history::exact_rollback_removed_items;
@@ -306,7 +307,33 @@ pub fn truncate_rollout_after_turn_id(
 pub fn truncate_rollout_before_turn_id(
     items: Vec<RolloutItem>,
     before_turn_id: &str,
+    before_item_id: Option<&str>,
 ) -> CodexResult<Vec<RolloutItem>> {
+    if let Some(item_id) = before_item_id {
+        let turns = build_turns_from_rollout_items(&items);
+        let mut matches = turns
+            .iter()
+            .enumerate()
+            .filter(|(_, turn)| turn.id == before_turn_id);
+        let selected = matches.next().map(|(index, _)| index);
+        if matches.next().is_some() {
+            return Err(CodexErr::InvalidRequest(
+                "selected fork prompt identity is ambiguous".to_string(),
+            ));
+        }
+        let boundary = selected
+            .and_then(|index| u32::try_from(turns.len() - index).ok())
+            .and_then(|count| materialized_rollback_start(&items, count, Some(item_id)))
+            .ok_or_else(|| {
+                CodexErr::InvalidRequest(format!(
+                    "user-message item {item_id} was not found in turn {before_turn_id}"
+                ))
+            })?;
+        return Ok(exact_rollback_filtered_range(
+            items,
+            0..boundary.rollout_index,
+        ));
+    }
     let cut_index = items.iter().position(|item| {
         matches!(
             item,

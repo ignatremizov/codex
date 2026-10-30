@@ -137,7 +137,7 @@ async fn remote_resume_restores_saved_server_profile_without_permission_override
             client_config.clone(),
             thread_id,
             /*last_turn_id*/ None,
-            /*before_turn_id*/ None,
+            /*before_prompt*/ None,
             ForkGoalContinuation::GoalFree,
             /*selected_profile*/ None,
         )

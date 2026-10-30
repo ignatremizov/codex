@@ -21,6 +21,11 @@
   "properties": {
     "authProfile": {
       "$ref": "#/definitions/ServerAuthProfile"
+    },
+    "supportsPromptItemBoundaries": {
+      "default": false,
+      "description": "Supports exact user-item boundaries for prompt rollback, revert, and fork. Older servers omit this field; clients must not send item cuts unless it is true.",
+      "type": "boolean"
     }
   },
   "required": [

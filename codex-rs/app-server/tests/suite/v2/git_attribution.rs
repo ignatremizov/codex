@@ -171,6 +171,7 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
             thread_id: thread.id.clone(),
             num_turns: 1,
             expected_start_turn_id: None,
+            expected_start_item_id: None,
             expected_turn_count: None,
         })
         .await?;

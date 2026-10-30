@@ -1052,7 +1052,7 @@ impl AppServerSession {
             thread_id,
             /*source_rollout_path*/ None,
             /*last_turn_id*/ None,
-            /*before_turn_id*/ None,
+            /*before_prompt*/ None,
             ForkGoalContinuation::GoalFree,
             ForkPresentation::Regular,
             /*selected_profile*/ None,
@@ -1076,7 +1076,7 @@ impl AppServerSession {
             thread_id,
             source_rollout_path,
             /*last_turn_id*/ None,
-            /*before_turn_id*/ None,
+            /*before_prompt*/ None,
             ForkGoalContinuation::GoalFree,
             ForkPresentation::Regular,
             /*selected_profile*/ None,
@@ -1096,7 +1096,7 @@ impl AppServerSession {
         config: Config,
         thread_id: ThreadId,
         last_turn_id: Option<String>,
-        before_turn_id: Option<String>,
+        before_prompt: Option<crate::app_backtrack::PromptEditBoundary>,
         goal_continuation: ForkGoalContinuation,
         selected_profile: Option<&PermissionProfileSelection>,
     ) -> Result<AppServerStartedThread> {
@@ -1106,7 +1106,7 @@ impl AppServerSession {
             thread_id,
             /*source_rollout_path*/ None,
             last_turn_id,
-            before_turn_id,
+            before_prompt,
             goal_continuation,
             ForkPresentation::Regular,
             selected_profile,
@@ -1131,7 +1131,7 @@ impl AppServerSession {
             thread_id,
             /*source_rollout_path*/ None,
             /*last_turn_id*/ None,
-            /*before_turn_id*/ None,
+            /*before_prompt*/ None,
             ForkGoalContinuation::GoalFree,
             ForkPresentation::SideConversation,
             selected_profile,
@@ -1152,7 +1152,7 @@ impl AppServerSession {
         thread_id: ThreadId,
         source_rollout_path: Option<PathBuf>,
         last_turn_id: Option<String>,
-        before_turn_id: Option<String>,
+        before_prompt: Option<crate::app_backtrack::PromptEditBoundary>,
         goal_continuation: ForkGoalContinuation,
         presentation: ForkPresentation,
         selected_profile: Option<&PermissionProfileSelection>,
@@ -1180,10 +1180,14 @@ impl AppServerSession {
         } else {
             self.session_config_with_effective_service_tier(&config)
         };
+        let (before_turn_id, before_item_id) = before_prompt.map_or((None, None), |boundary| {
+            (Some(boundary.turn_id), boundary.before_item_id)
+        });
         let mut params = ThreadForkParams {
             path: source_rollout_path,
             last_turn_id,
             before_turn_id,
+            before_item_id,
             defer_goal_continuation: goal_continuation
                 == ForkGoalContinuation::InheritForSafetyRetry,
             exclude_turns,

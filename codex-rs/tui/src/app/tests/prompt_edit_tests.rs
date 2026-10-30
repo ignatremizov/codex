@@ -23,10 +23,23 @@ mod legacy;
 #[path = "forked_prompt_edit_tests.rs"]
 mod forked;
 
+#[path = "steer_prompt_edit_tests.rs"]
+mod steers;
+
+#[path = "steer_recovery_tests.rs"]
+mod steer_recovery;
+
 #[derive(Clone, Copy)]
 enum PromptImages {
+    TextOnly,
     Remote,
     LocalAndRemote,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptHistory {
+    SeparateTurns,
+    MidTurnSteer,
 }
 
 async fn drain_fork_attachment(
@@ -90,11 +103,29 @@ async fn prompt_source(
     ThreadId,
     PathBuf,
 )> {
+    prompt_source_with_history(mode, capabilities, images, PromptHistory::SeparateTurns).await
+}
+
+async fn prompt_source_with_history(
+    mode: ThreadHistoryMode,
+    capabilities: HistoryCapabilities,
+    images: PromptImages,
+    history: PromptHistory,
+) -> Result<(
+    Box<App>,
+    tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    RecordingAppServer,
+    ThreadId,
+    PathBuf,
+)> {
     let (mut app, events, _) = make_test_app_with_channels().await;
     app.config
         .features
         .enable(Feature::ForkPromptEdits)
         .expect("test config should allow feature update");
+    // Public-transport tests observe app events for both in-place edits and forks.
+    // The manual widget otherwise sends commands to the discarded direct-op receiver.
+    set_test_initial_prompt(&mut app, String::new());
     let timestamp = "2026-01-05T12-00-00";
     let create = match mode {
         ThreadHistoryMode::Legacy => app_test_support::create_fake_rollout,
@@ -132,7 +163,8 @@ async fn prompt_source(
         .into_iter()
         .enumerate()
     {
-        let turn_id = format!("turn-{index}");
+        let is_steer = history == PromptHistory::MidTurnSteer && index == 3;
+        let turn_id = format!("turn-{}", if is_steer { 2 } else { index });
         let mut content = vec![CoreUserInput::Text {
             text: text.into(),
             text_elements: if text == SELECTED {
@@ -155,13 +187,15 @@ async fn prompt_source(
                     name: "Google Calendar".into(),
                     path: "app://google_calendar".into(),
                 },
-                CoreUserInput::Image {
+            ]);
+            if !matches!(images, PromptImages::TextOnly) {
+                content.push(CoreUserInput::Image {
                     image: ImageReference::Inline {
                         image_url: "https://example.com/prompt.png".into(),
                     },
                     detail: None,
-                },
-            ]);
+                });
+            }
             if matches!(images, PromptImages::LocalAndRemote) {
                 content.push(CoreUserInput::LocalImage {
                     path: test_path_buf("/tmp/prompt-image.png"),
@@ -186,29 +220,121 @@ async fn prompt_source(
                 completed_at_ms: 0,
             }),
         };
-        for item in [
-            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                turn_attribution: None,
-                turn_id: turn_id.clone(),
-                root_turn_id: None,
-                trace_id: None,
-                started_at: None,
-                model_context_window: None,
-                collaboration_mode_kind: ModeKind::default(),
-                agent_queue: None,
-            })),
-            RolloutItem::EventMsg(message),
-            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
-                root_turn_id: None,
-                turn_id,
-                last_agent_message: None,
-                error: None,
-                started_at: None,
-                completed_at: None,
-                duration_ms: None,
-                time_to_first_token_ms: None,
-            })),
-        ] {
+        let mut items = Vec::new();
+        if !is_steer {
+            items.push(RolloutItem::EventMsg(EventMsg::TurnStarted(
+                TurnStartedEvent {
+                    turn_attribution: None,
+                    turn_id: turn_id.clone(),
+                    root_turn_id: None,
+                    trace_id: None,
+                    started_at: None,
+                    model_context_window: None,
+                    collaboration_mode_kind: ModeKind::default(),
+                    agent_queue: None,
+                },
+            )));
+        }
+        if is_steer {
+            // Accepted goal edits persist user-role model input, without a visible UserMessage.
+            items.push(RolloutItem::ResponseItem(codex_history::ResponseItemEnvelope {
+                item: serde_json::from_value(serde_json::json!({
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "User set the goal: retain this prefix"}],
+                    "internal_chat_message_metadata_passthrough": {
+                        "content_item_kinds": ["user.goal"],
+                    },
+                }))?,
+                metadata: Some(codex_history::CodexHarnessMetadata {
+                    retained_source: Some(codex_history::RetainedSource {
+                        id: codex_history::RetainedSourceId {
+                            message_id: "goal-before-steer".into(),
+                            turn_id: turn_id.clone(),
+                            role: codex_history::RetainedSourceRole::User,
+                        },
+                        revision: codex_protocol::ResponseItemId::with_suffix("revision", "goal"),
+                        complete: true,
+                    }),
+                    ..Default::default()
+                }),
+            }));
+        }
+        if history == PromptHistory::MidTurnSteer {
+            items.push(prompt_response("user", text));
+        }
+        if is_steer {
+            // Output can finish between durable input admission and its visible presentation.
+            let answer = "Output after steer admission";
+            items.push(prompt_response("assistant", answer));
+            let mut agent = codex_protocol::items::AgentMessageItem::new(&[
+                codex_protocol::items::AgentMessageContent::Text {
+                    text: answer.into(),
+                },
+            ]);
+            agent.id = "after-steer-admission".into();
+            let event = match mode {
+                ThreadHistoryMode::Legacy => {
+                    EventMsg::AgentMessage(codex_protocol::protocol::AgentMessageEvent {
+                        message: answer.into(),
+                        phase: None,
+                        memory_citation: None,
+                        delivery: None,
+                        questions: None,
+                    })
+                }
+                ThreadHistoryMode::Paginated => EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: id,
+                    turn_id: turn_id.clone(),
+                    item: TurnItem::AgentMessage(agent),
+                    started_at_ms: None,
+                    completed_at_ms: 0,
+                }),
+            };
+            items.push(RolloutItem::EventMsg(event));
+        }
+        items.push(RolloutItem::EventMsg(message));
+        if history == PromptHistory::MidTurnSteer && index == 2 {
+            let answer = "Answer before the steer";
+            items.push(prompt_response("assistant", answer));
+            let message = match mode {
+                ThreadHistoryMode::Legacy => {
+                    EventMsg::AgentMessage(codex_protocol::protocol::AgentMessageEvent {
+                        message: answer.into(),
+                        phase: None,
+                        memory_citation: None,
+                        delivery: None,
+                        questions: None,
+                    })
+                }
+                ThreadHistoryMode::Paginated => EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: id,
+                    turn_id: turn_id.clone(),
+                    item: TurnItem::AgentMessage(codex_protocol::items::AgentMessageItem::new(&[
+                        codex_protocol::items::AgentMessageContent::Text {
+                            text: answer.into(),
+                        },
+                    ])),
+                    started_at_ms: None,
+                    completed_at_ms: 0,
+                }),
+            };
+            items.push(RolloutItem::EventMsg(message));
+        } else {
+            items.push(RolloutItem::EventMsg(EventMsg::TurnComplete(
+                TurnCompleteEvent {
+                    root_turn_id: None,
+                    turn_id,
+                    last_agent_message: None,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                },
+            )));
+        }
+        for item in items {
             codex_rollout::append_rollout_item_to_path(&path, &item).await?;
         }
     }
@@ -230,6 +356,12 @@ async fn prompt_source(
             crate::app_server_session::ResumeModelSettings::RestoreFromThread,
         )
         .await?;
+    let expected: &[(&str, usize)] = match history {
+        PromptHistory::SeparateTurns => {
+            &[("turn-0", 1), ("turn-1", 1), ("turn-2", 1), ("turn-3", 1)]
+        }
+        PromptHistory::MidTurnSteer => &[("turn-0", 1), ("turn-1", 1), ("turn-2", 2)],
+    };
     assert_eq!(
         started
             .turns
@@ -242,11 +374,34 @@ async fn prompt_source(
                     .count(),
             ))
             .collect::<Vec<_>>(),
-        [("turn-0", 1), ("turn-1", 1), ("turn-2", 1), ("turn-3", 1)],
+        expected,
     );
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
     Ok((app, events, recording, id, path))
+}
+
+fn prompt_response(role: &str, text: &str) -> RolloutItem {
+    RolloutItem::ResponseItem(
+        codex_protocol::models::ResponseItem::Message {
+            id: None,
+            status: None,
+            encrypted_content: None,
+            role: role.into(),
+            content: vec![if role == "user" {
+                codex_protocol::models::ContentItem::InputText { text: text.into() }
+            } else {
+                codex_protocol::models::ContentItem::OutputText {
+                    text: text.into(),
+                    annotations: None,
+                    logprobs: None,
+                }
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    )
 }
 
 #[tokio::test]
@@ -279,7 +434,11 @@ async fn goal_free_and_safety_retry_fork_requests_preserve_both_history_modes() 
                 app.config.clone(),
                 source_id,
                 /*last_turn_id*/ None,
-                /*before_turn_id*/ Some("turn-2".into()),
+                /*before_prompt*/
+                Some(crate::app_backtrack::PromptEditBoundary {
+                    turn_id: "turn-2".into(),
+                    before_item_id: None,
+                }),
                 ForkGoalContinuation::InheritForSafetyRetry,
                 /*selected_profile*/ None,
             )

@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::AppServerSession;
+use crate::app_backtrack::PromptEditBoundary;
 use crate::exec_cell::OutputPreviewLineLimits;
 use crate::history_cell::HistoryRenderMode;
 use crate::legacy_core::config::Config;
@@ -15,6 +16,8 @@ use crate::thread_transcript::refresh_collab_agent_labels;
 use crate::thread_transcript::thread_items_to_transcript_cells_with_preview_line_limits;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ServerReadParams;
+use codex_app_server_protocol::ServerReadResponse;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryMode;
@@ -151,10 +154,29 @@ pub(crate) struct ThreadHistoryPagination {
 }
 
 impl AppServerSession {
+    /// Prevent older servers from silently ignoring an unknown item field and dropping a turn.
+    pub(crate) async fn require_prompt_item_boundaries(&mut self) -> Result<()> {
+        let request_id = self.next_request_id();
+        let response: ServerReadResponse = tokio::time::timeout(
+            std::time::Duration::from_secs(/*secs*/ 10),
+            self.client.request_typed(ClientRequest::ServerRead {
+                request_id,
+                params: ServerReadParams {},
+            }),
+        )
+        .await
+        .wrap_err("server capability check timed out; your prompt has not been edited")??;
+        color_eyre::eyre::ensure!(
+            response.supports_prompt_item_boundaries,
+            "this server does not support editing a steer; upgrade the server before editing this prompt"
+        );
+        Ok(())
+    }
+
     pub(crate) async fn revert_thread(
         &mut self,
         thread_id: ThreadId,
-        before_turn_id: String,
+        boundary: PromptEditBoundary,
         retained_turns: &[Turn],
     ) -> std::result::Result<ThreadRevertResponse, codex_app_server_client::TypedRequestError> {
         let request_id = self.next_request_id();
@@ -164,7 +186,8 @@ impl AppServerSession {
                 request_id,
                 params: ThreadRevertParams {
                     thread_id: thread_id.to_string(),
-                    before_turn_id,
+                    before_turn_id: boundary.turn_id,
+                    before_item_id: boundary.before_item_id,
                 },
             })
             .await?;
@@ -302,7 +325,7 @@ impl AppServerSession {
                 &tokio_util::sync::CancellationToken::new(),
             )
             .await?;
-            // Finish the anchor turn so prompt editing can detect earlier steers,
+            // Finish the anchor turn so prompt editing can resolve exact steer identities,
             // but do not scan history older than the displayed transcript.
             if let HistoryHydrationScope::ThroughTurn(anchor) = scope
                 && let Some(index) = thread.turns.iter().position(|turn| turn.id == anchor)

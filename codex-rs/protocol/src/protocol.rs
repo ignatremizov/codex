@@ -902,6 +902,7 @@ pub enum Op {
     ThreadRollbackMaterialized {
         num_turns: u32,
         expected_start_turn_id: Option<String>,
+        expected_start_item_id: Option<String>,
         expected_turn_count: Option<u32>,
     },
 
