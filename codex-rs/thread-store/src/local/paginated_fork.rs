@@ -16,6 +16,8 @@ use crate::PreparedFork;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
+mod prompt_boundary;
+
 pub(super) async fn prepare(
     store: &LocalThreadStore,
     params: PrepareForkParams,
@@ -195,6 +197,9 @@ pub(super) async fn history_base_at_boundary(
                 end_ordinal_exclusive: ordinal,
                 end_byte_offset: offset,
             }
+        }
+        ForkBoundary::BeforeItem { turn_id, item_id } => {
+            prompt_boundary::before_item(store, lineage, &turn_id, &item_id).await?
         }
     };
     let segment_index = lineage

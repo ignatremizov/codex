@@ -831,6 +831,7 @@ pub(super) async fn submission_loop(
                 Op::ThreadRollbackMaterialized {
                     num_turns,
                     expected_start_turn_id,
+                    expected_start_item_id,
                     expected_turn_count,
                 } => {
                     super::rollback::thread_rollback_materialized(
@@ -838,6 +839,7 @@ pub(super) async fn submission_loop(
                         sub.id.clone(),
                         num_turns,
                         expected_start_turn_id,
+                        expected_start_item_id,
                         expected_turn_count,
                     )
                     .await

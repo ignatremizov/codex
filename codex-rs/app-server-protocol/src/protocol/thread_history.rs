@@ -74,7 +74,10 @@ use uuid::Uuid;
 
 mod collab_legacy;
 mod non_paginated_exec;
+mod rollback_target;
 use self::non_paginated_exec::NonPaginatedExecHistory;
+pub use rollback_target::MaterializedRollbackStart;
+pub use rollback_target::materialized_rollback_start;
 
 #[cfg(test)]
 use crate::protocol::v2::CommandAction;
@@ -104,42 +107,6 @@ pub fn build_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
         }
     }
     builder.finish()
-}
-
-/// A materialized suffix boundary in the original canonical decoded rollout coordinates.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializedRollbackStart {
-    pub rollout_index: usize,
-    pub turn_id: String,
-    pub turn_count: usize,
-}
-
-/// Returns the raw rollout boundary of the selected materialized turn suffix.
-pub fn materialized_rollback_start(
-    items: &[RolloutItem],
-    num_turns: u32,
-) -> Option<MaterializedRollbackStart> {
-    let removed = exact_rollback_removed_items(items);
-    let mut builder = ThreadHistoryBuilder::new();
-    for (item, removed) in items.iter().zip(removed) {
-        if !removed {
-            builder.handle_rollout_item(item);
-        } else {
-            builder.skip_rollout_item();
-        }
-    }
-    builder.finish_current_turn();
-    let count = usize::try_from(num_turns).ok()?;
-    if count == 0 {
-        return None;
-    }
-    let start = builder.turns.len().checked_sub(count)?;
-    let turn = builder.turns.get(start)?;
-    Some(MaterializedRollbackStart {
-        rollout_index: turn.rollout_start_index,
-        turn_id: turn.id.clone(),
-        turn_count: builder.turns.len(),
-    })
 }
 
 /// A materialized `ThreadItem` snapshot that changed while handling one input.

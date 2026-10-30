@@ -29,6 +29,7 @@ async fn server_read_reports_selected_startup_profile_without_auth_contents() ->
     assert_eq!(
         response,
         ServerReadResponse {
+            supports_prompt_item_boundaries: true,
             auth_profile: ServerAuthProfile {
                 profile_opaque_id: expected.profile_opaque_id,
                 display_label: "codex-office".to_string(),

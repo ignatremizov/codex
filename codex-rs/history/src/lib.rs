@@ -24,6 +24,14 @@ pub use compaction_checkpoint::CompactionCheckpoint;
 mod initialization;
 pub use initialization::HistoryInitialization;
 
+mod prompt_source;
+pub use prompt_source::UserPromptSource;
+
+mod user_goal;
+pub use user_goal::USER_GOAL_CONTENT_KIND;
+pub use user_goal::USER_GOAL_OMITTED_CONTENT_KIND;
+pub use user_goal::user_goal_update_text;
+
 use std::borrow::Borrow;
 use std::ops::Deref;
 use std::ops::DerefMut;

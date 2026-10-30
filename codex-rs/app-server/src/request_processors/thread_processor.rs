@@ -2250,6 +2250,7 @@ impl ThreadRequestProcessor {
         let ThreadRevertParams {
             thread_id,
             before_turn_id,
+            before_item_id,
         } = params;
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
         let config_snapshot = thread.config_snapshot().await;
@@ -2361,6 +2362,9 @@ impl ThreadRequestProcessor {
                     .await?;
                 for turn in page.turns {
                     if turn.turn_id == *turn_id {
+                        if turn.turn_id == before_turn_id && before_item_id.is_some() {
+                            return Ok(None);
+                        }
                         return Ok(Some(state.revision));
                     }
                     if turn.turn_id == before_turn_id {
@@ -2398,6 +2402,7 @@ impl ThreadRequestProcessor {
             .revert_thread(codex_thread_store::RevertThreadParams {
                 thread_id,
                 before_turn_id,
+                before_item_id,
                 multi_agent_version: thread.multi_agent_version(),
             })
             .await
@@ -5270,6 +5275,7 @@ impl ThreadRequestProcessor {
             experimental_disable_prediction_mcp,
             last_turn_id,
             before_turn_id,
+            before_item_id,
             path,
             model,
             model_provider,
@@ -5500,6 +5506,9 @@ impl ThreadRequestProcessor {
                 "`beforeTurnId` cannot be combined with `lastTurnId`",
             ));
         }
+        if before_item_id.is_some() && before_turn_id.is_none() {
+            return Err(invalid_request("`beforeItemId` requires `beforeTurnId`"));
+        }
         if ephemeral && defer_goal_continuation {
             return Err(invalid_request(
                 "`deferGoalContinuation` cannot be combined with `ephemeral`",
@@ -5527,9 +5536,13 @@ impl ThreadRequestProcessor {
                 (Some(turn_id), None) => {
                     codex_thread_store::ForkBoundary::ThroughTurn(turn_id.to_string())
                 }
-                (None, Some(turn_id)) => {
-                    codex_thread_store::ForkBoundary::BeforeTurn(turn_id.to_string())
-                }
+                (None, Some(turn_id)) => match before_item_id.as_ref() {
+                    Some(item_id) => codex_thread_store::ForkBoundary::BeforeItem {
+                        turn_id: turn_id.to_string(),
+                        item_id: item_id.clone(),
+                    },
+                    None => codex_thread_store::ForkBoundary::BeforeTurn(turn_id.to_string()),
+                },
                 (None, None) => codex_thread_store::ForkBoundary::Latest,
                 (Some(_), Some(_)) => unreachable!("fork boundaries are mutually exclusive"),
             };
@@ -5742,10 +5755,12 @@ impl ThreadRequestProcessor {
                     truncate_rollout_after_turn_id(source_history_items, last_turn_id)
                         .map_err(|err| core_thread_write_error("truncate thread for fork", err))?
                 }
-                (None, Some(before_turn_id)) => {
-                    truncate_rollout_before_turn_id(source_history_items, before_turn_id)
-                        .map_err(|err| core_thread_write_error("truncate thread for fork", err))?
-                }
+                (None, Some(before_turn_id)) => truncate_rollout_before_turn_id(
+                    source_history_items,
+                    before_turn_id,
+                    before_item_id.as_deref(),
+                )
+                .map_err(|err| core_thread_write_error("truncate thread for fork", err))?,
                 (None, None) => source_history_items,
                 (Some(_), Some(_)) => unreachable!("fork boundaries are mutually exclusive"),
             };

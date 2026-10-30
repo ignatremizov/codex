@@ -25,4 +25,8 @@ pub struct ServerAuthProfile {
 #[ts(export_to = "v2/")]
 pub struct ServerReadResponse {
     pub auth_profile: ServerAuthProfile,
+    /// Supports exact user-item boundaries for prompt rollback, revert, and fork.
+    /// Older servers omit this field; clients must not send item cuts unless it is true.
+    #[serde(default)]
+    pub supports_prompt_item_boundaries: bool,
 }

@@ -21,6 +21,7 @@ enum Target {
     Materialized {
         count: u32,
         expected_start_turn_id: Option<String>,
+        expected_start_item_id: Option<String>,
         expected_turn_count: Option<u32>,
     },
 }
@@ -49,6 +50,7 @@ pub(crate) async fn thread_rollback_materialized(
     sub_id: String,
     num_turns: u32,
     expected_start_turn_id: Option<String>,
+    expected_start_item_id: Option<String>,
     expected_turn_count: Option<u32>,
 ) -> bool {
     rollback(
@@ -57,6 +59,7 @@ pub(crate) async fn thread_rollback_materialized(
         Target::Materialized {
             count: num_turns,
             expected_start_turn_id,
+            expected_start_item_id,
             expected_turn_count,
         },
     )
@@ -196,9 +199,22 @@ async fn apply(sess: &Arc<Session>, target: Target) -> CodexResult<ThreadRolledB
         Target::Materialized {
             count,
             expected_start_turn_id,
+            expected_start_item_id,
             expected_turn_count,
         } => {
-            let boundary = materialized_rollback_start(&stored.items, count).ok_or_else(|| {
+            if expected_start_item_id.is_some()
+                && (expected_start_turn_id.is_none() || expected_turn_count.is_none())
+            {
+                return Err(CodexErr::InvalidRequest(
+                    "a selected prompt item requires both expected turn guards".to_string(),
+                ));
+            }
+            let boundary = materialized_rollback_start(
+                &stored.items,
+                count,
+                expected_start_item_id.as_deref(),
+            )
+            .ok_or_else(|| {
                 CodexErr::InvalidRequest("selected rollback suffix was not found".to_string())
             })?;
             if expected_start_turn_id

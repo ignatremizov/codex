@@ -95,6 +95,7 @@ async fn thread_rollback_rejects_paginated_thread() -> Result<()> {
             thread_id: thread.id,
             num_turns: 1,
             expected_start_turn_id: None,
+            expected_start_item_id: None,
             expected_turn_count: None,
         })
         .await?;
@@ -134,6 +135,7 @@ async fn thread_rollback_rejects_zero_turns() -> Result<()> {
             thread_id: thread.id,
             num_turns: 0,
             expected_start_turn_id: None,
+            expected_start_item_id: None,
             expected_turn_count: None,
         })
         .await?;
@@ -206,6 +208,7 @@ async fn thread_rollback_rejects_an_active_turn() -> Result<()> {
             thread_id: thread.id.clone(),
             num_turns: 1,
             expected_start_turn_id: Some(turn.id),
+            expected_start_item_id: None,
             expected_turn_count: Some(1),
         })
         .await?;
@@ -272,6 +275,7 @@ async fn thread_rollback_does_not_emit_deprecation_notice_to_codex_tui() -> Resu
             thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
             num_turns: 1,
             expected_start_turn_id: None,
+            expected_start_item_id: None,
             expected_turn_count: None,
         })
         .await?;
@@ -366,6 +370,7 @@ async fn thread_rollback_errors_distinguish_committed_from_refresh_required() ->
                     thread_id: thread.id.clone(),
                     num_turns: 1,
                     expected_start_turn_id: Some(turn.id),
+                    expected_start_item_id: None,
                     expected_turn_count: Some(1),
                 },
             })
@@ -534,6 +539,7 @@ async fn thread_rollback_drops_last_turns_and_persists_to_rollout() -> Result<()
             thread_id: thread.id.clone(),
             num_turns: 2,
             expected_start_turn_id: Some(turn2.id.clone()),
+            expected_start_item_id: None,
             expected_turn_count: Some(2),
         })
         .await?;
@@ -550,6 +556,7 @@ async fn thread_rollback_drops_last_turns_and_persists_to_rollout() -> Result<()
             thread_id: thread.id.clone(),
             num_turns: 2,
             expected_start_turn_id: Some(turn2.id),
+            expected_start_item_id: None,
             expected_turn_count: Some(3),
         })
         .await?;

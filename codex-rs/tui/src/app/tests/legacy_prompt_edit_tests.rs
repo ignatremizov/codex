@@ -369,6 +369,7 @@ async fn guarded_legacy_edit_replaces_history_and_restores_draft_in_both_viewpor
                 "threadId": source_id.to_string(),
                 "numTurns": 2,
                 "expectedStartTurnId": "turn-2",
+                "expectedStartItemId": null,
                 "expectedTurnCount": 4
             })]
         );

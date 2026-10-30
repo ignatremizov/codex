@@ -5,6 +5,7 @@
 
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
+use crate::app_backtrack::PromptEditBoundary;
 use crate::app_server_session::ForkGoalContinuation;
 use crate::chatwidget::UserMessage;
 
@@ -14,7 +15,7 @@ impl App {
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
-        before_turn_id: String,
+        boundary: PromptEditBoundary,
         prompt: UserMessage,
     ) {
         if self.active_thread_id != Some(thread_id)
@@ -45,7 +46,7 @@ impl App {
                 config,
                 thread_id,
                 /*last_turn_id*/ None,
-                /*before_turn_id*/ Some(before_turn_id),
+                /*before_prompt*/ Some(boundary),
                 ForkGoalContinuation::GoalFree,
                 selected_profile.as_ref(),
             )

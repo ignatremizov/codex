@@ -5886,6 +5886,13 @@
     "ThreadRevertParams": {
       "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nThis only changes persisted conversation history. It does not revert local file changes.",
       "properties": {
+        "beforeItemId": {
+          "description": "Optional user-message item to exclude instead of the whole selected turn. Earlier items in that turn remain in the replacement history.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "beforeTurnId": {
           "description": "Turn excluded from the replacement history, together with every later turn.",
           "type": "string"
@@ -5903,6 +5910,13 @@
     "ThreadRollbackParams": {
       "description": "Legacy-history rollback request. This route applies only to Legacy history mode; Paginated history uses `thread/revert`.",
       "properties": {
+        "expectedStartItemId": {
+          "description": "Optional user-message item in the expected first turn to exclude. Retains earlier items in that turn. Requires both expected turn guards.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "expectedStartTurnId": {
           "description": "Optional first turn expected in the selected rollback suffix.",
           "type": [
