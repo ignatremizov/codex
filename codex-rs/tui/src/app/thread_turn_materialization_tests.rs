@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartedNotification;
@@ -56,5 +57,25 @@ fn lifecycle_materialization_and_eviction_preserve_the_authoritative_boundary() 
         turn: turn("third", TurnStatus::InProgress),
         agent_queue: None,
     }));
+    assert_eq!(materialized_thread_turns(&store), None);
+}
+
+#[test]
+fn live_user_receipts_require_a_canonical_read_before_prompt_selection() {
+    let mut store = ThreadEventStore::new(/*capacity*/ 8);
+    store.set_turns(vec![turn("turn", TurnStatus::Completed)]);
+    store.turn_history_complete = true;
+    let receipt = ItemCompletedNotification::new(
+        "thread".into(),
+        "turn".into(),
+        ThreadItemPayload::UserMessage {
+            id: "live-uuid".into(),
+            client_id: Some("submission".into()),
+            content: Vec::new(),
+        },
+        /*started_at_ms*/ None,
+        /*completed_at_ms*/ 0,
+    );
+    store.push_notification(ServerNotification::ItemCompleted(receipt));
     assert_eq!(materialized_thread_turns(&store), None);
 }

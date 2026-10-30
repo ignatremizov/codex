@@ -62,6 +62,7 @@ impl AppServerSession {
                         thread_id: thread_id.to_string(),
                         num_turns: target.num_turns,
                         expected_start_turn_id: Some(target.expected_start_turn_id),
+                        expected_start_item_id: target.expected_start_item_id,
                         expected_turn_count: Some(target.expected_turn_count),
                     },
                 })

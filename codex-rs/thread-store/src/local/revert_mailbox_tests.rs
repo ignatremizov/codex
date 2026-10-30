@@ -304,6 +304,7 @@ async fn revert_reconciles_only_proven_delivery_and_preserves_ambiguous_recovery
             .revert_thread(RevertThreadParams {
                 thread_id: receiver,
                 before_turn_id: "turn-2".to_string(),
+                before_item_id: None,
                 multi_agent_version: None,
             })
             .await;
@@ -374,6 +375,7 @@ async fn revert_reconciles_only_proven_delivery_and_preserves_ambiguous_recovery
                 .revert_thread(RevertThreadParams {
                     thread_id: receiver,
                     before_turn_id: "turn-1".to_string(),
+                    before_item_id: None,
                     multi_agent_version: None,
                 })
                 .await

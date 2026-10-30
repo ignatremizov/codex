@@ -89,7 +89,7 @@ fn read_canonical_segment_with_reads(
     })
 }
 
-pub(super) fn load_full_lineage(
+pub(in crate::local) fn load_full_lineage(
     lineage: &RolloutLineage,
     session_meta: SessionMetaLine,
     is_cancelled: impl Fn() -> bool,

@@ -9,6 +9,7 @@ pub(crate) fn startup_server_metadata(config: &Config) -> ServerReadResponse {
         config.cli_auth_credentials_store_mode,
     );
     ServerReadResponse {
+        supports_prompt_item_boundaries: true,
         auth_profile: ServerAuthProfile {
             profile_opaque_id: identity.profile_opaque_id,
             display_label: identity.display_label,

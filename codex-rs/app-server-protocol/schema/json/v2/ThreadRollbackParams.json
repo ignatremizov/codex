@@ -2,6 +2,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "description": "Legacy-history rollback request. This route applies only to Legacy history mode; Paginated history uses `thread/revert`.",
   "properties": {
+    "expectedStartItemId": {
+      "description": "Optional user-message item in the expected first turn to exclude. Retains earlier items in that turn. Requires both expected turn guards.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "expectedStartTurnId": {
       "description": "Optional first turn expected in the selected rollback suffix.",
       "type": [

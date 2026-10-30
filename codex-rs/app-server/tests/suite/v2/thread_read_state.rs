@@ -207,6 +207,7 @@ async fn read_state_tracks_terminal_activity_and_reverted_history() -> Result<()
             params: ThreadRevertParams {
                 thread_id: thread_id.clone(),
                 before_turn_id: completed.turn.id,
+                before_item_id: None,
             },
         })
         .await?;

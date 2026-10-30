@@ -99,7 +99,7 @@ async fn starts_and_forks_use_server_provider_unless_explicitly_selected() -> Re
             server_config,
             parent,
             /*last_turn_id*/ None,
-            /*before_turn_id*/ None,
+            /*before_prompt*/ None,
             ForkGoalContinuation::GoalFree,
             /*selected_profile*/ None,
         )

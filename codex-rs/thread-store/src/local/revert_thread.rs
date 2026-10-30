@@ -1,6 +1,10 @@
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::TurnAbortedEvent;
 use codex_rollout::RolloutConfig;
+use codex_rollout::RolloutItem;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::RolloutRecorderParams;
 
@@ -23,6 +27,7 @@ pub(super) async fn revert(
     let RevertThreadParams {
         thread_id,
         before_turn_id,
+        before_item_id,
         multi_agent_version,
     } = params;
     let state_db = store
@@ -49,15 +54,15 @@ pub(super) async fn revert(
         .await?
         .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
     let source_path = current_rollout.path;
-    let mut source_meta = codex_rollout::read_session_meta_line(source_path.as_path())
+    let source_meta_line = codex_rollout::read_session_meta_line(source_path.as_path())
         .await
         .map_err(|err| ThreadStoreError::Internal {
             message: format!(
                 "failed to read current paginated rollout {}: {err}",
                 source_path.display()
             ),
-        })?
-        .meta;
+        })?;
+    let mut source_meta = source_meta_line.meta.clone();
     if source_meta.id != current_rollout.thread_id {
         return Err(ThreadStoreError::InvalidRequest {
             message: format!("current rollout for {thread_id} belongs to another thread"),
@@ -82,37 +87,94 @@ pub(super) async fn revert(
     let lineage = store
         .resolve_rollout_lineage(thread_id, /*initial_path*/ None)
         .await?;
-    let boundary = &ForkBoundary::BeforeTurn(before_turn_id);
+    let boundary = &match before_item_id {
+        Some(item_id) => ForkBoundary::BeforeItem {
+            turn_id: before_turn_id.clone(),
+            item_id,
+        },
+        None => ForkBoundary::BeforeTurn(before_turn_id.clone()),
+    };
     let standalone_rollout_id = source_meta
         .history_base
         .is_none()
         .then_some(current_rollout.rollout_id);
-    let history_base = lineage
-        .read_with_fallback(store, |mut lineage| async move {
-            for segment in &mut lineage.segments {
-                if Some(segment.rollout_id()) == standalone_rollout_id {
-                    segment.rollout_path = codex_rollout::materialize_rollout_for_reference(
+    let (history_base, interrupted_turn, selected_catalog) = lineage
+        .read_with_fallback(store, |mut lineage| {
+            let source_meta_line = source_meta_line.clone();
+            let before_turn_id = &before_turn_id;
+            async move {
+                for segment in &mut lineage.segments {
+                    if Some(segment.rollout_id()) == standalone_rollout_id {
+                        segment.rollout_path = codex_rollout::materialize_rollout_for_reference(
+                            segment.rollout_path.as_path(),
+                        )
+                        .await
+                        .map_err(|err| ThreadStoreError::Internal {
+                            message: format!(
+                                "failed to materialize rollout {} for revert: {err}",
+                                segment.rollout_path.display()
+                            ),
+                        })?;
+                    }
+                    super::thread_history_materialization::materialize_to_sqlite_with_reads(
+                        store,
+                        segment.rollout_id(),
                         segment.rollout_path.as_path(),
+                        &lineage.reads,
                     )
-                    .await
-                    .map_err(|err| ThreadStoreError::Internal {
-                        message: format!(
-                            "failed to materialize rollout {} for revert: {err}",
-                            segment.rollout_path.display()
-                        ),
-                    })?;
+                    .await?;
                 }
-                super::thread_history_materialization::materialize_to_sqlite_with_reads(
-                    store,
-                    segment.rollout_id(),
-                    segment.rollout_path.as_path(),
-                    &lineage.reads,
-                )
-                .await?;
+                let interrupted_turn = if matches!(boundary, ForkBoundary::BeforeItem { .. }) {
+                    let turn = super::thread_history::find_source_turn(
+                        store.thread_history_db().await?,
+                        &lineage,
+                        before_turn_id,
+                    )
+                    .await?;
+                    Some(RolloutItem::EventMsg(EventMsg::TurnAborted(
+                        TurnAbortedEvent {
+                            root_turn_id: turn.root_turn_id,
+                            turn_id: Some(before_turn_id.clone()),
+                            reason: TurnAbortReason::Interrupted,
+                            error: None,
+                            started_at: turn.started_at,
+                            completed_at: None,
+                            duration_ms: None,
+                        },
+                    )))
+                } else {
+                    None
+                };
+                let history_base =
+                    paginated_fork::history_base_at_boundary(store, thread_id, boundary, &lineage)
+                        .await?;
+                // Keep the current catalog under the same selected frozen-lineage guards.
+                // Neither reverting a prompt nor fallback to another ancestor is a tool rollback.
+                let (stop, keep_running) = tokio::sync::oneshot::channel::<()>();
+                let selected_catalog = tokio::task::spawn_blocking(move || {
+                    let items = super::model_context::rollback::load_full_lineage(
+                        &lineage,
+                        source_meta_line,
+                        || stop.is_closed(),
+                    )?;
+                    Ok::<_, std::io::Error>(
+                        codex_history::latest_dynamic_tools(&items).map(<[_]>::to_vec),
+                    )
+                })
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("failed to join revert catalog scan: {error}"),
+                })?;
+                drop(keep_running);
+                Ok((
+                    history_base,
+                    interrupted_turn,
+                    selected_catalog.map_err(thread_store_io_error)?,
+                ))
             }
-            paginated_fork::history_base_at_boundary(store, thread_id, boundary, &lineage).await
         })
         .await?;
+    source_meta.dynamic_tools = selected_catalog.clone();
 
     let forked_from_ordinal_exclusive =
         codex_rollout::forked_from_ordinal_exclusive(&source_meta, Some(source_path.as_path()))
@@ -135,6 +197,20 @@ pub(super) async fn revert(
     )
     .await?;
     let replacement_path = recorder.rollout_path().to_path_buf();
+    if let Some(interrupted_turn) = interrupted_turn {
+        recorder
+            .record_canonical_items(&[interrupted_turn])
+            .await
+            .map_err(thread_store_io_error)?;
+    }
+    if let Some(tools) = selected_catalog {
+        // A retained older update would override the new header. Persist a local suffix
+        // update as well, including an explicit clear, before publishing the replacement.
+        recorder
+            .record_canonical_items(&[RolloutItem::DynamicToolsUpdated { thread_id, tools }])
+            .await
+            .map_err(thread_store_io_error)?;
+    }
     recorder.persist().await.map_err(thread_store_io_error)?;
     recorder.shutdown().await.map_err(thread_store_io_error)?;
 

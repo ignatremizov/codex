@@ -7,6 +7,15 @@ pub(super) fn fault(
     request: &JSONRPCRequest,
     rollback_attempted: &mut bool,
 ) -> Option<JSONRPCErrorError> {
+    if request.method == "server/read"
+        && behavior == HistoryCapabilities::PromptItemBoundariesUnavailable
+    {
+        return Some(JSONRPCErrorError {
+            code: -32601,
+            data: None,
+            message: "server metadata unavailable".into(),
+        });
+    }
     if request.method == "thread/rollback" {
         *rollback_attempted = true;
         let (code, data) = match behavior {

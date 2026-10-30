@@ -282,6 +282,7 @@ mod pets;
 mod platform_actions;
 mod plugin_mentions;
 mod prompt_edit;
+mod prompt_edit_reset;
 pub(crate) mod provider;
 mod rate_limit_refresh;
 mod realtime_delivery;
