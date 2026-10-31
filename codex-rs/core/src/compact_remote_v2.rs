@@ -38,6 +38,7 @@ use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_response_stream_error;
 use crate::session::RequestEffortUsage;
+use crate::session::inline_compaction::InlineCompactRun;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
@@ -105,13 +106,6 @@ pub(crate) enum CompactionFallback {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct AutoCompactRun<'a> {
-    pub(crate) reason: CompactionReason,
-    pub(crate) phase: CompactionPhase,
-    pub(crate) cancellation: &'a CancellationToken,
-}
-
-#[derive(Clone, Copy)]
 struct RemoteCompactRun<'a> {
     metadata: CompactionTurnMetadata,
     cancellation: &'a CancellationToken,
@@ -124,12 +118,12 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     replacement_step_context: Arc<StepContext>,
     client_session: &mut ModelClientSession,
     world_state: Arc<WorldState>,
-    run: AutoCompactRun<'_>,
+    run: InlineCompactRun<'_>,
     candidate: Option<Box<BackgroundCompactionCandidate>>,
     fallback: CompactionFallback,
 ) -> CodexResult<bool> {
     let compaction_metadata = CompactionTurnMetadata::new(
-        CompactionTrigger::Auto,
+        run.trigger(),
         run.reason,
         CompactionImplementation::ResponsesCompactionV2,
         run.phase,

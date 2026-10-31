@@ -6,10 +6,11 @@ Scenario: Astra reads code-mode timings and the collector notice even at zero to
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=9e075cc611be6070):
-        - namespace/functions; hash=b394d5b66480be7a
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async

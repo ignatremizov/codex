@@ -381,6 +381,14 @@ impl ChatWidget {
                 if self.reject_blocked_input() {
                     return;
                 }
+                if self.bottom_pane.is_task_running() {
+                    self.app_event_tx.compact();
+                    self.add_info_message(
+                        "Compaction requested. Work will continue afterward.".to_string(),
+                        /*hint*/ None,
+                    );
+                    return;
+                }
                 self.clear_token_usage();
                 if !self.bottom_pane.is_task_running() {
                     self.bottom_pane.set_task_running(/*running*/ true);

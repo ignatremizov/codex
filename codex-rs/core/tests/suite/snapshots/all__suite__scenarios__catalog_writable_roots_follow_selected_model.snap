@@ -20,6 +20,7 @@ Settings:
           - function/exec_command
           - function/write_stdin
           - function/update_plan
+          - function/compact
           - function/request_user_input
           - function/view_image
         - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83
@@ -59,6 +60,7 @@ Settings: relative to window 1
           - function/exec_command
           - function/write_stdin
           - function/update_plan
+          - function/compact
           - function/request_user_input
           - function/view_image
         - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83

@@ -24,6 +24,7 @@ Settings:
           - function/wait
           - function/exec_command
           - function/write_stdin
+          - function/compact
           - function/request_user_input
           - function/new_context
           - function/get_context_remaining
@@ -65,6 +66,7 @@ Settings: relative to window 1
           - function/wait
           - function/exec_command
           - function/write_stdin
+          - function/compact
           - function/request_user_input
           - function/new_context
           - function/get_context_remaining

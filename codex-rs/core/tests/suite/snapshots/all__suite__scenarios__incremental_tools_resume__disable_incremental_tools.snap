@@ -20,6 +20,7 @@ Settings:
         - namespace/functions; hash=101d32aa59ea258b
           - function/exec_command
           - function/write_stdin
+          - function/compact
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
@@ -61,6 +62,7 @@ Settings: relative to window 1
 00:additional_tools/developer (1; hash=3b0da5c6c5e4fd8e):
         - namespace/functions; hash=36c9912d971c5be8
           - function/update_plan
+          - function/compact
           - function/request_user_input
           - custom/apply_patch
           - function/view_image

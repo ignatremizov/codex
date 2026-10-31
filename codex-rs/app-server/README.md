@@ -426,6 +426,14 @@ Persistent completion delivery is bound to the exact parent runtime and follows 
 
 ## Completed context compaction
 
+`thread/compact/start` schedules compaction within a running regular turn, at the
+next boundary after its current sampling request and tools have settled. It
+preserves the turn ID and resumes inference automatically after successful
+compaction. Repeated pending requests coalesce. The empty RPC response
+acknowledges scheduling, not completion; observe the existing compaction item
+lifecycle. An idle thread retains standalone compaction behavior. See
+[model and active user compaction](../../docs/model-compaction.md).
+
 Completed `contextCompaction` items include nullable `summary`, `message`, and
 `decodeError` fields and an `availableSkills` string array. The summary is the compacted text when
 available. For local compaction, the message is the complete compacted prompt;

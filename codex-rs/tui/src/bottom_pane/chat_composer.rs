@@ -10088,16 +10088,13 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.set_task_running(/*running*/ true);
-        composer
-            .draft
-            .textarea
-            .set_text_clearing_elements("/compact");
+        composer.draft.textarea.set_text_clearing_elements("/init");
 
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert_eq!(InputResult::None, result);
-        assert_eq!("/compact", composer.draft.textarea.text());
+        assert_eq!("/init", composer.draft.textarea.text());
 
         let mut found_error = false;
         while let Ok(event) = rx.try_recv() {

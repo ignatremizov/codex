@@ -95,6 +95,7 @@ pub(crate) async fn start_temporary_thread(
             false.into(),
         ),
         ("tools.update_plan.enabled".to_string(), false.into()),
+        ("tools.compact.enabled".to_string(), false.into()),
         ("web_search".to_string(), "disabled".into()),
     ]);
     if custom_permission_profile.is_none() {

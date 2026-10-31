@@ -24,6 +24,7 @@ Settings:
           - function/wait
           - function/exec_command
           - function/write_stdin
+          - function/compact
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
@@ -57,6 +58,7 @@ Settings: relative to window 1
           - function/wait
           - function/exec_command
           - function/write_stdin
+          - function/compact
           - function/request_user_input
           - custom/apply_patch
           - function/view_image

@@ -15,10 +15,11 @@ Settings:
   store: false
   stream: true
   tool_choice: "auto"
-  tools (8; hash=9f1de50cbc8f6bf8):
+  tools (8; hash=6bea91342877bcef):
     - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=841a4b17cc4e6a88
     - function/write_stdin: Writes chars to or polls an exec session, returning recent output. Polls return immediately on pr...; args=[chars, max_output_tokens, session_id, wait_until_exit, yield_time_ms]; hash=47f6053a3c9aecc5
     - function/update_plan: Updates the task plan. Provide an optional explanation and a list of plan items, each with a step...; args=[explanation, plan]; hash=cbba5ed302a9c0eb
+    - function/compact: Request this thread's /compact operation and continue the current task automatically after the to...; args=[]; hash=b97f041c49d48367
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[path]; hash=1908de9c0be7118a
     - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=3fec1fe770956cac
@@ -42,7 +43,7 @@ Settings:
 ## Window 2 (after request 1: input diverged at item 00)
 Settings: relative to window 1
   prompt_cache_key: "<PROMPT_CACHE_KEY 2>"
-  tools (9; hash=cb5dd380fa0d1155):
+  tools (9; hash=ca91b67c45e3e680):
     + custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.; hash=b2e944cd9efc0f58
 -- request 2 (turn) --
 00:message/developer:
@@ -57,7 +58,7 @@ Settings: relative to window 1
 ## Window 3 (after request 2: input diverged at item 00)
 Settings: relative to window 2
   prompt_cache_key: "<PROMPT_CACHE_KEY 3>"
-  tools (8; hash=9f1de50cbc8f6bf8):
+  tools (8; hash=6bea91342877bcef):
     - removed custom/apply_patch
 -- request 3 (turn) --
 00:message/developer:
@@ -85,7 +86,7 @@ Settings: relative to window 3
 ## Window 5 (after request 4: input diverged at item 00)
 Settings: relative to window 4
   prompt_cache_key: "<PROMPT_CACHE_KEY 5>"
-  tools (9; hash=cb5dd380fa0d1155):
+  tools (9; hash=ca91b67c45e3e680):
     + custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.; hash=b2e944cd9efc0f58
 -- request 5 (turn) --
 00:message/developer:

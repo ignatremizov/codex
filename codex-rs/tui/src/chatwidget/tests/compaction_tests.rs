@@ -465,6 +465,39 @@ async fn manual_compaction_shows_status_before_backend_events() {
 }
 
 #[tokio::test]
+async fn active_slash_compact_schedules_without_replacing_turn_or_status() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
+
+    chat.dispatch_command(SlashCommand::Compact);
+
+    let mut compact_requests = 0;
+    let mut transcript = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::CodexOp(Op::Compact) => compact_requests += 1,
+            AppEvent::CodexOp(Op::Interrupt) => panic!("active compaction must not interrupt"),
+            AppEvent::InsertHistoryCell(cell) => {
+                transcript.extend(cell.transcript_lines(/*width*/ 100));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(compact_requests, 1);
+    assert!(chat.bottom_pane.is_task_running());
+    assert!(!chat.input_queue.user_turn_pending_start);
+    assert!(chat.status_state.compaction.is_none());
+    assert_eq!(
+        chat.bottom_pane.status_widget().unwrap().header(),
+        "Working"
+    );
+    insta::assert_snapshot!(lines_to_single_string(&transcript), @"
+    • Compaction requested. Work will continue afterward.
+    ");
+}
+
+#[tokio::test]
 async fn compaction_status_clears_when_turn_ends_without_item_completion() {
     for status in [
         AppServerTurnStatus::Completed,

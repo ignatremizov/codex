@@ -729,6 +729,7 @@ pub struct ToolsToml {
     pub web_search: Option<WebSearchToolConfig>,
     pub experimental_request_user_input: Option<ExperimentalRequestUserInput>,
     pub update_plan: Option<UpdatePlanToolConfig>,
+    pub compact: Option<CompactToolConfig>,
     /// User opt-in for the read-only V1 agent directory.
     pub list_agents: Option<ListAgentsToolConfig>,
 }
@@ -751,6 +752,14 @@ pub struct ExperimentalRequestUserInput {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct UpdatePlanToolConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct CompactToolConfig {
+    /// Controls the model-facing tool; user-requested compaction remains available.
     #[serde(default = "default_true")]
     pub enabled: bool,
 }

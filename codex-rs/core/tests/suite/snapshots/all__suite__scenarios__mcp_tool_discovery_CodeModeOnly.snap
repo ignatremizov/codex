@@ -16,9 +16,10 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (6; hash=ff23f099fe7b769e):
+  tools (6; hash=f3535b2b5ffb4feb):
     - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=a74155767ffed2cb
     - function/wait: Waits on a yielded `exec` cell and returns new output or completion. - Use `wait` only after `exe...; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=6692d8f6c55be489
+    - function/compact: Request this thread's /compact operation and continue the current task automatically after the to...; args=[]; hash=b97f041c49d48367
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
       - function/check_mail
@@ -35,7 +36,7 @@ Settings:
 
 ## Window 2 (after request 1)
 Settings: relative to window 1
-  tools (6; hash=c662d067bb7088c8):
+  tools (6; hash=ea2e5f6162ac3ba1):
     ~ custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=9a55bbdf7ae24453
 -- request 2 (request) --
 00:message/developer:

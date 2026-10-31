@@ -69,7 +69,7 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
                 .features
                 .enable(Feature::IncrementalTools)
                 .expect("enable incremental tools");
-            // Keep request_user_input as the only model-only registration.
+            // Keep request_user_input and compact as the model-only registrations.
             for feature in [
                 Feature::Collab,
                 Feature::SleepTool,
@@ -142,8 +142,8 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
             .iter()
             .any(|tool| tool["name"] == "request_user_input")
     );
-    // The direct-mode request exposes every direct registration, plus the one
-    // model-only registration and hosted web search. Namespace children count separately.
+    // The direct-mode request exposes every direct registration, plus the two
+    // model-only registrations and hosted web search. Namespace children count separately.
     let direct_count = tools
         .iter()
         .filter(|tool| tool["type"] != "web_search")
@@ -153,7 +153,7 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
                 .map_or(1, Vec::len)
         })
         .sum::<usize>()
-        - 1;
+        - 2;
 
     let snapshot = metrics.snapshot()?;
     let mut samples = BTreeMap::new();
@@ -197,7 +197,7 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
         samples,
         BTreeMap::from([
             ("direct".to_string(), (1, direct_count as f64)),
-            ("direct_model_only".to_string(), (1, 1.0)),
+            ("direct_model_only".to_string(), (1, 2.0)),
             ("deferred".to_string(), (1, 1.0)),
             ("deferred_model_only".to_string(), (1, 0.0)),
             ("code_mode_only".to_string(), (1, 0.0)),

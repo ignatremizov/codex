@@ -1206,6 +1206,8 @@ pub struct Config {
 
     /// Whether to register the update_plan tool.
     pub update_plan_enabled: bool,
+    /// Whether to register the model-facing compact tool.
+    pub compact_tool_enabled: bool,
     /// User-controlled V1 directory discovery, independent of messaging and spawn permission.
     pub list_agents_enabled: bool,
 
@@ -4148,6 +4150,11 @@ impl Config {
         let experimental_request_user_input_enabled =
             resolve_experimental_request_user_input_enabled(&cfg);
         let update_plan_enabled = resolve_update_plan_enabled(&cfg);
+        let compact_tool_enabled = cfg
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.compact.as_ref())
+            .is_none_or(|config| config.enabled);
         let list_agents_enabled = cfg
             .tools
             .as_ref()
@@ -4901,6 +4908,7 @@ impl Config {
             web_search_config,
             experimental_request_user_input_enabled,
             update_plan_enabled,
+            compact_tool_enabled,
             list_agents_enabled,
             tool_registry,
             code_mode,

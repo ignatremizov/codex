@@ -263,6 +263,7 @@ pub(crate) mod extension_metrics;
 mod guardian_checkpoint;
 mod handlers;
 pub(crate) mod inject;
+pub(crate) mod inline_compaction;
 pub(crate) mod mailbox;
 mod mailbox_activity;
 mod mailbox_inventory;
