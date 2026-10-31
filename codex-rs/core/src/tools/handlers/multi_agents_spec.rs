@@ -356,7 +356,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "wait_agent".to_string(),
-            description: "Wait when a result is required before next action or a timeout is useful. Returns when any target reaches final status or timeout expires; completed status includes final message. Direct calls also return for pending mail from selected senders and request its structured delivery after the accepted tool result, on every return reason; this does not guarantee a delivered count. Mail selection grants no status authority: foreign UUID targets appear only in mail_only_targets, never as fabricated final statuses. Completion wins when both completion and mail are ready. Nested/code-mode calls retain controlled-target completion/timeout behavior and do not claim or drain mail. For same target turn, wait_agent and w containing f are alternatives, not a sequence; an f subscription remains active through commentary and other work until completion. A q reply arrives in your next turn; wait_agent can return for the preceding target turn before queue admission."
+            description: "Wait when a result is required before next action or a timeout is useful. Returns when any target reaches final status or timeout expires; completed status includes final message. Pending or new user/agent input to the active turn also ends the wait early with return_reason input, leaving that input queued for continuation, even from senders outside targets. Direct calls also return for pending mail from selected senders and request its structured delivery after the accepted tool result, on every return reason; this does not guarantee a delivered count. Mail selection grants no status authority: foreign UUID targets appear only in mail_only_targets, never as fabricated final statuses. Completion wins when both completion and mail are ready. Nested/code-mode calls retain controlled-target completion/timeout behavior and active-input interruption, and do not claim or drain mail. For same target turn, wait_agent and w containing f are alternatives, not a sequence; an f subscription remains active through commentary and other work until completion. A q reply arrives in your next turn; wait_agent can return for the preceding target turn before queue admission."
                 .to_string(),
             strict: false,
             defer_loading: None,
@@ -693,12 +693,12 @@ fn wait_output_schema_v1() -> Value {
             },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned due to timeout rather than completion, selected mail, or fixed-claim recovery."
+                "description": "Whether the wait call returned due to timeout rather than completion, selected mail, active input, or fixed-claim recovery."
             },
             "return_reason": {
                 "type": "string",
-                "enum": ["mail", "completion", "timeout", "recovery"],
-                "description": "Recovery resumes this invocation's existing fixed mailbox claim without waiting for new mail; an already recorded canonical result is reused."
+                "enum": ["mail", "completion", "input", "timeout", "recovery"],
+                "description": "Input means user/agent input is queued for the originating active turn; it is not consumed by the wait. Recovery resumes this invocation's existing fixed mailbox claim without waiting for new mail; an already recorded canonical result is reused."
             },
             "mail_only_targets": {
                 "type": "array",

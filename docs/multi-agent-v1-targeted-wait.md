@@ -1,6 +1,8 @@
 # Targeted mailbox waiting
 
-V1 `wait_agent` retains its `targets` and `timeout_ms` arguments and its `status` and `timed_out` result fields. `return_reason` distinguishes `mail`, `completion`, `timeout`, and `recovery`. Completion takes precedence when both a terminal status and selected mail are ready.
+V1 `wait_agent` retains its `targets` and `timeout_ms` arguments and its `status` and `timed_out` result fields. `return_reason` distinguishes `mail`, `completion`, `input`, `timeout`, and `recovery`. Completion takes precedence when both a terminal status and selected mail are ready.
+
+Pending or newly accepted user/agent input to the originating active turn releases the wait with `return_reason: "input"`, empty `status`, and `timed_out: false` when no existing wait outcome is ready. This includes a child steering its waiter through `send_input`, even if that child is outside `targets`. The input stays queued for ordinary continuation. The watcher subscribes before checking pending input and rechecks the captured turn on every hint; input for another turn cannot release a stale wait. Future queued turns, unrelated durable mail, and commentary or final observations do not become active prompt input merely because a wait is running.
 
 Direct calls select mail addressed to the caller from the union of the resolved target UUIDs. Existing pending mail can return immediately. New mail wakes the wait through a receiver-local activity signal; the wait then reads durable inventory again. Unrelated senders and user mail do not satisfy the selection or reset the deadline. Queued prompts and steered input are not consumed.
 
@@ -10,6 +12,6 @@ A direct retry first looks up the invocation's existing claim without creating o
 
 Refs and task selectors retain caller-root resolution. Direct calls can also select a sender by canonical UUID, including `id:<UUID>`, without adopting or loading that sender. UUIDs without status authority appear in the optional `mail_only_targets` array. Their status is not observed: no foreign final content or fabricated `Completed`/`NotFound` value is inserted into `status`. Controlled targets retain their normal terminal-status behavior and original selector keys. Mail selection does not grant permission to send or alter cross-root policy.
 
-Nested and code-mode calls retain their existing controlled-target resolution, errors, and completion/timeout waiting. They do not return for mailbox activity, claim messages, or drain mail; ordered mailbox effects are not supported by the outer nested-result recorder. They also return `return_reason`, but do not gain foreign mail-only target support. Existing tool exposure is unchanged.
+Nested and code-mode calls retain their existing controlled-target resolution, errors, and completion/timeout waiting, and share active-input interruption. They do not return for mailbox activity, claim messages, or drain mail; ordered mailbox effects are not supported by the outer nested-result recorder. They also return `return_reason`, but do not gain foreign mail-only target support. Existing tool exposure is unchanged.
 
 Waiting preserves the existing targeted completion-presentation arbitration and does not create a response subscription. Inventory checks are event-driven, not database polling on a timer.

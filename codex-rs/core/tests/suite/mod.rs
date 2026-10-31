@@ -287,6 +287,8 @@ mod user_shell_processes;
 mod v1_agent_identity_context;
 mod v1_agent_identity_retry;
 mod view_image;
+#[path = "wait_agent_input_tests.rs"]
+mod wait_agent_input;
 mod wake_reservation;
 mod web_search;
 #[path = "web_search_system_proxy_tests.rs"]
