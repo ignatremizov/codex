@@ -698,6 +698,29 @@ async fn load_config_resolves_update_plan_enabled() -> std::io::Result<()> {
 }
 
 #[tokio::test]
+async fn load_config_resolves_compact_tool_enabled() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    for (config_toml, expected_enabled) in [
+        ("", true),
+        ("[tools.compact]", true),
+        ("[tools.compact]\nenabled = false", false),
+        ("[tools.compact]\nenabled = true", true),
+    ] {
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(config_toml).expect("parse compact tool configuration"),
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+        assert_eq!(
+            config.compact_tool_enabled, expected_enabled,
+            "{config_toml}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_resolves_code_mode_config() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     let config_toml: ConfigToml = toml::from_str(

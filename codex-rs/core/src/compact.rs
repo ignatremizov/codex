@@ -180,8 +180,7 @@ pub(crate) async fn run_inline_auto_compact_task(
     turn_context: Arc<TurnContext>,
     replacement_step_context: Arc<StepContext>,
     world_state: Arc<WorldState>,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    run: crate::session::inline_compaction::InlineCompactRun<'_>,
 ) -> CodexResult<()> {
     let prompt = turn_context
         .config
@@ -202,10 +201,10 @@ pub(crate) async fn run_inline_auto_compact_task(
         input,
         world_state,
         CompactionTurnMetadata::new(
-            CompactionTrigger::Auto,
-            reason,
+            run.trigger(),
+            run.reason,
             CompactionImplementation::Responses,
-            phase,
+            run.phase,
         ),
     )
     .await?;

@@ -417,6 +417,10 @@ back to these environment variables.
 
 ## TUI
 
+The model-facing `compact` tool is enabled by default. Set `tools.compact.enabled = false` to
+disable that tool while retaining the user's `/compact` command. Temporary structured requests
+such as recap and title generation disable it alongside their other tools.
+
 Hide the compacted prompt output after `/compact`:
 
 ```toml

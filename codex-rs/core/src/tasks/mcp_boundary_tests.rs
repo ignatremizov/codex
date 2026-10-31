@@ -135,3 +135,57 @@ async fn finish_continues_only_for_input_before_mcp_boundary(earlier_user: bool)
         .collect::<Vec<_>>();
     assert_eq!(completed, vec![turn.sub_id.clone()]);
 }
+
+#[tokio::test]
+async fn late_inline_compaction_reopens_the_same_task_before_terminal_removal() {
+    let (session, turn, receiver) = make_session_and_context_with_rx().await;
+    session
+        .spawn_task(Arc::clone(&turn), Vec::new(), PendingTask)
+        .await;
+    let accepting = {
+        let active = session.active_turn.lock().await;
+        Arc::clone(
+            &active
+                .as_ref()
+                .expect("active turn")
+                .task
+                .as_ref()
+                .expect("same task")
+                .accepting_pending_input,
+        )
+    };
+    accepting.store(false, std::sync::atomic::Ordering::Release);
+    while receiver.try_recv().is_ok() {}
+    crate::session::inline_compaction::request(&turn);
+    let continuation = session
+        .on_task_finished(
+            Arc::clone(&turn),
+            Ok(Some(RegularTaskOutput {
+                last_agent_message: Some("completed before user compact".into()),
+                mcp_startup_requirements: Default::default(),
+            })),
+        )
+        .await;
+    assert!(continuation.is_some());
+    assert!(accepting.load(std::sync::atomic::Ordering::Acquire));
+    {
+        let active = session.active_turn.lock().await;
+        let task = active
+            .as_ref()
+            .expect("turn retained")
+            .task
+            .as_ref()
+            .expect("task retained");
+        assert!(Arc::ptr_eq(&task.turn_context, &turn));
+    }
+    assert!(crate::session::inline_compaction::is_requested(&turn));
+    assert!(
+        !std::iter::from_fn(|| receiver.try_recv().ok()).any(|event| matches!(
+            event.msg,
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+        ))
+    );
+    session
+        .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
+        .await;
+}

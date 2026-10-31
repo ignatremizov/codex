@@ -1,13 +1,14 @@
 ---
 source: core/tests/suite/scenarios_guardian_direct_review.rs
+assertion_line: 732
 expression: snapshot
 ---
 Scenario: Direct Guardian review applies the PreToolUse rewrite before checking approval policy.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (1; hash=7758f662cd124827):
-        - namespace/functions; hash=70d14ec929ba5cd7
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:

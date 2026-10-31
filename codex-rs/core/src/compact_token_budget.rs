@@ -26,7 +26,7 @@ pub(crate) async fn run_manual_compact_task(
     run_compact_task_inner(&sess, &step_context, world_state, CompactionTrigger::Manual).await
 }
 
-/// Runs token-budget inline auto-compaction as a normal compaction lifecycle.
+/// Runs explicit or automatic token-budget inline compaction as a normal compaction lifecycle.
 ///
 /// Token-budget compaction skips model/server summarization and installs a fresh context window
 /// instead. It is still modeled as compaction so compact hooks and `ContextCompaction` turn items
@@ -35,8 +35,9 @@ pub(crate) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
     world_state: Arc<WorldState>,
+    trigger: CompactionTrigger,
 ) -> CodexResult<()> {
-    run_compact_task_inner(&sess, &step_context, world_state, CompactionTrigger::Auto).await
+    run_compact_task_inner(&sess, &step_context, world_state, trigger).await
 }
 
 async fn run_compact_task_inner(

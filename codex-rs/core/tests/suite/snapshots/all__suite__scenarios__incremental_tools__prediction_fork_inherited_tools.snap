@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
+assertion_line: 140
 expression: "context_snapshot::format_request_history_snapshot(\"Request 1 starts the parent thread. Request 2 is the prediction child's only turn. Request 3 continues the original parent and verifies that it still has its MCP tools.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Request 1 starts the parent thread. Request 2 is the prediction child's only turn. Request 3 continues the original parent and verifies that it still has its MCP tools.
@@ -16,10 +17,11 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=e346cf3cdadfe94d):
-        - namespace/functions; hash=3f0060eedcc0b57a
+00:additional_tools/developer (2; hash=8ed4355ad4553adc):
+        - namespace/functions; hash=ef34ea0b0717942d
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
         - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
           - function/check_mail
@@ -42,10 +44,11 @@ Settings:
 ## Window 2 (after request 2: input diverged at item 05)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (2; hash=e346cf3cdadfe94d):
-        - namespace/functions; hash=3f0060eedcc0b57a
+00:additional_tools/developer (2; hash=8ed4355ad4553adc):
+        - namespace/functions; hash=ef34ea0b0717942d
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
         - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
           - function/check_mail

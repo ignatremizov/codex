@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 1774
+assertion_line: 2339
 expression: "context_snapshot::format_request_history_snapshot(scenario, &requests,\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Ranked search prints a deferred tool declaration before a later code cell invokes it, yields, and completes through wait.
@@ -16,9 +16,10 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (8; hash=2ca05229a43565ac):
+  tools (9; hash=5fbe8de80b0e382b):
     - custom/exec: Catalog exec instructions. Default yield: 1234 ms. `image(imageUrlOrItem: string | { image_url: s...; hash=54e361a7c16477af
     - function/wait: Catalog wait instructions: resume the yielded cell.; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=67bc0f04da3505b3
+    - function/compact: Request this thread's /compact operation and continue the current task automatically after the to...; args=[]; hash=b97f041c49d48367
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - function/request_user_input_async: Ask the user one or more questions during ongoing work. Use this tool only to request missing inf...; args=[questions]; hash=d6d74f33db330162
     - function/send_user_message_async: Send a concise, user-visible acknowledgment, important update, or blocking question. Returns imme...; args=[message]; hash=952f268152551e76

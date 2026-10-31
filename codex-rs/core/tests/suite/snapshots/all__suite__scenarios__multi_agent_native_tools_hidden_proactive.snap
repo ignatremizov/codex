@@ -1,6 +1,7 @@
 ---
 source: core/tests/suite/scenarios.rs
-expression: "context_snapshot::format_request_history_snapshot(description,\n&mock.requests(),\n&ContextSnapshotOptions::default().include_request_settings(),)"
+assertion_line: 2373
+expression: "context_snapshot::format_request_history_snapshot(description, &requests,\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Ultra reasoning provides proactive guidance when native tools are disabled.
 
@@ -16,12 +17,14 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=5ea7a55416afee55):
-        - namespace/functions; hash=03340277aa23936f
+00:additional_tools/developer (2; hash=fbabe037d8998298):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
+          - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
 01:message/developer:

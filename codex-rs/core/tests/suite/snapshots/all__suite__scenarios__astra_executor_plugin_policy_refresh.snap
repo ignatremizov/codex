@@ -17,10 +17,11 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=290c31480ad90437):
-        - namespace/functions; hash=7d066dbba4ce8123
+00:additional_tools/developer (3; hash=51ec4b78a8ef254a):
+        - namespace/functions; hash=7289f53f34389f0f
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async

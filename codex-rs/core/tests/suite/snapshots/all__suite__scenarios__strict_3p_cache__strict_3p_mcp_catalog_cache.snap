@@ -21,6 +21,7 @@ Settings:
         - namespace/functions; hash=<INITIAL_BUILD_HASH>
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async

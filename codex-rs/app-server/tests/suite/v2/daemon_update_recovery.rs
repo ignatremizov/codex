@@ -553,7 +553,7 @@ async fn managed_shutdown_records_interrupted_turn(outcome: &str) -> Result<()> 
     .await?;
     wait_for_requests(&mock, /*count*/ 1).await?;
     match outcome {
-        "completed" => {
+        "completed" | "compacting" => {
             release.send(()).expect("original request is waiting");
             timeout(DEFAULT_READ_TIMEOUT, async {
                 loop {
@@ -569,6 +569,17 @@ async fn managed_shutdown_records_interrupted_turn(outcome: &str) -> Result<()> 
                 Ok::<(), anyhow::Error>(())
             })
             .await??;
+            if outcome == "compacting" {
+                // Exercise standalone compaction; active requests now stay in the regular turn.
+                request(
+                    &mut client,
+                    /*id*/ 4,
+                    "thread/compact/start",
+                    json!({"threadId":id}),
+                )
+                .await?;
+                wait_for_requests(&mock, /*count*/ 2).await?;
+            }
         }
         "canceled" => {
             request(
@@ -578,16 +589,6 @@ async fn managed_shutdown_records_interrupted_turn(outcome: &str) -> Result<()> 
                 json!({"threadId":id,"turnId":turn["turn"]["id"]}),
             )
             .await?;
-        }
-        "compacting" => {
-            request(
-                &mut client,
-                /*id*/ 4,
-                "thread/compact/start",
-                json!({"threadId":id}),
-            )
-            .await?;
-            wait_for_requests(&mock, /*count*/ 2).await?;
         }
         "running"
         | "plan"
