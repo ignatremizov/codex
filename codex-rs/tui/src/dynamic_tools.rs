@@ -1016,10 +1016,10 @@ async fn execute_inner(
                                         "name": tool, "status": status
                                     })),
                                     ThreadItemPayload::CollabAgentToolCall {
-                                        id, tool, status, ..
+                                        id, tool, status, lifecycle, ..
                                     } => Some(json!({
                                         "id": id, "turnId": turn.id, "type": "collabAgentToolCall",
-                                        "name": tool, "status": status
+                                        "name": tool, "status": status, "lifecycle": lifecycle
                                     })),
                                     ThreadItemPayload::Sleep(item) => Some(json!({
                                         "id": item.id, "turnId": turn.id, "type": "sleep",
@@ -1530,17 +1530,20 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
                 "success": success, "durationMs": duration_ms
             }),
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle,
                 id,
                 tool,
                 status,
                 sender_thread_id,
                 receiver_thread_ids,
+                receiver_agents,
                 prompt,
                 model,
                 reasoning_effort,
                 ..
             } => json!({
                 "type": "collabAgentToolCall", "id": id, "tool": tool,
+                "lifecycle": lifecycle, "receiverAgents": receiver_agents,
                 "status": status, "senderThreadId": sender_thread_id,
                 "receiverThreadIds": receiver_thread_ids, "prompt": prompt,
                 "model": model, "reasoningEffort": reasoning_effort

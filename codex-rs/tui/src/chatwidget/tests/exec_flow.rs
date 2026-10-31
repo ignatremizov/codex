@@ -1462,6 +1462,7 @@ async fn unrelated_unified_exec_completion_preserves_collab_wait_countdown() {
                 chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
                 "turn-1".to_string(),
                 AppServerThreadItemPayload::CollabAgentToolCall {
+                    lifecycle: None,
                     mailbox_input: None,
                     id: "wait-1".to_string(),
                     tool: AppServerCollabAgentTool::Wait,

@@ -603,6 +603,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadUnloadResponse,
     },
+    ThreadDetach => "thread/detach" {
+        params: v2::ThreadDetachParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadDetachResponse,
+    },
     #[experimental("thread/increment_elicitation")]
     /// Increment the thread-local out-of-band elicitation counter.
     ///

@@ -151,7 +151,8 @@ impl CodexThread {
             ));
         }
         let observed_status = resume_plan.status;
-        let target_is_live = !matches!(observed_status, AgentStatus::NotFound);
+        let target_is_live = !matches!(observed_status, AgentStatus::NotFound)
+            && !resume_plan.ownership.transfers_ownership();
         if target_is_live {
             let turn = self.session.new_default_turn().await;
             let session_source = control_relationship_source(

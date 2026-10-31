@@ -410,6 +410,7 @@ fn completed_wait_items_are_persisted_with_or_without_ownership() {
         thread_id: ThreadId::new(),
         turn_id: "turn".to_string(),
         item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            lifecycle: None,
             id: "wait-call".to_string(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
@@ -460,6 +461,7 @@ fn send_input_item_is_persisted_in_both_history_modes() {
         thread_id: ThreadId::new(),
         turn_id: "turn".to_string(),
         item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            lifecycle: None,
             id: "send-input-call".to_string(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::Completed,

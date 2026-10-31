@@ -471,6 +471,7 @@ async fn collaborator_tool_events_keep_response_ids_when_completion_races_sampli
             )
             .await;
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             id: "call-1".into(),
             input_batch: None,
             mailbox_input: None,

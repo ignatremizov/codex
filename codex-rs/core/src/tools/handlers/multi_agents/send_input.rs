@@ -85,16 +85,17 @@ impl Handler {
             call_id,
             ..
         } = invocation;
-        let response_observation = args.w.response_observation();
         let receiver_thread_id = resolve_receiver(&session, &target, args.w).await?;
         let prompt = render_input_preview(&input_items);
         let prepared =
             prepare_receiver(&session, &turn, receiver_thread_id, args.w, args.interrupt).await?;
+        let response_observation = prepared.mode.response_observation();
         let receiver_agent = prepared.agent.clone();
         session
             .emit_turn_item_started(
                 &turn,
                 &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    lifecycle: None,
                     id: call_id.clone(),
                     tool: CollabAgentTool::SendInput,
                     status: CollabAgentToolCallStatus::InProgress,
@@ -124,7 +125,6 @@ impl Handler {
                 call_id: &call_id,
                 batch_id: None,
                 items: input_items,
-                mode: args.w,
             },
         )
         .await;
@@ -153,6 +153,7 @@ impl Handler {
             .emit_turn_item_completed(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    lifecycle: None,
                     id: call_id,
                     tool: CollabAgentTool::SendInput,
                     status: tool_call_status,
@@ -206,8 +207,11 @@ enum SendInputTarget {
     Batch(Vec<String>),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(super) enum SendInputMode {
+    /// Resolve omitted response handling against each recipient's relationship to the sender.
+    #[default]
+    Default,
     Response(ResponseObservationPolicy),
     Mailbox(WakeEventMailboxSubscription),
 }
@@ -215,6 +219,7 @@ pub(super) enum SendInputMode {
 impl SendInputMode {
     pub(super) fn response_observation(self) -> ResponseObservationPolicy {
         match self {
+            Self::Default => ResponseObservationPolicy::default(),
             Self::Response(policy) => policy,
             Self::Mailbox(_) => ResponseObservationPolicy::from_parts(
                 /*commentary*/ false,
@@ -225,6 +230,7 @@ impl SendInputMode {
 
     pub(super) fn normalized_flags(self) -> String {
         match self {
+            Self::Default => String::new(),
             Self::Mailbox(WakeEventMailboxSubscription::None) => "z".to_string(),
             Self::Mailbox(WakeEventMailboxSubscription::Wake) => "zf".to_string(),
             Self::Response(policy) => {
@@ -243,12 +249,6 @@ impl SendInputMode {
                 flags
             }
         }
-    }
-}
-
-impl Default for SendInputMode {
-    fn default() -> Self {
-        Self::Response(ResponseObservationPolicy::default())
     }
 }
 

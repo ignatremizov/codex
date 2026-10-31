@@ -1,8 +1,43 @@
 //! Durable root-scoped agent alias projection.
 
 use super::*;
+use codex_app_server_protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 
 impl ThreadRequestProcessor {
+    pub(super) async fn apply_current_agent_ownership(
+        &self,
+        thread: &mut Thread,
+    ) -> Result<(), JSONRPCErrorError> {
+        if !matches!(
+            &thread.source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            return Ok(());
+        }
+        let Some(state_db) = &self.state_db else {
+            return Ok(());
+        };
+        let thread_id = ThreadId::from_string(&thread.id)
+            .map_err(|error| internal_error(format!("invalid stored thread id: {error}")))?;
+        let Some(alias) = state_db
+            .find_current_agent_alias_by_thread(thread_id)
+            .await
+            .map_err(|error| internal_error(format!("read current agent owner: {error}")))?
+        else {
+            return Ok(());
+        };
+        // Rollout source records provenance. Current durable edges also represent the
+        // intentional absence of a parent after detachment, without rewriting history.
+        thread.parent_thread_id = state_db
+            .find_thread_spawn_parent(thread_id)
+            .await
+            .map_err(|error| internal_error(format!("read current agent parent: {error}")))?
+            .map(|parent| parent.to_string());
+        thread.session_id = alias.session_id.to_string();
+        Ok(())
+    }
+
     pub(super) async fn agent_alias_list_response_inner(
         &self,
         params: AgentAliasListParams,

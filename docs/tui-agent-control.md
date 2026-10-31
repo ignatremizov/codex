@@ -83,7 +83,7 @@ Closed targets require a control-plane resume or adoption operation, not merely 
 
 When a user explicitly names a known closed descendant and supplies a prompt, the request authorizes reopening that rollout. A user-facing multi-agent control operation should resume the target through the source thread's `AgentControl`, bind the requested response policy, and then submit the user-authored prompt.
 
-A UUID identifies a rollout, which may itself be another root's Main, a descendant in another root, or a standalone rollout with no alias namespace. Supplying that UUID to `/agent resume <uuid>` explicitly authorizes loading the rollout with its existing history and adopting it as a child of the displayed source. Ordinary prompt dispatch does not implicitly reparent an out-of-root rollout; after resume establishes the control relationship, the user or model can prompt it normally. A runtime that is still live under another root must first be closed so two roots cannot control it simultaneously.
+A UUID identifies a rollout, which may itself be another root's Main, a descendant in another root, or a standalone rollout with no alias namespace. Supplying that UUID to `/agent resume <uuid>` explicitly authorizes loading the rollout with its existing history and adopting it as a child of the displayed source. Ordinary prompt dispatch does not implicitly reparent an out-of-root rollout; after resume establishes the control relationship, the user or model can prompt it normally. An idle independent root can be handed off through this resume operation. A busy independent root refuses, and a live child under another root must first be closed.
 
 The TUI must not approximate this by independently chaining `thread/resume` and `turn/start`. User commands, model tools, and generic thread resume must converge on one ownership-aware Core resume operation. Source-relative calls may preserve or transfer a control relationship before admitting input; a standalone `codex resume` with no source relationship reopens the rollout under its current durable owner, or under its persisted root identity when it has no owner.
 
@@ -103,7 +103,20 @@ The TUI must not approximate this by independently chaining `thread/resume` and 
 /agent <target> close [w:<w-mode>]
 /agent resume <target> [task:<path>] [w:<w-mode>] [<prompt>]
 /agent observe <target> [from <observer>] <passive|wake|presentation>
+/agent detach [<target>]
 ```
+
+`/agent detach <target>` accepts an existing ref, UUID, nickname, or task selector and detaches that branch without switching away from the displayed conversation. It leaves the independent branch unloaded for `codex resume <uuid>` in another TUI. Bare `/agent detach` acts on the displayed child and reloads the same UUID as an independent root. Neither form accepts prompts, flags, or attachments.
+
+Detachment promotes the selected child and its entire persisted descendant branch to an independent root with the same UUID and history. Main and siblings outside that branch stay loaded. The child becomes ref `1` / Main in its own namespace; former refs remain reserved as transferred aliases. Descendant assignment labels move under `/root`, with the usual collision suffixes. The parent TUI reports confirmed detachment, including when another client initiated it. Agent details show the current parent; historical spawn provenance cannot restore a removed edge.
+
+The branch must be idle, including descendant turns, queued input, sleep, realtime, code-mode messages, and background terminals. Detach refuses busy work without interrupting it. Successful handoff durably unloads the old actors, revokes future response bindings, and retires their subscriptions. Existing accepted completion deliveries drain before the writer closes. Drafts remain editable and saved queues require confirmation before sending. If unloading or refreshing fails, preserve the draft and explicitly retry or resume as directed by the error.
+
+Models using V1 tools can request the same handoff with `close_agent({ "target": "34", "detach": true })`. Ordinary close remains the default. Detachment does not replay a final response or accept `w`; its result adds `detached` with the selected UUID, previous root UUID, and unloaded branch UUIDs. The caller, Main, and foreign-owned targets cannot be detached by this tool.
+
+From Main, `resume_agent` or `/agent resume <uuid>` reattaches the idle independent branch. Task labels and reserved refs follow the existing adoption rules. Opening the same child in another TUI with ordinary `codex resume` keeps its current owner until the user explicitly detaches it.
+
+Other TUIs viewing a moved branch preserve their drafts and ask the user to resume under its current root. A successful canonical writer attachment completes that recovery; a read-only attachment keeps the submission guard.
 
 Selectors accept compact unprefixed forms and explicit namespaces:
 

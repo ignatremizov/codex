@@ -414,6 +414,31 @@
         }
       ]
     },
+    "CollabAgentLifecycle": {
+      "description": "Root involved in a detach or reattachment; this metadata grants no control authority.",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/CollabAgentLifecycleAction"
+        },
+        "rootThreadId": {
+          "description": "Source root for detachment, destination root for reattachment.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "rootThreadId"
+      ],
+      "type": "object"
+    },
+    "CollabAgentLifecycleAction": {
+      "description": "Ownership operation, distinct from the tool used to request it.",
+      "enum": [
+        "detach",
+        "reattach"
+      ],
+      "type": "string"
+    },
     "CollabAgentRef": {
       "properties": {
         "agentNickname": {
@@ -2360,6 +2385,18 @@
               ],
               "default": null,
               "description": "Per-recipient admission outcomes for array-target sends; errors may follow admission."
+            },
+            "lifecycle": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CollabAgentLifecycle"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Explicit ownership action; absent on ordinary close/resume and legacy records."
             },
             "mailboxInput": {
               "default": null,

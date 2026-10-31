@@ -28,6 +28,7 @@ use std::collections::HashSet;
 mod background_commentary;
 mod background_completion;
 mod identity_header;
+mod lifecycle;
 mod mailbox_read;
 mod mailbox_send;
 mod send_input_batch;
@@ -270,6 +271,7 @@ pub(crate) fn tool_call_history_cell(
     mut agent_metadata: impl FnMut(ThreadId) -> AgentMetadata,
 ) -> Option<CollabAgentHistoryCell> {
     let ThreadItemPayload::CollabAgentToolCall {
+        lifecycle,
         tool,
         status,
         observe_commentary,
@@ -297,6 +299,9 @@ pub(crate) fn tool_call_history_cell(
         target_messages: *target_messages,
         queue_input: *queue_input,
     };
+    if let Some(lifecycle) = lifecycle {
+        return lifecycle::history_cell(item, lifecycle, response_observation, &mut agent_metadata);
+    }
 
     match tool {
         // V2 uses SubAgentActivity for display; these variants are analytics-only.
@@ -666,6 +671,16 @@ fn append_response_observation_to_title(
     mut title: Line<'static>,
     response_observation: V1ResponseObservation,
 ) -> Line<'static> {
+    if let Some(label) = response_observation_label(response_observation) {
+        title.spans.push(" ".dim());
+        title.spans.push(label);
+    }
+    title
+}
+
+fn response_observation_label(
+    response_observation: V1ResponseObservation,
+) -> Option<Span<'static>> {
     let mut labels = Vec::new();
     if let Some(observe_commentary) = response_observation.observe_commentary {
         labels.push(if observe_commentary {
@@ -690,12 +705,11 @@ fn append_response_observation_to_title(
         labels.push("queue turn + reply");
     }
     if labels.is_empty() {
-        return title;
+        return None;
     }
 
     let label = format!("({})", labels.join(" · "));
-    title.spans.push(Span::from(" ").dim());
-    title.spans.push(
+    Some(
         if response_observation.observe_commentary == Some(true)
             || response_observation.wake_on_completion == Some(true)
             || response_observation.target_messages == Some(true)
@@ -705,8 +719,7 @@ fn append_response_observation_to_title(
         } else {
             label.dim()
         },
-    );
-    title
+    )
 }
 
 fn title_spans_line(mut spans: Vec<Span<'static>>) -> Line<'static> {
@@ -978,6 +991,7 @@ mod tests {
 
         let spawn = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-spawn".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1007,6 +1021,7 @@ mod tests {
 
         let send = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-send".to_string(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1036,6 +1051,7 @@ mod tests {
 
         let send_x = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-send-x".to_string(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1065,6 +1081,7 @@ mod tests {
 
         let waiting = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-wait".to_string(),
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -1091,6 +1108,7 @@ mod tests {
 
         let finished = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-wait".to_string(),
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1126,6 +1144,7 @@ mod tests {
 
         let close = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-close".to_string(),
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1155,6 +1174,7 @@ mod tests {
 
         let close_x = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-close-x".to_string(),
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1226,6 +1246,7 @@ mod tests {
         let message = "first line\n  indented line\nlast line\n";
 
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             id: "call-wait".to_string(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
@@ -1296,6 +1317,7 @@ mod tests {
             "Review the change.\nFocus on regressions.\nDo not run tests.\nReport findings.";
 
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             id: "call-spawn".to_string(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::Completed,
@@ -1365,6 +1387,7 @@ mod tests {
 
         let spawn = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-spawn".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1394,6 +1417,7 @@ mod tests {
 
         let wait = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-wait".to_string(),
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1508,6 +1532,7 @@ mod tests {
             .expect("valid robie thread id");
         let cell = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-spawn".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -1557,6 +1582,7 @@ mod tests {
 
         let cell = tool_call_history_cell(
             &ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-resume".to_string(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,

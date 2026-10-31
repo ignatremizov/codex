@@ -542,7 +542,14 @@ impl ThreadManager {
             {
                 // An explicitly loaded root rollout may live outside the local index.
                 // Its identity-matched metadata already supplies the durable source.
-                recorded_source
+                if matches!(
+                    &recorded_source,
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                ) {
+                    self.state.session_source.clone()
+                } else {
+                    recorded_source
+                }
             } else {
                 control
                     .canonical_controlled_resume_source(id, source)
@@ -635,7 +642,9 @@ impl ThreadManager {
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
         options.session_source = Some(source.clone());
         options.thread_source = thread_source;
-        if controlled_child {
+        // Worker sources and current roots supply their authoritative parent here.
+        // Specialized saved subagents still restore the parent from their rollout.
+        if alias.is_some() && (controlled_child || owner_id == thread_id) {
             options
                 .thread_extension_init
                 .insert(crate::session::AgentSessionOwnershipOverride {

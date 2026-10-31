@@ -150,6 +150,21 @@ impl AgentGraphStore for LocalAgentGraphStore {
         self.transfer_agent_alias_impl(request)
     }
 
+    fn detach_agent_alias(
+        &self,
+        request: crate::DetachAgentAliasRequest,
+    ) -> AgentGraphStoreFuture<'_, AgentAliasTransfer> {
+        Box::pin(async move {
+            self.state_db
+                .detach_agent_alias(request)
+                .await
+                .map(AgentAliasTransfer::from)
+                .map_err(|error| AgentGraphStoreError::Internal {
+                    message: error.to_string(),
+                })
+        })
+    }
+
     fn set_agent_lifecycle_state(
         &self,
         session_id: SessionId,

@@ -250,6 +250,9 @@ impl App {
         if self.chat_widget.has_provider_error()
             || self.active_thread_id != Some(target_session.thread_id)
             || self
+                .history_recovery_required
+                .contains(&target_session.thread_id)
+            || self
                 .thread_event_channels
                 .get(&target_session.thread_id)
                 .is_some_and(|channel| channel.attachment() != ThreadEventAttachment::Live)

@@ -1341,6 +1341,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             id: payload.call_id.clone(),
@@ -1391,6 +1392,7 @@ impl ThreadHistoryBuilder {
             None => (Vec::new(), Vec::new(), HashMap::new()),
         };
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -1417,6 +1419,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabAgentInteractionBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -1449,6 +1452,7 @@ impl ThreadHistoryBuilder {
         let receiver_id = payload.receiver_thread_id.to_string();
         let received_status = CollabAgentState::from(payload.status.clone());
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -1492,6 +1496,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabWaitingBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -1539,6 +1544,7 @@ impl ThreadHistoryBuilder {
             .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
             .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -1565,6 +1571,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabCloseBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -1599,6 +1606,7 @@ impl ThreadHistoryBuilder {
         .into_iter()
         .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -1625,6 +1633,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabResumeBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -1662,6 +1671,7 @@ impl ThreadHistoryBuilder {
         .into_iter()
         .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -5817,6 +5827,7 @@ mod tests {
         assert_eq!(
             item.payload,
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 target_messages: None,
                 queue_input: None,
                 observe_commentary: None,
@@ -5884,6 +5895,7 @@ mod tests {
         assert_eq!(
             turns[0].items[1].payload,
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 target_messages: None,
                 queue_input: None,
                 observe_commentary: None,
@@ -5969,6 +5981,7 @@ mod tests {
         assert_eq!(
             turns[0].items[1].payload,
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 target_messages: None,
                 queue_input: None,
                 observe_commentary: None,
@@ -6306,6 +6319,7 @@ mod tests {
             .expect("terminal completion"),
         );
         let wait = codex_protocol::items::CollabAgentToolCallItem {
+            lifecycle: None,
             mailbox_input: None,
             target_messages: None,
             queue_input: None,

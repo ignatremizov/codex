@@ -741,6 +741,11 @@ class CollabAgentInputStatus(RootModel[CollabAgentInputStatusValue | Literal["er
     root: CollabAgentInputStatusValue | Literal["error"]
 
 
+class CollabAgentLifecycleAction(Enum):
+    detach = "detach"
+    reattach = "reattach"
+
+
 class CollabAgentRef(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5594,6 +5599,22 @@ class ThreadDeletedNotification(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadDetachParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadDetachResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    previous_root_thread_id: Annotated[str, Field(alias="previousRootThreadId")]
+    thread_id: Annotated[str, Field(alias="threadId")]
+    unloaded_thread_ids: Annotated[list[str], Field(alias="unloadedThreadIds")]
+
+
 class ThreadEnvironment(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -8170,6 +8191,15 @@ class ThreadUnloadRequest(BaseModel):
     params: ThreadUnloadParams
 
 
+class ThreadDetachRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/detach"], Field(title="Thread/detachRequestMethod")]
+    params: ThreadDetachParams
+
+
 class ThreadNameSetRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9066,6 +9096,20 @@ class CollabAgentInputResult(BaseModel):
         str,
         Field(
             description="Canonical ref when available, otherwise UUID or the unresolved authored selector."
+        ),
+    ]
+
+
+class CollabAgentLifecycle(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    action: CollabAgentLifecycleAction
+    root_thread_id: Annotated[
+        str,
+        Field(
+            alias="rootThreadId",
+            description="Source root for detachment, destination root for reattachment.",
         ),
     ]
 
@@ -13256,6 +13300,12 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Per-recipient admission outcomes for array-target sends; errors may follow admission.",
         ),
     ] = None
+    lifecycle: Annotated[
+        CollabAgentLifecycle | None,
+        Field(
+            description="Explicit ownership action; absent on ordinary close/resume and legacy records."
+        ),
+    ] = None
     mailbox_input: Annotated[
         bool | None,
         Field(
@@ -14554,6 +14604,7 @@ class ClientRequest(
         | ThreadDeleteRequest
         | ThreadUnsubscribeRequest
         | ThreadUnloadRequest
+        | ThreadDetachRequest
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
         | ThreadMcpServerActivateRequest
@@ -14668,6 +14719,7 @@ class ClientRequest(
         | ThreadDeleteRequest
         | ThreadUnsubscribeRequest
         | ThreadUnloadRequest
+        | ThreadDetachRequest
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
         | ThreadMcpServerActivateRequest

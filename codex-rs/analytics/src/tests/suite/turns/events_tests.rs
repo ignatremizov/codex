@@ -524,6 +524,7 @@ async fn turn_event_counts_completed_tool_items() {
             duration_ms: Some(3),
         },
         ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             id: "collab-1".to_string(),
             input_batch: None,
             mailbox_input: None,

@@ -10,6 +10,8 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
 use codex_protocol::AgentTaskPathMapping;
+use codex_protocol::CollabAgentLifecycle;
+use codex_protocol::CollabAgentLifecycleAction;
 use codex_protocol::protocol::SessionSource;
 use codex_tools::ToolSpec;
 use std::sync::Arc;
@@ -70,15 +72,16 @@ async fn handle_resume_agent(
         .plan_agent_resume(receiver_thread_id)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    let lifecycle = resume_plan
+        .ownership
+        .transfers_ownership()
+        .then_some(CollabAgentLifecycle {
+            action: CollabAgentLifecycleAction::Reattach,
+            root_thread_id: ThreadId::from(session.session_id()),
+        });
     if args.task.is_some() && resume_plan.ownership == AgentResumeOwnership::CurrentRoot {
         return Err(FunctionCallError::RespondToModel(
             "task can only be assigned during cross-root adoption; resume this agent without task"
-                .to_string(),
-        ));
-    }
-    if args.task.is_some() && !matches!(resume_plan.status, AgentStatus::NotFound) {
-        return Err(FunctionCallError::RespondToModel(
-            "close the agent before assigning task during adoption, then resume it with task"
                 .to_string(),
         ));
     }
@@ -91,7 +94,8 @@ async fn handle_resume_agent(
         ));
     }
     let mut status = resume_plan.status;
-    let was_not_found = matches!(status, AgentStatus::NotFound);
+    let was_not_found =
+        matches!(status, AgentStatus::NotFound) || resume_plan.ownership.transfers_ownership();
     let task_name = resume_plan
         .ownership
         .transfers_ownership()
@@ -125,6 +129,7 @@ async fn handle_resume_agent(
         .emit_turn_item_started(
             &turn,
             &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                lifecycle: lifecycle.clone(),
                 id: call_id.clone(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -197,9 +202,14 @@ async fn handle_resume_agent(
         .emit_turn_item_completed(
             &turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                lifecycle,
                 id: call_id,
                 tool: CollabAgentTool::ResumeAgent,
-                status: collab_tool_call_status(&status, Some(receiver_thread_id)),
+                status: if error.is_some() {
+                    CollabAgentToolCallStatus::Failed
+                } else {
+                    collab_tool_call_status(&status, Some(receiver_thread_id))
+                },
                 observe_commentary: Some(args.w.commentary()),
                 wake_on_completion: args.w.wake_on_completion_item_value(),
                 target_messages: Some(false),

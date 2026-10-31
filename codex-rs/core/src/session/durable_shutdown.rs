@@ -210,6 +210,14 @@ impl SessionIo {
 impl SubmissionAdmission {
     /// Fence ordinary work and ownership mutations without excluding accepted completions.
     pub(crate) fn seal_for_unload(&self) {
+        let mut handoff = self
+            .ownership_handoff
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if handoff.take().is_some() {
+            self.ownership_handoff_draining
+                .store(/*val*/ true, Ordering::Release);
+        }
         self.subtree_unload_pending
             .store(/*val*/ true, Ordering::Release);
         self.changed.notify_waiters();

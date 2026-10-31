@@ -1223,6 +1223,7 @@ mod tests {
             ThreadItemPayload::from(codex_protocol::items::TurnItem::AgentMessage(acceptance));
         let batch_sender = ThreadId::new();
         let batch = ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             id: format!(
                 "agent-input-batch/{}",
                 serde_json::to_string(&(batch_sender, "source-turn", "source-call"))

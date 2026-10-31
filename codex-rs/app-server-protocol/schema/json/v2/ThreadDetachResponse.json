@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "The caller resumes `thread_id` to attach to its new owning root.",
+  "properties": {
+    "previousRootThreadId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "unloadedThreadIds": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "previousRootThreadId",
+    "threadId",
+    "unloadedThreadIds"
+  ],
+  "title": "ThreadDetachResponse",
+  "type": "object"
+}

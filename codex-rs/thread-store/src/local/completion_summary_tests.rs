@@ -29,6 +29,7 @@ async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
         .expect("terminal shape");
         forged.sub_agent_completion = None;
         let wait = CollabAgentToolCallItem {
+            lifecycle: None,
             id: "owned-wait".to_string(),
             input_batch: None,
             mailbox_input: None,
@@ -51,6 +52,7 @@ async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
             completion_presentation_agent_ids: Some(vec![worker_id]),
         };
         let unowned_wait = CollabAgentToolCallItem {
+            lifecycle: None,
             id: "ordinary-wait".to_string(),
             completion_presentation_agent_ids: None,
             ..wait.clone()

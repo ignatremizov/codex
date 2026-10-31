@@ -2739,6 +2739,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             ThreadId::new().to_string(),
             "turn-1".to_string(),
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "wait-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::Wait,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
@@ -2790,6 +2791,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 ThreadId::new().to_string(),
                 "turn-1".to_string(),
                 ThreadItemPayload::CollabAgentToolCall {
+                    lifecycle: None,
                     mailbox_input: None,
                     id: "send-1".to_string(),
                     tool: codex_app_server_protocol::CollabAgentTool::SendInput,
@@ -2840,6 +2842,7 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
                     observer_thread_id.to_string(),
                     "turn-1".to_string(),
                     ThreadItemPayload::CollabAgentToolCall {
+                        lifecycle: None,
                         id: id.to_string(),
                         tool,
                         status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
@@ -10588,6 +10591,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                         "thread-1".to_string(),
                         "turn-1".to_string(),
                         ThreadItemPayload::CollabAgentToolCall {
+                            lifecycle: None,
                             id: "wait-1".to_string(),
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,
                             status:
@@ -10648,6 +10652,7 @@ async fn metadata_free_collab_notification_preserves_cached_agent_label() {
             sender_thread_id.to_string(),
             "turn-1".to_string(),
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 id: "send-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::SendInput,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,

@@ -914,6 +914,18 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     complete
                 }
+                Op::PrepareOwnershipHandoff {
+                    submitted,
+                    reply,
+                    release,
+                } => {
+                    let result = match submitted.await {
+                        Ok(()) => super::ownership_handoff::prepare(&sess, &rx_sub, release).await,
+                        Err(_) => Err(CodexErr::TurnAborted),
+                    };
+                    let _ = reply.send(result);
+                    false
+                }
                 Op::Review { review_request } => {
                     review(&sess, &config, sub.id.clone(), review_request).await;
                     false

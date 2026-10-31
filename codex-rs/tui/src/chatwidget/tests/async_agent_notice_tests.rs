@@ -415,6 +415,7 @@ async fn child_batch_live_and_replay_use_one_grouped_root_presentation() {
     chat.set_collab_agent_ref(rejected, "9".to_string());
 
     let batch = AppServerThreadItemPayload::CollabAgentToolCall {
+        lifecycle: None,
         id: "child-send-input-batch".to_string(),
         tool: codex_app_server_protocol::CollabAgentTool::SendInput,
         status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
@@ -513,6 +514,7 @@ async fn own_collab_tool_lifecycle_is_not_queued_as_an_async_notice() {
     let child = ThreadId::new();
     chat.on_collab_agent_tool_call(
         AppServerThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             id: "own-spawn".to_string(),
             tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
             status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,

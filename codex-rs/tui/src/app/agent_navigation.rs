@@ -87,6 +87,10 @@ pub(crate) struct AgentNavigationState {
     pending_reserved_prompt_sources: HashMap<ThreadId, ThreadId>,
     /// Durable root-scoped identities keyed by canonical thread UUID.
     aliases: HashMap<ThreadId, AgentAliasEntry>,
+    /// Confirmed detach notices already shown in this navigation scope.
+    pub(super) announced_detachments: HashSet<ThreadId>,
+    /// Detach calls whose lifecycle row owns the user-facing completion notice.
+    pub(super) pending_detachment_calls: HashMap<(String, String, String), Vec<ThreadId>>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     pub(super) picker_refresh: Option<AgentPickerRefreshState>,
 }
@@ -244,6 +248,12 @@ impl AgentNavigationState {
             })
             .collect::<HashMap<_, _>>();
         for (thread_id, alias) in &aliases {
+            if alias.state == AgentAliasState::Active {
+                self.announced_detachments.remove(thread_id);
+            }
+            if alias.agent_ref == 1 && alias.state != AgentAliasState::Transferred {
+                self.parent_threads.remove(thread_id);
+            }
             if let Some(entry) = self.threads.get_mut(thread_id) {
                 // A durable alias is the authoritative user-facing nickname. In particular, an
                 // adoption may intentionally omit a colliding historical nickname rather than
@@ -261,6 +271,12 @@ impl AgentNavigationState {
         nickname: Option<String>,
         state: AgentAliasState,
     ) {
+        if state == AgentAliasState::Active {
+            self.announced_detachments.remove(&thread_id);
+        }
+        if agent_ref == 1 && state != AgentAliasState::Transferred {
+            self.parent_threads.remove(&thread_id);
+        }
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.agent_nickname.clone_from(&nickname);
         }
@@ -610,11 +626,14 @@ impl AgentNavigationState {
         self.response_observations.clear();
         self.pending_reserved_prompt_sources.clear();
         self.aliases.clear();
+        self.announced_detachments.clear();
+        self.pending_detachment_calls.clear();
         self.picker_refresh = None;
     }
 
     /// Retains durable identities but retires activity and process-local response routes.
     pub(crate) fn clear_runtime_state(&mut self) {
+        self.pending_detachment_calls.clear();
         self.stopped_threads.extend(self.threads.keys().copied());
         for entry in self.threads.values_mut() {
             entry.is_running = false;
@@ -630,6 +649,11 @@ impl AgentNavigationState {
     /// replayable local threads. Keeping those around after the backend confirms they are gone
     /// would leave ghost rows in `/subagents`.
     pub(crate) fn remove(&mut self, thread_id: ThreadId) {
+        self.announced_detachments.remove(&thread_id);
+        self.pending_detachment_calls.retain(|_, targets| {
+            targets.retain(|target| *target != thread_id);
+            !targets.is_empty()
+        });
         self.subagent_threads.remove(&thread_id);
         self.threads.remove(&thread_id);
         self.order.retain(|candidate| *candidate != thread_id);

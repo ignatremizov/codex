@@ -497,6 +497,12 @@ pub(crate) enum AppEvent {
         prompt: Option<UserMessage>,
     },
 
+    /// Detach a selected branch, or reload the displayed child as an independent root.
+    DetachAgent {
+        source_thread_id: ThreadId,
+        selector: Option<AgentSelector>,
+    },
+
     /// Interrupt an agent turn and optionally submit a follow-up.
     InterruptAgent {
         source_thread_id: ThreadId,

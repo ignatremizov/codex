@@ -414,13 +414,21 @@ INSERT INTO thread_spawn_edges (
     parent_thread_id,
     child_thread_id,
     status
-) VALUES (?, ?, ?)
+)
+SELECT ?, ?, ?
+WHERE NOT EXISTS (
+    SELECT 1 FROM agent_aliases
+    WHERE session_id = ? AND thread_id = ?
+      AND agent_ref = 1 AND ownership_state = 'current'
+)
 ON CONFLICT(child_thread_id) DO NOTHING
             "#,
         )
         .bind(parent_thread_id.to_string())
         .bind(child_thread_id.to_string())
         .bind(crate::DirectionalThreadSpawnEdgeStatus::Open.as_ref())
+        .bind(child_thread_id.to_string())
+        .bind(child_thread_id.to_string())
         .execute_with_busy_retry(self.pool.as_ref())
         .await?;
         Ok(())

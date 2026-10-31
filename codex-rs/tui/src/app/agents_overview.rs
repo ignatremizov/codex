@@ -955,7 +955,8 @@ impl App {
         let mut config = match StartupDraftPump::run_with_optional_draft(
             startup_draft.as_deref_mut(),
             tui,
-            self.rebuild_config_for_cwd(local_cwd),
+            // Avoid embedding the config loader in each provisional input wrapper.
+            Box::pin(self.rebuild_config_for_cwd(local_cwd)),
         )
         .await
         {
@@ -966,17 +967,16 @@ impl App {
             }
         };
         let trust_cwd = config.cwd.to_path_buf();
-        if self
-            .confirm_directory_trust(
-                tui,
-                app_server,
-                &mut config,
-                &trust_cwd,
-                crate::onboarding::DirectoryTrustOptions::default(),
-                startup_draft.as_deref_mut(),
-            )
-            .await
-            .is_err()
+        if Box::pin(self.confirm_directory_trust(
+            tui,
+            app_server,
+            &mut config,
+            &trust_cwd,
+            crate::onboarding::DirectoryTrustOptions::default(),
+            startup_draft.as_deref_mut(),
+        ))
+        .await
+        .is_err()
         {
             return None;
         }

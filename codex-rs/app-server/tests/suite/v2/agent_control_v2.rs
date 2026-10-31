@@ -66,6 +66,9 @@ mod observer;
 #[path = "agent_control_queue_fault_tests.rs"]
 mod queue_faults;
 
+#[path = "agent_detach_tests.rs"]
+mod detach;
+
 fn agent_control_outcome(response: AgentControlResponse) -> AgentControlOutcome {
     assert_eq!(response.audit_warning, None);
     response.outcome

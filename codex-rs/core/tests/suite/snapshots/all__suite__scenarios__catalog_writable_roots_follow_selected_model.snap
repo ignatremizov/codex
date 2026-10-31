@@ -22,7 +22,7 @@ Settings:
           - function/update_plan
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=061f68c9a0138458
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83
           - function/check_mail
           - function/close_agent
           - function/resume_agent
@@ -61,7 +61,7 @@ Settings: relative to window 1
           - function/update_plan
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=061f68c9a0138458
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83
           - function/check_mail
           - function/close_agent
           - function/resume_agent

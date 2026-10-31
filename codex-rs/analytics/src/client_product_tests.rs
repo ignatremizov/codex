@@ -243,6 +243,7 @@ async fn buffered_tool_events_preserve_attribution_or_drop_it_on_queue_overflow(
             thread_id.to_string(),
             "turn-1".to_string(),
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 input_batch: None,
                 mailbox_input: None,
                 target_messages: None,

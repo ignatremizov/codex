@@ -2933,11 +2933,12 @@ impl ThreadRequestProcessor {
         let fallback_provider = self.config.model_provider_id.clone();
 
         for stored_thread in stored_threads {
-            let (thread, _) = thread_from_stored_thread(
+            let (mut thread, _) = thread_from_stored_thread(
                 stored_thread,
                 fallback_provider.as_str(),
                 &self.config.cwd,
             );
+            self.apply_current_agent_ownership(&mut thread).await?;
             data.push(thread);
         }
 
@@ -3053,11 +3054,12 @@ impl ThreadRequestProcessor {
         let fallback_provider = self.config.model_provider_id.clone();
         let mut data = Vec::with_capacity(search_results.len());
         for result in search_results {
-            let (thread, _) = thread_from_stored_thread(
+            let (mut thread, _) = thread_from_stored_thread(
                 result.thread,
                 fallback_provider.as_str(),
                 &self.config.cwd,
             );
+            self.apply_current_agent_ownership(&mut thread).await?;
             data.push(ThreadSearchResult {
                 thread,
                 snippet: result.snippet,
@@ -3193,6 +3195,9 @@ impl ThreadRequestProcessor {
             )));
         };
 
+        self.apply_current_agent_ownership(&mut thread)
+            .await
+            .map_err(ThreadReadViewError::JsonRpc)?;
         thread.daybreak_enabled = thread.daybreak_enabled.or(pending_daybreak_enabled);
 
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {

@@ -9,6 +9,8 @@ use codex_protocol::protocol::MultiAgentVersion;
 ///
 /// A pending transfer may precede its alias transaction, but must retain writer/lifecycle
 /// reservations until that transaction and checked runtime publication complete.
+/// Current ownership also makes the supplied parent authoritative, including an absent
+/// parent after promotion; historical rollout ancestry must not restore that old edge.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AgentSessionOwnershipOverride {
     pub(crate) session_id: SessionId,

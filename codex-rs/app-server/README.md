@@ -403,6 +403,15 @@ create or restore an observation. Core owns the exact target-turn subscription a
 delivery. Canonical policy survives subsequent lossy legacy mirrors, and a later canonical
 item remains authoritative, including when it clears the metadata.
 
+Ownership-changing calls also include nullable `lifecycle` metadata:
+`{ "action": "detach" | "reattach", "rootThreadId": "<root UUID>" }`.
+The root is the source of a detach or destination of a reattachment. The tool remains
+`closeAgent` or `resumeAgent`; ordinary close/resume and older records have no lifecycle
+metadata. Receiver identities are captured in the caller's namespace before and after
+the operation, so a detached target's independent `Main (1)` identity is not imported
+into the caller's labels. Live events and history retain the action, receiver identity,
+and canonical outcome through legacy mirrors. These fields grant no lifecycle authority.
+
 Incoming inter-agent communication is projected as typed `agentMessage` items in live `item/started` and `item/completed` notifications and saved history, independently of the experimental raw-response opt-in. `interAgentSource` is a nullable object containing `author` and `recipient`; ordinary assistant items use `null`, and older history may omit it. This is presentation provenance, not an authorization or delivery receipt. Clients must not treat these items as completion of the assistant's current answer or execute UI directives embedded in their text. Encrypted or mixed encrypted/plaintext payloads produce an opaque placeholder, including encrypted-with-audit delivery on the receiving side.
 
 Canonical item and turn IDs are retained through live and historical projection. Public `thread/inject_items` agent messages receive host-owned IDs. Idle injection creates a completed history-only turn without starting inference; active injection belongs to the receiving turn. A running `thread/resume` response establishes the history boundary for that connection before subsequent live delivery, without suppressing other subscribers. A cancelled or failed resume releases suppression but requires another canonical resume to recover notifications suppressed during the unsuccessful snapshot; clients must not assume that delta stream is complete. Accepted publication waits for the canonical writer flush before live installation and event enqueue; this is not an fsync or client-observation guarantee. See [multi-agent message delivery](../../docs/multi-agent-message-delivery.md) for plaintext wrapper and audit behavior.
@@ -805,6 +814,16 @@ endpoints with other schemes fail before client registration or URL return.
 Success acknowledges final persistence, writer-lease release, and removal of the exact loaded runtime instances. It does not close durable agent aliases or delete history. The server emits `thread/closed` for removed runtimes, which can subsequently be resumed. A known already-unloaded subtree succeeds with an empty `unloadedThreadIds`; an unknown thread is an invalid request. The response lists runtimes unloaded by this attempt, not all historical subtree members.
 
 The accepted operation continues if the requesting connection disappears. A failed durable drain returns an error and retains all captured runtime entries, including actors already stopped by that attempt. The retained instances reject ordinary input, spawn, reopening, close, eviction, and removal; retry `thread/unload` to finish cleanup. Accepted completion delivery remains able to acquire lifecycle locks while shutdown drains. A cancelled, never-acknowledged spawn also retains any failed alias rollback until retry finishes it; ordinary unloaded aliases stay open. A client must not report successful shutdown or silently exit after such an error.
+
+## Explicit child detach
+
+`thread/detach` accepts `{ "threadId": "<child UUID>" }` and returns
+`{ "threadId": "<same UUID>", "previousRootThreadId": "<former root UUID>", "unloadedThreadIds": ["<child UUID>", "..."] }`.
+It serves both `/agent detach` on the displayed child and `/agent detach <target>` without switching views. The child must be loaded and its whole branch idle. Active or queued turns, durable sleep, realtime, code-mode messages, or background terminals reject admission without interrupting work. An existing independent root is not detachable. Native V1 `close_agent` also accepts `detach: true` to use the same handoff under the caller's current ownership, without response replay.
+
+The server durably unloads the selected branch before committing its independent alias namespace. It preserves UUIDs, history, descendant topology and closed status, reserves former refs as transferred aliases, and rebases assignment labels with collision resolution. The former root and outside siblings stay loaded. Other clients may be subscribed; the server retires old branch listeners and emits `thread/closed` before replying. Clients fence those notifications and resume the same UUID to continue under its new owner. Parent clients confirm the new independent root before reporting detachment. The current `parentThreadId` is authoritative; `source` retains historical provenance after ownership changes. Read, list and search views use current durable ownership for saved spawned threads, including a detached root's own `sessionId` and null parent while it is unloaded.
+
+An accepted request finishes if its connection disappears. A failure after writer shutdown can leave the branch unloaded under its previous owner; clients must reload canonical ownership instead of retrying input. A failed durable drain retains sealed actors for an explicit detach retry. Explicit `agent/control` resume or model `resume_agent` by canonical UUID can adopt an idle independent root without a separate close; a busy branch refuses. Ordinary generic resume keeps current ownership. See [agent restoration](../../docs/agent-restoration.md).
 
 ## Allocator memory reclamation
 

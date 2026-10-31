@@ -47,7 +47,7 @@
         {
           "description": "Spawn a default or configured-role child.",
           "properties": {
-            "fork_mode": {
+            "forkMode": {
               "$ref": "#/definitions/AgentForkMode"
             },
             "input": {
@@ -67,7 +67,7 @@
                 "null"
               ]
             },
-            "reasoning_effort": {
+            "reasoningEffort": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/ReasoningEffort"
@@ -78,7 +78,7 @@
               ],
               "description": "Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default."
             },
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -112,7 +112,7 @@
             }
           },
           "required": [
-            "fork_mode",
+            "forkMode",
             "type"
           ],
           "title": "SpawnAgentControlAction",
@@ -127,7 +127,7 @@
               },
               "type": "array"
             },
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -196,7 +196,7 @@
               },
               "type": "array"
             },
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -230,7 +230,7 @@
         {
           "description": "Reopen a controlled closed agent or explicitly adopt a stored agent by UUID.",
           "properties": {
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -279,7 +279,7 @@
                 "null"
               ]
             },
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -311,7 +311,7 @@
         {
           "description": "Close a controlled agent runtime.",
           "properties": {
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -343,7 +343,7 @@
         {
           "description": "Authoritatively replace final-response handling for one target turn.",
           "properties": {
-            "authored_observer_selector": {
+            "authoredObserverSelector": {
               "description": "Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint.",
               "type": [
                 "string",
@@ -357,7 +357,7 @@
                 "null"
               ]
             },
-            "response_handling": {
+            "responseHandling": {
               "$ref": "#/definitions/AgentObservationMode"
             },
             "target": {
@@ -372,7 +372,7 @@
             }
           },
           "required": [
-            "response_handling",
+            "responseHandling",
             "target",
             "type"
           ],
@@ -5076,6 +5076,18 @@
       ],
       "type": "object"
     },
+    "ThreadDetachParams": {
+      "description": "Explicitly promote an idle child branch to an independent root, retaining its UUIDs.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadForkParams": {
       "description": "There are two ways to fork a thread: 1. By thread_id: load the thread from disk by thread_id and fork it into a new thread. 2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using a non-empty path, the thread_id param will be ignored. Empty string path values are treated as absent.\n\nPrefer using thread_id whenever possible.",
       "properties": {
@@ -7209,6 +7221,30 @@
         "params"
       ],
       "title": "Thread/unloadRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/detach"
+          ],
+          "title": "Thread/detachRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadDetachParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/detachRequest",
       "type": "object"
     },
     {

@@ -938,6 +938,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             "thread-parent".to_string(),
             "turn-1".to_string(),
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 observe_commentary: None,
                 wake_on_completion: None,
                 target_messages: None,
@@ -963,6 +964,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             "thread-parent".to_string(),
             "turn-1".to_string(),
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: None,
                 observe_commentary: None,
                 wake_on_completion: None,
                 target_messages: None,

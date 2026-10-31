@@ -16,6 +16,7 @@ pub use agent_send_settings::AgentSendSetting;
 pub use backfill_state::BackfillState;
 pub use backfill_state::BackfillStatus;
 pub use graph::AgentAliasAllocation;
+pub use graph::AgentAliasDetachRequest;
 pub use graph::AgentAliasForkReservation;
 pub use graph::AgentAliasRecord;
 pub use graph::AgentAliasState;

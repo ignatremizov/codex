@@ -1065,9 +1065,15 @@ impl Session {
             },
         }
         .filter(|_| forked_from_id.is_some());
-        let parent_thread_id = session_configuration
-            .parent_thread_id
-            .or_else(|| initial_history.get_resumed_parent_thread_id());
+        let ownership_override =
+            thread_extension_init.get::<super::AgentSessionOwnershipOverride>();
+        let parent_thread_id = if ownership_override.is_some() {
+            session_configuration.parent_thread_id
+        } else {
+            session_configuration
+                .parent_thread_id
+                .or_else(|| initial_history.get_resumed_parent_thread_id())
+        };
         session_configuration.parent_thread_id = parent_thread_id;
         let is_paginated_subagent = matches!(
             session_configuration.history_mode,
@@ -1138,29 +1144,25 @@ impl Session {
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         };
         let controlling_session_id = agent_control.bound_session_id();
-        let owner_override = thread_extension_init
-            .get::<super::AgentSessionOwnershipOverride>()
-            .map(|ownership| ownership.session_id);
+        let owner_override = ownership_override.map(|ownership| ownership.session_id);
         if owner_override.is_some()
             && (owner_override != controlling_session_id
-                || !session_configuration.session_source.is_non_root_agent())
+                || (!session_configuration.session_source.is_non_root_agent()
+                    && owner_override != Some(SessionId::from(thread_id))))
         {
             return Err(anyhow::anyhow!(
                 "agent ownership override does not match its validated controller"
             ));
         }
-        let resumed_session_id = if session_configuration.session_source.is_non_root_agent()
-            && owner_override.is_some()
-        {
-            // Explicit adoption changes live ownership, never the historical session metadata.
-            owner_override
-        } else {
+        let resumed_session_id = owner_override.or_else(|| {
+            // Explicit adoption and root promotion change live ownership, never the
+            // historical session metadata.
             // Legacy subagent rollouts synthesized session_id from their own thread ID.
             persisted_session_id.filter(|session_id| {
                 !session_configuration.session_source.is_non_root_agent()
                     || *session_id != SessionId::from(thread_id)
             })
-        };
+        });
         // session_id is equal to the root thread's ID.
         let session_id = resumed_session_id.unwrap_or_else(|| {
             if session_configuration.session_source.is_non_root_agent() {

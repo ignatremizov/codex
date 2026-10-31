@@ -3,6 +3,8 @@ use crate::protocol::v2::ThreadItem;
 use codex_protocol::CollabAgentInputBatch;
 use codex_protocol::CollabAgentInputResult;
 use codex_protocol::CollabAgentInputStatus;
+use codex_protocol::CollabAgentLifecycle;
+use codex_protocol::CollabAgentLifecycleAction;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
@@ -21,15 +23,29 @@ use std::collections::HashMap;
 
 #[test]
 fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item() {
-    for (tool, batched) in [
-        (CollabAgentTool::SpawnAgent, false),
-        (CollabAgentTool::SendInput, false),
-        (CollabAgentTool::ResumeAgent, false),
-        (CollabAgentTool::SendInput, true),
+    for (tool, batched, lifecycle) in [
+        (CollabAgentTool::SpawnAgent, false, None),
+        (CollabAgentTool::SendInput, false, None),
+        (CollabAgentTool::ResumeAgent, false, None),
+        (CollabAgentTool::SendInput, true, None),
+        (
+            CollabAgentTool::CloseAgent,
+            false,
+            Some(CollabAgentLifecycleAction::Detach),
+        ),
+        (
+            CollabAgentTool::ResumeAgent,
+            false,
+            Some(CollabAgentLifecycleAction::Reattach),
+        ),
     ] {
         let parent = ThreadId::new();
         let child = ThreadId::new();
         let mut item = CollabAgentToolCallItem {
+            lifecycle: lifecycle.map(|action| CollabAgentLifecycle {
+                action,
+                root_thread_id: parent,
+            }),
             input_batch: batched.then(|| CollabAgentInputBatch {
                 flags: "zf".to_string(),
                 sender_thread_id: Some(parent),
@@ -46,7 +62,15 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
             deadline_at_ms: None,
             sender_thread_id: parent,
             receiver_thread_ids: vec![child],
-            receiver_agents: if matches!(tool, CollabAgentTool::SpawnAgent) {
+            receiver_agents: if lifecycle.is_some() {
+                vec![codex_protocol::protocol::CollabAgentRef {
+                    thread_id: child,
+                    agent_ref: Some("2".into()),
+                    task_path: Some("/root/worker".into()),
+                    agent_nickname: Some("Worker".into()),
+                    agent_role: None,
+                }]
+            } else if matches!(tool, CollabAgentTool::SpawnAgent) {
                 vec![CollabAgentRef {
                     thread_id: child,
                     agent_ref: None,
@@ -57,7 +81,11 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
             } else {
                 Vec::new()
             },
-            prompt: (!matches!(tool, CollabAgentTool::ResumeAgent)).then(|| "task".to_string()),
+            prompt: matches!(
+                tool,
+                CollabAgentTool::SpawnAgent | CollabAgentTool::SendInput
+            )
+            .then(|| "task".to_string()),
             model: matches!(tool, CollabAgentTool::SpawnAgent).then(|| "test-model".to_string()),
             reasoning_effort: matches!(tool, CollabAgentTool::SpawnAgent)
                 .then_some(ReasoningEffort::High),
@@ -176,12 +204,35 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
                 completed_at_ms: Some(2),
             }]
         );
+        if item.lifecycle.is_some() {
+            item.status = CollabAgentToolCallStatus::Failed;
+            item.agents_states = HashMap::from([(child, AgentStatus::PendingInit)]);
+            completed.item = TurnItem::CollabAgentToolCall(item.clone());
+            builder.handle_event(&EventMsg::ItemCompleted(completed.clone()));
+            for mirror in EventMsg::ItemCompleted(completed.clone())
+                .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+            {
+                builder.handle_event(&mirror);
+            }
+            assert_eq!(
+                builder
+                    .turn_snapshot("parent-turn")
+                    .expect("parent turn")
+                    .items,
+                vec![ThreadItem {
+                    payload: ThreadItemPayload::from(TurnItem::CollabAgentToolCall(item.clone())),
+                    started_at_ms: Some(1),
+                    completed_at_ms: Some(2),
+                }],
+            );
+        }
         item.observe_commentary = None;
         item.wake_on_completion = None;
         item.target_messages = None;
         item.queue_input = None;
         item.mailbox_input = None;
         item.input_batch = None;
+        item.lifecycle = None;
         completed.item = TurnItem::CollabAgentToolCall(item.clone());
         builder.handle_event(&EventMsg::ItemCompleted(completed));
         assert_eq!(
