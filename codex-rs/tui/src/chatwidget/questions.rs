@@ -2,6 +2,7 @@
 //! Only an accepted local send or queue operation consumes an asynchronous answer.
 
 use super::*;
+use crate::bottom_pane::QuestionOrigin;
 use crate::bottom_pane::QuestionSubmission;
 use codex_protocol::items::AsyncUserInputQuestion;
 
@@ -21,8 +22,31 @@ impl ChatWidget {
         message_id: &str,
         questions: &[AsyncUserInputQuestion],
     ) {
+        if self.thread_id.is_some_and(|requester| {
+            self.bottom_pane.questions.as_deref().is_some_and(|editor| {
+                editor.has_agent_question(self.question_backend_id, requester, message_id)
+            })
+        }) {
+            return;
+        }
+        self.add_async_questions_from(message_id, questions, QuestionOrigin::Local);
+    }
+
+    pub(super) fn add_async_questions_from(
+        &mut self,
+        message_id: &str,
+        questions: &[AsyncUserInputQuestion],
+        origin: QuestionOrigin,
+    ) {
         let previous_count = self.bottom_pane.question_editor().unanswered_count();
-        self.bottom_pane.push_async_questions(message_id, questions);
+        match origin {
+            QuestionOrigin::Local => self.bottom_pane.push_async_questions(message_id, questions),
+            origin @ QuestionOrigin::Agent(_) => {
+                self.bottom_pane
+                    .question_editor()
+                    .append_from(message_id, questions, origin);
+            }
+        }
         let added_count = self.bottom_pane.question_editor().unanswered_count() - previous_count;
         if added_count > 0 {
             let title = match questions {
@@ -123,6 +147,12 @@ impl ChatWidget {
                 let (text, queued) = match submission {
                     QuestionSubmission::Submit(text) => (text, false),
                     QuestionSubmission::Queue(text) => (text, true),
+                    QuestionSubmission::Agent(answer) => {
+                        self.app_event_tx
+                            .send(AppEvent::AnswerAgentQuestion(answer));
+                        self.request_redraw();
+                        return true;
+                    }
                 };
                 if self.external_writer_view {
                     self.add_error_message("This thread is open elsewhere. Close it there and retry resume to continue.".to_string());

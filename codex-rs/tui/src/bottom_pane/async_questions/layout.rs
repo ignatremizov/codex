@@ -27,13 +27,13 @@ impl AsyncQuestions {
             && question_lines.len()
                 + usize::from(self.options_required_height(area.width))
                 + usize::from(footer_pref)
-                + usize::from(self.unanswered_count() > 1)
+                + usize::from(self.shows_progress())
                 + usize::from(DESIRED_SPACERS_BETWEEN_SECTIONS)
                 > usize::from(area.height)
         {
             footer_pref = self.footer_lines(area.width, Some(self.option_tip())).len() as u16;
         }
-        let progress_pref = u16::from(self.unanswered_count() > 1);
+        let progress_pref = u16::from(self.shows_progress());
         let min_notes = u16::from(!has_options).min(area.height);
         let available = area.height.saturating_sub(min_notes);
         let question_height = question_lines.len().min(usize::from(

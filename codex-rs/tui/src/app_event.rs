@@ -444,6 +444,9 @@ pub(crate) enum AppEvent {
         response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,
     },
 
+    /// Answer the agent bound to a question, independently of the selected conversation.
+    AnswerAgentQuestion(crate::agent_question::AgentQuestionAnswer),
+
     /// Queue a genuine user-authored prompt for the target's next idle boundary.
     QueueAgentPrompt {
         source_thread_id: ThreadId,

@@ -528,6 +528,16 @@ This does not override other role restrictions or the child's recorded model rou
 
 ## User-controlled agent dispatch
 
+Spawned subagents may emit asynchronous user questions with `delivery: "async"` and
+`questions` on an `agentMessage` item. Clients must bind the reply destination to
+the enclosing item notification's `threadId`, alongside its stable question identity and
+backend connection authority. Question numbers are local to a thread. Neither the
+currently selected conversation nor model-authored question text selects the
+recipient. The TUI displays live subagent questions and submits their answers
+through the existing `agent/control` prompt or queued-prompt operation, with the
+captured source and requester UUIDs and no additional response subscription.
+The wire envelope is unchanged. See [asynchronous questions](../../docs/tui-request-user-input.md#asynchronous-questions).
+
 The experimental `agentAlias/list` method lists durable aliases in a root-scoped namespace, including canonical thread IDs, refs, nicknames, and lifecycle state. The experimental `agent/control` method authorizes user-authored spawn, prompt, reserved/queued prompt, resume, interrupt, close, and observation operations from a source thread. Responses identify the canonical target and admitted submission where applicable; post-admission or audit persistence warnings do not turn committed work into retryable failures. Omitted response handling is passive, and close response handling replays according to the supplied policy. Input outcomes distinguish `queued`, `admitted`, and `unknown` work; unknown inputs must be reconciled from canonical history before retrying.
 
 The `spawn` action accepts optional `model` and `reasoningEffort` overrides. Explicit values take precedence over role settings and configured subagent defaults; omitted values follow the normal child configuration resolution. The durable `userAgentControl` item records the requested model and reasoning values separately from the canonical target and outcome. Existing history-fork and lifecycle authorization rules still apply.

@@ -30,6 +30,8 @@ impl App {
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        self.chat_widget
+            .set_question_backend(app_server.backend_id());
         let from_agents_overview = matches!(event, AppEvent::ForkAgentsOverviewThreadReady { .. });
         let event = if let AppEvent::ForkAgentsOverviewThreadReady { thread_id } = event {
             if self.current_displayed_thread_id() != Some(thread_id)
@@ -101,6 +103,7 @@ impl App {
                     | AppEvent::FatalExitRequest(_)
                     | AppEvent::LoadAgentMailboxInventory { .. }
                     | AppEvent::AgentMailboxInventoryLoaded { .. }
+                    | AppEvent::AnswerAgentQuestion(_)
             )
         {
             return Ok(AppRunControl::Continue);
@@ -3354,6 +3357,9 @@ impl App {
             }
             AppEvent::SubmitUserMailbox(submission) => {
                 self.submit_user_mailbox(app_server, submission).await;
+            }
+            AppEvent::AnswerAgentQuestion(answer) => {
+                self.answer_agent_question(app_server, answer).await;
             }
             AppEvent::QueueAgentPrompt {
                 source_thread_id,

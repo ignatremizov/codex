@@ -6,14 +6,12 @@ use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::SubAgentSource;
 use std::time::Duration;
 
-async fn read_mcp_subagent_parent_thread_id(
+async fn read_subagent_parent_thread_id(
     app_server_client: &AppServerSession,
     thread_id: ThreadId,
 ) -> Option<ThreadId> {
@@ -45,16 +43,7 @@ async fn read_mcp_subagent_parent_thread_id(
     })
     .await
     .ok()??;
-    subagent_parent(&response.thread.source)
-}
-
-fn subagent_parent(source: &SessionSource) -> Option<ThreadId> {
-    match source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        }) => Some(*parent_thread_id),
-        _ => None,
-    }
+    crate::app_server_session::thread_parent_thread_id(&response.thread)
 }
 
 impl App {
@@ -66,15 +55,34 @@ impl App {
     }
 
     pub(super) async fn owns_untracked_notification(
-        &self,
+        &mut self,
         app_server_client: &AppServerSession,
         thread_id: ThreadId,
         notification: &ServerNotification,
     ) -> bool {
         let parent_thread_id = match notification {
-            ServerNotification::ThreadStarted(started) => subagent_parent(&started.thread.source),
+            ServerNotification::ThreadStarted(started) => {
+                crate::app_server_session::thread_parent_thread_id(&started.thread)
+            }
             ServerNotification::McpServerStatusUpdated(_) => {
-                read_mcp_subagent_parent_thread_id(app_server_client, thread_id).await
+                read_subagent_parent_thread_id(app_server_client, thread_id).await
+            }
+            ServerNotification::ItemCompleted(_)
+                if super::agent_questions::is_native_async_question(notification) =>
+            {
+                // A fast child can ask before its parent's spawn result reaches this client.
+                let parent = read_subagent_parent_thread_id(app_server_client, thread_id).await;
+                if let Some(parent) = parent.filter(|parent| self.owns_thread_for_routing(*parent))
+                {
+                    self.agent_navigation.mark_subagent(thread_id);
+                    self.agent_navigation
+                        .set_parent_thread_id(thread_id, Some(parent));
+                    self.agent_navigation.upsert(
+                        thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                        /*is_closed*/ false,
+                    );
+                }
+                parent
             }
             _ => None,
         };

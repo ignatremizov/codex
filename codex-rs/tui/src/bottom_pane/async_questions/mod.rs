@@ -1,7 +1,9 @@
 //! Inline editing for asynchronous questions. Legacy request_user_input keeps its own overlay.
 //! Local submissions and committed desktop replies remove questions; arrival never steals focus.
-//! Live turn completion recovers unsent typed drafts before removing pending questions.
+//! Live turn completion recovers local answer drafts; bound agent questions follow the view.
 
+use crate::agent_question::AgentQuestionAnswer;
+use crate::agent_question::AgentQuestionBinding;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::ChatComposer;
@@ -26,6 +28,7 @@ use std::time::Duration;
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 
+mod agent;
 mod input;
 mod layout;
 mod render;
@@ -39,6 +42,8 @@ pub(super) const DESIRED_SPACERS_BETWEEN_SECTIONS: u16 = 2;
 struct PendingQuestion {
     message_id: String,
     question_id: String,
+    origin: QuestionOrigin,
+    submission_pending: bool,
     question: AsyncUserInputQuestion,
     options_state: ScrollState,
     draft: ComposerDraft,
@@ -58,6 +63,26 @@ pub(crate) struct QuestionState {
 pub(crate) enum QuestionSubmission {
     Submit(String),
     Queue(String),
+    Agent(AgentQuestionAnswer),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum QuestionOrigin {
+    Local,
+    Agent(AgentQuestionBinding),
+}
+
+impl QuestionOrigin {
+    fn qualify(&self, id: &str) -> String {
+        match self {
+            Self::Local => id.to_string(),
+            Self::Agent(binding) => {
+                let backend = binding.backend_id;
+                let thread = binding.requester_thread_id;
+                format!("agent:{backend:?}:{thread}:{id}")
+            }
+        }
+    }
 }
 
 pub(crate) struct AsyncQuestions {
@@ -124,7 +149,19 @@ impl AsyncQuestions {
     pub(super) fn progress_prefix_text(&self) -> String {
         let current = self.state.current_idx + 1;
         let total = self.unanswered_count();
-        format!("{current} of {total}")
+        match self.current_answer().map(|answer| &answer.origin) {
+            Some(QuestionOrigin::Agent(binding)) => {
+                format!("{current} of {total} · {}", binding.requester_label)
+            }
+            Some(QuestionOrigin::Local) | None => format!("{current} of {total}"),
+        }
+    }
+
+    pub(super) fn shows_progress(&self) -> bool {
+        self.unanswered_count() > 1
+            || self
+                .current_answer()
+                .is_some_and(|answer| matches!(answer.origin, QuestionOrigin::Agent(_)))
     }
 
     fn options(&self) -> &[String] {

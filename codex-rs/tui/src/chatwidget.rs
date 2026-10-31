@@ -287,6 +287,7 @@ use self::ide_context::IdeContextState;
 mod input_queue;
 mod reconnect;
 use self::input_queue::InputQueueState;
+mod agent_questions;
 mod dictation;
 mod image_submission;
 mod input_flow;
@@ -733,6 +734,8 @@ pub(crate) struct ChatWidget {
     permission_shortcut_pending: bool,
     // Pending notification to show when unfocused on next Draw
     pub(crate) pending_notification: Option<Notification>,
+    /// Logical owner of local question replay, independent of retained agent-question bindings.
+    question_backend_id: Option<crate::backend_id::BackendId>,
     /// When `Some`, the user has pressed a quit shortcut and the second press
     /// must occur before `quit_shortcut_expires_at`.
     quit_shortcut_expires_at: Option<Instant>,

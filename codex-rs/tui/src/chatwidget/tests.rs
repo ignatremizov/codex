@@ -358,6 +358,8 @@ mod question_turn_end_tests;
 #[path = "tests/list_spacing_tests.rs"]
 mod list_spacing_tests;
 
+#[path = "tests/agent_questions_tests.rs"]
+mod agent_questions_tests;
 #[path = "tests/mailbox_read_tests.rs"]
 mod mailbox_read_tests;
 #[path = "tests/question_notifications_tests.rs"]

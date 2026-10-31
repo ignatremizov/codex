@@ -118,6 +118,8 @@ From Main, `resume_agent` or `/agent resume <uuid>` reattaches the idle independ
 
 Other TUIs viewing a moved branch preserve their drafts and ask the user to resume under its current root. A successful canonical writer attachment completes that recovery; a read-only attachment keeps the submission guard.
 
+Answers to live subagent `request_user_input_async` questions use the same user-authored agent admission path. Each question retains its server, source authority and requesting UUID across TUI selection changes, so its answer reaches the requesting agent without changing focus or entering the selected conversation's input queue. The question pane labels the requester, keeps answer drafts through unrelated turns, and reconciles accepted or externally committed replies by requester and question identity. See [asynchronous questions](tui-request-user-input.md#asynchronous-questions).
+
 Selectors accept compact unprefixed forms and explicit namespaces:
 
 ```text
