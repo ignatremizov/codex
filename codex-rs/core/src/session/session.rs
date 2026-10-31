@@ -217,6 +217,8 @@ pub(crate) struct SessionConfiguration {
     pub(super) session_source: SessionSource,
     /// Whether native lineage or the trusted host restricts this session's root-only capabilities.
     pub(super) root_capabilities_restricted: bool,
+    /// Explicit host restriction remains distinct when native children gain a capability.
+    pub(super) host_root_capabilities_restricted: bool,
     /// Persisted thread history contract selected when this thread was created.
     pub(super) history_mode: ThreadHistoryMode,
     /// Immediate history source copied into this thread, when this thread was forked.

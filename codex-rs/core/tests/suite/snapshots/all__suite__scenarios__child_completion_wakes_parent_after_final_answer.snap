@@ -17,10 +17,11 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=6ee48f4abc1d6d55):
-        - namespace/functions; hash=b5854d96c7215132
+00:additional_tools/developer (3; hash=f64547b7447c7ca0):
+        - namespace/functions; hash=5aab52be135cc757
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async
@@ -56,11 +57,13 @@ Settings:
 ## Window 2 (after request 3: input diverged at item 00)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=f9f89e18895ef435):
-        - namespace/functions; hash=a950a75e5cf35b7a
+00:additional_tools/developer (3; hash=9319a8e2c003f795):
+        - namespace/functions; hash=c381926d16534390
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
+          - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
         - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=47888e937f34385c

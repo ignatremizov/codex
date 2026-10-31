@@ -373,6 +373,8 @@ pub struct TurnContext {
     pub(crate) provider: SharedModelProvider,
     pub(crate) session_source: SessionSource,
     pub(crate) root_capabilities_restricted: bool,
+    /// Captured once at startup; native lineage cannot override an explicit host restriction.
+    pub(crate) host_root_capabilities_restricted: bool,
     pub(crate) history_mode: ThreadHistoryMode,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) originator: String,
@@ -471,6 +473,7 @@ impl TurnContext {
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
             root_capabilities_restricted: self.root_capabilities_restricted,
+            host_root_capabilities_restricted: self.host_root_capabilities_restricted,
             history_mode: self.history_mode,
             parent_thread_id: self.parent_thread_id,
             originator: self.originator.clone(),
@@ -913,6 +916,7 @@ impl TurnContext {
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
             root_capabilities_restricted: self.root_capabilities_restricted,
+            host_root_capabilities_restricted: self.host_root_capabilities_restricted,
             history_mode: self.history_mode,
             parent_thread_id: self.parent_thread_id,
             originator: self.originator.clone(),
@@ -1206,6 +1210,8 @@ impl Session {
             provider,
             session_source,
             root_capabilities_restricted: session_configuration.root_capabilities_restricted,
+            host_root_capabilities_restricted: session_configuration
+                .host_root_capabilities_restricted,
             history_mode: session_configuration.history_mode,
             parent_thread_id: session_configuration.parent_thread_id,
             originator: session_configuration.originator.clone(),

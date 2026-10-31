@@ -34,10 +34,15 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use test_case::test_case;
 
+#[path = "async_subagent_questions_tests.rs"]
+mod async_subagent_questions_tests;
+
 enum ThreadKind {
     Root,
     NativeChild,
+    NativeSpawn,
     HostRestricted,
+    HostRestrictedSpawn,
 }
 
 #[test_case(ThreadKind::Root, None, true, false; "root_without_capability")]
@@ -47,6 +52,10 @@ enum ThreadKind {
 #[test_case(ThreadKind::Root, Some("request_user_input_async"), false, false; "current_capability_disabled")]
 #[test_case(ThreadKind::NativeChild, Some("request_user_input_async"), true, false; "subagent")]
 #[test_case(ThreadKind::HostRestricted, Some("request_user_input_async"), true, false; "host_restricted")]
+#[test_case(ThreadKind::NativeSpawn, Some("request_user_input_async"), true, true; "native_spawn_requester_questions")]
+#[test_case(ThreadKind::NativeSpawn, Some("request_user_input_async"), false, false; "native_spawn_user_disabled")]
+#[test_case(ThreadKind::NativeSpawn, None, true, false; "native_spawn_missing_model_capability")]
+#[test_case(ThreadKind::HostRestrictedSpawn, Some("request_user_input_async"), true, false; "host_restriction_survives_spawn_lineage")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_question_registration_respects_user_input_setting(
     thread_kind: ThreadKind,
@@ -80,12 +89,24 @@ async fn async_question_registration_respects_user_input_setting(
         ThreadKind::Root => SessionSource::Exec,
         ThreadKind::NativeChild => SessionSource::SubAgent(SubAgentSource::Other("test".into())),
         ThreadKind::HostRestricted => SessionSource::Custom("host".into()),
+        ThreadKind::NativeSpawn | ThreadKind::HostRestrictedSpawn => {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: test.session_configured.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })
+        }
     };
     let mut options = StartThreadOptions {
         session_source: Some(session_source),
-        ..StartThreadOptions::new(test.config.clone())
+        ..test.start_thread_options().await
     };
-    if matches!(thread_kind, ThreadKind::HostRestricted) {
+    if matches!(
+        thread_kind,
+        ThreadKind::HostRestricted | ThreadKind::HostRestrictedSpawn
+    ) {
         options
             .thread_extension_init
             .insert(RestrictRootCapabilities);

@@ -25,6 +25,8 @@ use std::sync::Arc;
 /// Embeddings can read it during extension startup and MCP projection to apply their own
 /// root-only restrictions. Session attribution, agent lineage and the thread's permission
 /// profile come from their usual startup inputs. Native subagents are always restricted.
+/// Requester-bound asynchronous questions are available to ordinary spawned children, but
+/// this explicit host marker restricts those too; Core retains its provenance separately.
 ///
 /// For agent forks, hosts must also supply history with native agent-fork provenance.
 /// This marks copied messages as inherited and excludes the source's Guardian checkpoints.

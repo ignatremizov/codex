@@ -1052,10 +1052,11 @@ impl Session {
             &model_info,
         );
         let storage_originator = AuthStorageOriginator::from_client_name(&originator);
-        let root_capabilities_restricted = session_source.is_non_root_agent()
-            || thread_extension_init
-                .get::<RestrictRootCapabilities>()
-                .is_some();
+        let host_root_capabilities_restricted = thread_extension_init
+            .get::<RestrictRootCapabilities>()
+            .is_some();
+        let root_capabilities_restricted =
+            session_source.is_non_root_agent() || host_root_capabilities_restricted;
         let enable_full_access_form_input = !root_capabilities_restricted
             && matches!(thread_source.as_ref(), Some(ThreadSource::User))
             && client_mcp_extensions.contains(OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID);
@@ -1098,6 +1099,7 @@ impl Session {
             trusted_guardian_reviewer,
             session_source,
             root_capabilities_restricted,
+            host_root_capabilities_restricted,
             history_mode,
             forked_from_thread_id,
             parent_thread_id,
