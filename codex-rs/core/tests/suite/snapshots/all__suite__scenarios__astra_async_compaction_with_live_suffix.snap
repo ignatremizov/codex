@@ -1,16 +1,17 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 2584
+assertion_line: 3158
 expression: "context_snapshot::format_context_snapshot(\"Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.
 
 ## Window 1
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=9e075cc611be6070):
-        - namespace/functions; hash=b394d5b66480be7a
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async
@@ -44,10 +45,11 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
 
 ## Window 2 (after request 2: input diverged at item 09)
 -- request 3 (request) --
-00:additional_tools/developer (3; hash=9e075cc611be6070):
-        - namespace/functions; hash=b394d5b66480be7a
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async
@@ -83,10 +85,11 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
 
 ## Window 3 (after request 3: input diverged at item 02)
 -- request 4 (request) --
-00:additional_tools/developer (3; hash=9e075cc611be6070):
-        - namespace/functions; hash=b394d5b66480be7a
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async

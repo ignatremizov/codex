@@ -17,10 +17,11 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=cff618548de18d64):
-        - namespace/functions; hash=d77824d68b80fc09
+00:additional_tools/developer (3; hash=de9e55ed02f6c5a4):
+        - namespace/functions; hash=5538f34cdc3907b1
           - function/exec_command
           - function/write_stdin
+          - function/compact
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
@@ -57,9 +58,10 @@ Settings: relative to window 1
   tools (1; hash=436fd2c773918985):
     - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=13678fcbfd9c8029):
-        - namespace/functions; hash=0c23b03109fa5906
+00:additional_tools/developer (2; hash=7a37411c031c4361):
+        - namespace/functions; hash=dcfa3b83dcde5f5a
           - function/update_plan
+          - function/compact
           - function/request_user_input
           - custom/apply_patch
           - function/view_image

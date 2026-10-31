@@ -156,7 +156,7 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(
                     next_step,
                     &mut client_session,
                     world_state,
-                    crate::compact_remote_v2::AutoCompactRun {
+                    crate::session::inline_compaction::InlineCompactRun {
                         reason: CompactionReason::ContextLimit,
                         phase,
                         cancellation: &CancellationToken::new(),

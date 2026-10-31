@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
-assertion_line: 331
+assertion_line: 612
 expression: "context_snapshot::format_request_history_snapshot(scenario, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: MCP refreshes change live authorization and namespace instructions while the first advertised non-Apps declarations stay frozen. Catalog overrides apply to resource-tool removal and restoration; unchanged turns do not repeat notices.
@@ -17,14 +17,15 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=1f13f84f3f35eb58):
-        - namespace/functions; hash=b2c3ac2a0699f995
+00:additional_tools/developer (3; hash=7ec4ba5fd2c668a1):
+        - namespace/functions; hash=546c2add327f0e38
           - function/exec_command
           - function/write_stdin
           - function/list_mcp_resources
           - function/list_mcp_resource_templates
           - function/read_mcp_resource
           - function/update_plan
+          - function/compact
           - function/request_user_input
           - custom/apply_patch
           - function/view_image

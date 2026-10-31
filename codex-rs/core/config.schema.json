@@ -656,6 +656,17 @@
       },
       "type": "object"
     },
+    "CompactToolConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Controls the model-facing tool; user-requested compaction remains available.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ComputerUseConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -4883,6 +4894,9 @@
     "ToolsToml": {
       "additionalProperties": false,
       "properties": {
+        "compact": {
+          "$ref": "#/definitions/CompactToolConfig"
+        },
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
         },

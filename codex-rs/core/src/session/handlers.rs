@@ -18,6 +18,7 @@ use crate::session::command_approval::QueuedSubmission;
 use crate::session::session::Session;
 use crate::session::thread_settings;
 use crate::session::turn_input;
+use crate::state::TaskKind;
 
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
@@ -312,7 +313,35 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 }
 
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
-    // Stop the old turn before the compact task picks up the next turn's environments.
+    let unsupported_turn = {
+        let active = sess.active_turn.lock().await;
+        match active
+            .as_ref()
+            .and_then(|active| active.task.as_ref())
+            .filter(|task| !task.cancellation_token.is_cancelled())
+        {
+            Some(task) => match task.kind {
+                TaskKind::Regular => {
+                    super::inline_compaction::request(&task.turn_context);
+                    return;
+                }
+                TaskKind::Compact => return,
+                TaskKind::Review => Some(Arc::clone(&task.turn_context)),
+            },
+            None => None,
+        }
+    };
+    if let Some(turn_context) = unsupported_turn {
+        sess.send_event(
+            &turn_context,
+            EventMsg::Warning(WarningEvent {
+                message: "Wait for the review to finish before compacting.".to_string(),
+            }),
+        )
+        .await;
+        return;
+    }
+    // A completed or interrupted task must finish cleanup before standalone compaction starts.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())

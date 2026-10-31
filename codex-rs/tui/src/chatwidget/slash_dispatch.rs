@@ -378,6 +378,14 @@ impl ChatWidget {
                     self.add_error_message("This thread is open elsewhere. Close it there and retry resume to continue.".to_string());
                     return;
                 }
+                if self.bottom_pane.is_task_running() {
+                    self.app_event_tx.compact();
+                    self.add_info_message(
+                        "Compaction requested. Work will continue afterward.".to_string(),
+                        /*hint*/ None,
+                    );
+                    return;
+                }
                 self.clear_token_usage();
                 if !self.bottom_pane.is_task_running() {
                     self.bottom_pane.set_task_running(/*running*/ true);

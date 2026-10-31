@@ -7,10 +7,11 @@ Scenario: A worker inherits the parent prefix with only the classified developer
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=6016d0d6ac8a2b05):
-        - namespace/functions; hash=c87126d176fd0871
+00:additional_tools/developer (2; hash=680fd3366725685c):
+        - namespace/functions; hash=5d1725624851d789
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
         - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
           - function/followup_task
@@ -49,10 +50,11 @@ Scenario: A worker inherits the parent prefix with only the classified developer
 
 ## Window 2 (after request 3: input diverged at item 02)
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=6016d0d6ac8a2b05):
-        - namespace/functions; hash=c87126d176fd0871
+00:additional_tools/developer (2; hash=680fd3366725685c):
+        - namespace/functions; hash=5d1725624851d789
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
         - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
           - function/followup_task

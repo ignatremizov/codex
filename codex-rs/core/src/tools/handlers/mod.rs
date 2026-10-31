@@ -1,5 +1,6 @@
 pub(crate) mod apply_patch;
 pub(crate) mod apply_patch_spec;
+mod compact;
 mod current_time;
 mod dynamic;
 pub(crate) mod extension_tools;
@@ -61,6 +62,7 @@ pub(crate) use crate::tools::code_mode::CodeModeWaitHandler;
 pub use apply_patch::ApplyPatchHandler;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+pub(crate) use compact::CompactHandler;
 pub use current_time::CurrentTimeHandler;
 pub use dynamic::DynamicToolHandler;
 pub use get_context_remaining::GetContextRemainingHandler;

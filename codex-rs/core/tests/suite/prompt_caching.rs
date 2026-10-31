@@ -285,6 +285,7 @@ async fn prompt_tools_are_consistent_across_requests(
         expected_tools_names.push("update_plan");
     }
     expected_tools_names.extend([
+        "compact",
         "request_user_input",
         "apply_patch",
         "view_image",

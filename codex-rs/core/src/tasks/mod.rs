@@ -944,6 +944,12 @@ impl Session {
                 return TaskFinishAction::Finish;
             }
             if can_continue && task.task.supports_pending_input_continuation() {
+                // A /compact accepted after the last sampling boundary still belongs to this
+                // turn. Keep its admission atomic with the final task removal, just like steer.
+                if crate::session::inline_compaction::is_requested(&turn_context) {
+                    task.accepting_pending_input.store(true, Ordering::Release);
+                    return TaskFinishAction::Continue;
+                }
                 let state = active_turn.turn_state.lock().await;
                 if state.accepts_mailbox_delivery_for_current_turn()
                     && state

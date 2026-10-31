@@ -498,6 +498,7 @@ web_search = true
             web_search: None,
             experimental_request_user_input: None,
             update_plan: None,
+            compact: None,
             list_agents: None,
         })
     );
@@ -519,6 +520,7 @@ web_search = false
             web_search: None,
             experimental_request_user_input: None,
             update_plan: None,
+            compact: None,
             list_agents: None,
         })
     );
@@ -539,6 +541,7 @@ fn tools_experimental_request_user_input_defaults_to_enabled() {
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: true }),
             update_plan: None,
+            compact: None,
             list_agents: None,
         })
     );
@@ -560,6 +563,7 @@ enabled = false
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: false }),
             update_plan: None,
+            compact: None,
             list_agents: None,
         })
     );
@@ -576,6 +580,7 @@ async fn load_config_resolves_experimental_request_user_input_enabled() -> std::
                     enabled: false,
                 }),
                 update_plan: None,
+                compact: None,
                 list_agents: None,
             }),
             ..ConfigToml::default()
@@ -694,6 +699,29 @@ async fn load_config_resolves_update_plan_enabled() -> std::io::Result<()> {
 
         assert_eq!(
             config.update_plan_enabled, expected_enabled,
+            "{config_toml}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_resolves_compact_tool_enabled() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    for (config_toml, expected_enabled) in [
+        ("", true),
+        ("[tools.compact]", true),
+        ("[tools.compact]\nenabled = false", false),
+        ("[tools.compact]\nenabled = true", true),
+    ] {
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(config_toml).expect("parse compact tool configuration"),
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+        assert_eq!(
+            config.compact_tool_enabled, expected_enabled,
             "{config_toml}"
         );
     }

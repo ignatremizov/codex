@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 1713
+assertion_line: 1773
 expression: "context_snapshot::format_request_history_snapshot(description, &requests,\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Native tools are unavailable while the V2 runtime and its instructions remain enabled.
@@ -17,10 +17,11 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=a9847accd1b70040):
-        - namespace/functions; hash=b394d5b66480be7a
+00:additional_tools/developer (2; hash=fbabe037d8998298):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async

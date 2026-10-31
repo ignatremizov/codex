@@ -19,12 +19,13 @@ Settings:
   tools (1; hash=436fd2c773918985):
     - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=93e90dba1d135a76):
-        - namespace/functions; hash=81fd87a97f816c17
+00:additional_tools/developer (2; hash=66ad448f24f4f2de):
+        - namespace/functions; hash=07a240d2fdb19b29
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
+          - function/compact
           - function/request_user_input
           - function/new_context
           - function/get_context_remaining
@@ -58,12 +59,13 @@ Settings:
 Settings: relative to window 1
   tools: <removed>
 -- request 3 (turn) --
-00:additional_tools/developer (3; hash=8c69149575aed596):
-        - namespace/functions; hash=81fd87a97f816c17
+00:additional_tools/developer (3; hash=2334147cb35de18e):
+        - namespace/functions; hash=07a240d2fdb19b29
           - custom/exec
           - function/wait
           - function/exec_command
           - function/write_stdin
+          - function/compact
           - function/request_user_input
           - function/new_context
           - function/get_context_remaining

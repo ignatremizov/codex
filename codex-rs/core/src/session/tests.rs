@@ -5,6 +5,9 @@ mod notification_tests;
 #[path = "rollback_tests.rs"]
 mod rollback_tests;
 
+#[path = "requested_compaction_tests.rs"]
+mod requested_compaction_tests;
+
 use super::mcp_refresh::McpRefresh;
 #[path = "turn_start_mcp_tests.rs"]
 mod turn_start_mcp_tests;
@@ -13071,7 +13074,7 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
                 .await
                 .unwrap(),
         ),
-        crate::compact_remote_v2::AutoCompactRun {
+        crate::session::inline_compaction::InlineCompactRun {
             reason: CompactionReason::ModelDownshift,
             phase: CompactionPhase::PreTurn,
             cancellation: &CancellationToken::new(),

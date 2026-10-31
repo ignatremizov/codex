@@ -1,6 +1,6 @@
 ---
 source: app-server/tests/suite/v2/thread_sample.rs
-assertion_line: 362
+assertion_line: 364
 expression: "context_snapshot::format_request_history_snapshot(\"A parent uses high effort with custom instructions, client tools, permission tools, and priority service. A medium-effort sample, prediction fork, and subsequent parent turn preserve the same request context and high request-effort baseline.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: A parent uses high effort with custom instructions, client tools, permission tools, and priority service. A medium-effort sample, prediction fork, and subsequent parent turn preserve the same request context and high request-effort baseline.
@@ -17,11 +17,12 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=db3e958b95ace642):
-        - namespace/functions; hash=1e8db798482ddec8
+00:additional_tools/developer (3; hash=0ddc9660a019b39d):
+        - namespace/functions; hash=252931c332b355fd
           - function/exec_command
           - function/write_stdin
           - function/update_plan
+          - function/compact
           - function/request_user_input
           - function/request_permissions
           - function/view_image
@@ -83,11 +84,12 @@ Settings:
 ## Window 2 (after request 2: input repeated)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (3; hash=db3e958b95ace642):
-        - namespace/functions; hash=1e8db798482ddec8
+00:additional_tools/developer (3; hash=0ddc9660a019b39d):
+        - namespace/functions; hash=252931c332b355fd
           - function/exec_command
           - function/write_stdin
           - function/update_plan
+          - function/compact
           - function/request_user_input
           - function/request_permissions
           - function/view_image
@@ -148,11 +150,12 @@ Settings: same as window 1
 ## Window 3 (after request 3: input repeated)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=db3e958b95ace642):
-        - namespace/functions; hash=1e8db798482ddec8
+00:additional_tools/developer (3; hash=0ddc9660a019b39d):
+        - namespace/functions; hash=252931c332b355fd
           - function/exec_command
           - function/write_stdin
           - function/update_plan
+          - function/compact
           - function/request_user_input
           - function/request_permissions
           - function/view_image

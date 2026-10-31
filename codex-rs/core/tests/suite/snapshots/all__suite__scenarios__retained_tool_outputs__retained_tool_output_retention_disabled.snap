@@ -7,10 +7,11 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=9e075cc611be6070):
-        - namespace/functions; hash=b394d5b66480be7a
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async
@@ -47,10 +48,11 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
 
 ## Window 2 (after request 3: input diverged at item 11)
 -- request 4 (compaction) --
-00:additional_tools/developer (3; hash=9e075cc611be6070):
-        - namespace/functions; hash=b394d5b66480be7a
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async
@@ -87,10 +89,11 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
 
 ## Window 3 (after request 4: input diverged at item 06)
 -- request 5 (turn) --
-00:additional_tools/developer (3; hash=9e075cc611be6070):
-        - namespace/functions; hash=b394d5b66480be7a
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async
