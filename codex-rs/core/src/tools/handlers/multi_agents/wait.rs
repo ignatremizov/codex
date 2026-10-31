@@ -286,6 +286,7 @@ impl Handler {
 
         let (statuses, return_reason) = mailbox::wait_for_outcome(
             &session,
+            &turn.sub_id,
             status_rxs,
             initial_final_statuses,
             deadline,
@@ -465,6 +466,7 @@ pub(crate) struct WaitAgentResult {
 pub(crate) enum WaitReturnReason {
     Mail,
     Completion,
+    Input,
     Timeout,
     Recovery,
 }
