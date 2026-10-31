@@ -778,6 +778,14 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<()>>,
     },
 
+    /// Reserve an idle actor for an explicit ownership handoff without cancelling work.
+    /// Dropping the release sender releases the reservation unless durable shutdown has begun.
+    PrepareOwnershipHandoff {
+        submitted: oneshot::Receiver<()>,
+        reply: oneshot::Sender<CodexResult<()>>,
+        release: oneshot::Receiver<()>,
+    },
+
     /// Apply thread-settings overrides without starting a turn.
     ///
     /// This uses the same submission queue as turn starts so app-server can
@@ -1154,6 +1162,7 @@ impl Op {
             Self::ContinueTurn { .. } => "continue_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
             Self::ShutdownDurably { .. } => "shutdown_durably",
+            Self::PrepareOwnershipHandoff { .. } => "prepare_ownership_handoff",
             Self::ThreadSettings { .. } => "thread_settings",
             Self::TurnSettings { .. } => "turn_settings",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",

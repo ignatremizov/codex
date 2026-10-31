@@ -99,6 +99,109 @@ async fn child_selection_captures_owning_root_and_fences_membership() {
 }
 
 #[tokio::test]
+async fn selected_branch_handoff_leaves_its_root_and_siblings_loaded() {
+    let (_home, config, manager, _store) = fixture().await;
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("root")
+        .thread_id;
+    let selected = child(&manager, &config, root).await;
+    let descendant = child(&manager, &config, selected).await;
+    let sibling = child(&manager, &config, root).await;
+    let mut branch = manager
+        .prepare_agent_branch_unload(selected)
+        .await
+        .expect("branch");
+    assert_eq!(
+        (branch.root_thread_id(), branch.thread_ids()),
+        (selected, [selected, descendant].as_slice())
+    );
+    let reservations = branch.prepare_idle_handoff().await.expect("idle actors");
+    assert_eq!(
+        branch.shutdown_and_remove().await.expect("unload branch"),
+        vec![selected, descendant]
+    );
+    drop(reservations);
+    drop(branch);
+    let loaded = manager.list_thread_ids().await;
+    assert_eq!(
+        loaded.into_iter().collect::<HashSet<_>>(),
+        HashSet::from([root, sibling])
+    );
+    assert!(
+        manager
+            .get_thread(root)
+            .await
+            .expect("root retained")
+            .ensure_not_unloading()
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn cancelled_idle_preparation_releases_admission_and_can_be_retried() {
+    let (_home, config, manager, _store) = fixture().await;
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root")
+        .thread;
+    let reservation = root.io.prepare_ownership_handoff().await.expect("reserve");
+    assert!(root.ensure_not_unloading().is_err());
+    drop(reservation);
+    tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), async {
+        while root.ensure_not_unloading().is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reservation released");
+    let reservation = root.io.prepare_ownership_handoff().await.expect("retry");
+    root.session.submission_admission.seal_for_unload();
+    drop(reservation);
+    root.shutdown_durably_and_wait().await.expect("shutdown");
+    assert!(root.ensure_not_unloading().is_err());
+}
+
+#[tokio::test]
+async fn failed_idle_handoff_retries_its_durable_drain() {
+    let (_home, config, manager, store) = fixture().await;
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("root")
+        .thread_id;
+    let selected = child(&manager, &config, root).await;
+    let mut branch = manager
+        .prepare_agent_branch_unload(selected)
+        .await
+        .expect("branch");
+    let reservations = branch.prepare_idle_handoff().await.expect("idle");
+    store
+        .fail_next_operation(InMemoryThreadStoreFailure::ThreadShutdown)
+        .await;
+    assert!(branch.shutdown_and_remove().await.is_err());
+    drop(reservations);
+    drop(branch);
+    let mut retry = manager
+        .prepare_agent_branch_unload(selected)
+        .await
+        .expect("retry");
+    let reservations = retry
+        .prepare_idle_handoff()
+        .await
+        .expect("retry acknowledged seal");
+    assert_eq!(
+        retry.shutdown_and_remove().await.expect("drained"),
+        vec![selected]
+    );
+    drop(reservations);
+    drop(retry);
+    assert_eq!(manager.list_thread_ids().await, vec![root]);
+}
+
+#[tokio::test]
 async fn unloaded_parent_does_not_hide_loaded_descendants() {
     let (_home, config, manager, _store) = fixture().await;
     let root = manager

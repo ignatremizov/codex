@@ -1627,7 +1627,8 @@ impl App {
             }
         };
         let resumed_thread_id = resumed.session.thread_id;
-        let retained_input = (self.chat_widget.is_external_writer_view()
+        let recovering = self.history_recovery_required.contains(&resumed_thread_id);
+        let retained_input = ((self.chat_widget.is_external_writer_view() || recovering)
             && self.chat_widget.thread_id() == Some(resumed_thread_id))
         .then(|| self.chat_widget.capture_thread_input_state())
         .flatten();
@@ -1652,7 +1653,39 @@ impl App {
             .await
         {
             Ok(()) => {
-                if let Some(input) = retained_input {
+                if !read_only {
+                    // A successful canonical writer attachment completes explicit recovery.
+                    self.history_recovery_required.remove(&resumed_thread_id);
+                }
+                if recovering && !read_only {
+                    let confirmed =
+                        if let Some(channel) = self.thread_event_channels.get(&resumed_thread_id) {
+                            let store = channel.store.lock().await;
+                            store
+                                .turns
+                                .iter()
+                                .flat_map(|turn| &turn.items)
+                                .filter_map(|item| {
+                                    if let ThreadItem::UserMessage { client_id, .. } = item {
+                                        client_id.clone()
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+                    let retained_input = retained_input.map(|mut input| {
+                        input.recovered_queue = true;
+                        input.reconnect_pending = true;
+                        input.questions = None;
+                        input.pending_thread_settings = None;
+                        input
+                    });
+                    self.chat_widget
+                        .restore_reconnected_input(retained_input, &confirmed);
+                } else if let Some(input) = retained_input {
                     self.chat_widget.restore_thread_input_state(
                         Some(input),
                         ThreadInputStateRestoreMode {

@@ -1345,6 +1345,13 @@ impl ChatWidget {
                     });
                     return;
                 }
+                if let AgentCommand::Detach { selector } = &parsed {
+                    self.app_event_tx.send(AppEvent::DetachAgent {
+                        source_thread_id,
+                        selector: selector.clone(),
+                    });
+                    return;
+                }
                 if let AgentCommand::Close { selector, response } = &parsed {
                     self.app_event_tx.send(AppEvent::CloseAgent {
                         source_thread_id,

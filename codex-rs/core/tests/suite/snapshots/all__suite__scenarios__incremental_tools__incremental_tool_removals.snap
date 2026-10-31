@@ -17,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=5e2064eee8a1425c):
-        - namespace/functions; hash=5bc155b08bed33b8
+00:additional_tools/developer (3; hash=1f13f84f3f35eb58):
+        - namespace/functions; hash=b2c3ac2a0699f995
           - function/exec_command
           - function/write_stdin
           - function/list_mcp_resources
@@ -28,7 +28,7 @@ Settings:
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=4c160a708f68b189
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=915040b2cf2ae70c
           - function/check_mail
           - function/close_agent
           - function/resume_agent

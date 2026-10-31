@@ -18,6 +18,7 @@ fn source_control_audit_is_not_reported_as_the_agents_own_progress() {
 #[test]
 fn batch_status_preview_does_not_claim_live_delivery() {
     let item = ThreadItem::CollabAgentToolCall {
+        lifecycle: None,
         id: "batch".into(),
         tool: CollabAgentTool::SendInput,
         status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
@@ -46,6 +47,63 @@ fn batch_status_preview_does_not_claim_live_delivery() {
         agents_states: Default::default(),
     };
     insta::assert_snapshot!(activity_summary(&item).unwrap(), @"Input batch: 1 receiver results");
+}
+
+#[test]
+fn ownership_status_preview_distinguishes_actions_and_outcomes() {
+    use codex_app_server_protocol::CollabAgentLifecycle;
+    use codex_app_server_protocol::CollabAgentLifecycleAction;
+    use codex_app_server_protocol::CollabAgentToolCallStatus;
+
+    let mut summaries = Vec::new();
+    for action in [
+        CollabAgentLifecycleAction::Detach,
+        CollabAgentLifecycleAction::Reattach,
+    ] {
+        for status in [
+            CollabAgentToolCallStatus::InProgress,
+            CollabAgentToolCallStatus::Completed,
+            CollabAgentToolCallStatus::Failed,
+            CollabAgentToolCallStatus::Interrupted,
+        ] {
+            let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: Some(CollabAgentLifecycle {
+                    action,
+                    root_thread_id: "root".into(),
+                }),
+                id: "ownership".into(),
+                tool: match action {
+                    CollabAgentLifecycleAction::Detach => CollabAgentTool::CloseAgent,
+                    CollabAgentLifecycleAction::Reattach => CollabAgentTool::ResumeAgent,
+                },
+                status,
+                observe_commentary: None,
+                wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
+                mailbox_input: None,
+                input_batch: None,
+                sender_thread_id: "root".into(),
+                receiver_thread_ids: vec!["child".into()],
+                receiver_agents: Vec::new(),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: Default::default(),
+            };
+            summaries.push(activity_summary(&item).expect("ownership summary"));
+        }
+    }
+    insta::assert_snapshot!(summaries.join("\n"), @r"
+    Detaching an agent
+    Detached an agent
+    Failed to detach an agent
+    Detachment interrupted
+    Reattaching an agent
+    Reattached an agent
+    Failed to reattach an agent
+    Reattachment interrupted
+    ");
 }
 
 #[test]

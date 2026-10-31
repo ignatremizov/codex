@@ -72,6 +72,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
             analytics.track_collab_tool_call(
                 turn_id,
                 CollabAgentToolCallItem {
+                    lifecycle: None,
                     observe_commentary: None,
                     wake_on_completion: None,
                     id: call_id,

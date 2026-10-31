@@ -109,6 +109,7 @@ impl LocalAgentControl {
             ),
             None => None,
         };
+        self.prepare_live_root_adoption(thread_id).await?;
         let result = self
             .resume_with_observation(
                 config,
@@ -190,6 +191,7 @@ impl LocalAgentControl {
             ),
             None => None,
         };
+        self.prepare_live_root_adoption(thread_id).await?;
         self.resume_with_observation(
             config,
             thread_id,

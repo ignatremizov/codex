@@ -1103,6 +1103,30 @@ async fn steer_only_requires_active_turn() {
 }
 
 #[tokio::test]
+async fn ownership_seal_keeps_late_trigger_mail_pending_without_starting_work() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let communication = InterAgentCommunication::new(
+        AgentPath::try_from("/root/worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "Accepted completion racing with ownership handoff".into(),
+        /*trigger_turn*/ true,
+    );
+    session.submission_admission.seal_for_unload();
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication.clone().into(), Default::default())
+        .await;
+    assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
+    assert!(session.reserve_pending_work_turn().await.is_none());
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(
+        session.input_queue.drain_mailbox_input_items().await.0,
+        vec![TurnInput::InterAgentCommunication(communication.into())],
+    );
+}
+
+#[tokio::test]
 async fn steer_only_enforces_expected_turn_id() {
     let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
     turn_context

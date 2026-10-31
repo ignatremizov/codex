@@ -15,6 +15,7 @@ use queries::find_agent_alias_by_thread_in_transaction;
 use queries::find_spawn_parent_in_transaction;
 use queries::require_active_parent_alias;
 
+mod detach;
 mod namespace;
 mod queries;
 mod task_paths;
@@ -186,8 +187,12 @@ WHERE session_id = ?
       FROM agent_alias_transfers
       WHERE new_session_id = ?
   )
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_root_detachments WHERE thread_id = ?
+  )
             "#,
         )
+        .bind(&fork_session_id)
         .bind(&fork_session_id)
         .bind(&fork_session_id)
         .bind(&fork_session_id)

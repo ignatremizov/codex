@@ -1,8 +1,11 @@
 use super::*;
+use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::agent_resolver::resolve_resumable_v1_agent_target;
 use crate::agent::control::CloseAgentResponseDisposition;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v1;
+use codex_protocol::CollabAgentLifecycle;
+use codex_protocol::CollabAgentLifecycleAction;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 use std::sync::Arc;
@@ -45,6 +48,11 @@ async fn handle_close_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: CloseAgentArgs = parse_arguments(&arguments)?;
+    if args.detach && args.w.is_some() {
+        return Err(FunctionCallError::RespondToModel(
+            "close_agent detach does not accept response replay flags".into(),
+        ));
+    }
     let requested_response_observation = args.w;
     let response_observation = requested_response_observation.unwrap_or_default();
     let observe_commentary = requested_response_observation.map(|_| false);
@@ -52,7 +60,11 @@ async fn handle_close_agent(
         .and_then(ResponseObservationPolicy::wake_on_completion_item_value);
     let target_messages = requested_response_observation.map(|_| false);
     let queue_input = requested_response_observation.map(ResponseObservationPolicy::queue_input);
-    let agent_id = resolve_resumable_v1_agent_target(&session, &args.target).await?;
+    let agent_id = if args.detach {
+        resolve_controlled_v1_agent_target(&session, &args.target).await?
+    } else {
+        resolve_resumable_v1_agent_target(&session, &args.target).await?
+    };
     if agent_id == session.thread_id {
         return Err(FunctionCallError::RespondToModel(
             "an agent cannot close itself; return your result instead".to_string(),
@@ -69,6 +81,72 @@ async fn handle_close_agent(
         .control(session.session_id());
     let receiver_agent = local_agent_control.get_agent_metadata(agent_id);
     let receiver_agent = receiver_agent.unwrap_or_default();
+    if args.detach {
+        let previous_status = local_agent_control.get_status(agent_id).await;
+        let receiver_agent = local_agent_control
+            .get_agent_presentation_ref(agent_id)
+            .await
+            .map_err(|err| collab_agent_error(agent_id, err))?;
+        let mut item = CollabAgentToolCallItem {
+            lifecycle: Some(CollabAgentLifecycle {
+                action: CollabAgentLifecycleAction::Detach,
+                root_thread_id: ThreadId::from(session.session_id()),
+            }),
+            id: call_id,
+            tool: CollabAgentTool::CloseAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
+            input_batch: None,
+            mailbox_input: None,
+            deadline_at_ms: None,
+            sender_thread_id: session.thread_id,
+            receiver_thread_ids: vec![agent_id],
+            receiver_agents: vec![receiver_agent],
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: Default::default(),
+            completion_presentation_agent_ids: None,
+        };
+        session
+            .emit_turn_item_started(&turn, &TurnItem::CollabAgentToolCall(item.clone()))
+            .await;
+        let result = local_agent_control
+            .detach_agent(session.thread_id, agent_id)
+            .await
+            .map_err(|error| collab_agent_error(agent_id, error));
+        item.status = if result.is_ok() {
+            CollabAgentToolCallStatus::Completed
+        } else {
+            CollabAgentToolCallStatus::Failed
+        };
+        item.agents_states = [(
+            agent_id,
+            if result.is_ok() {
+                AgentStatus::Shutdown
+            } else {
+                previous_status.clone()
+            },
+        )]
+        .into_iter()
+        .collect();
+        session
+            .emit_turn_item_completed(&turn, TurnItem::CollabAgentToolCall(item))
+            .await;
+        let detached = result?;
+        return Ok(CloseAgentResult {
+            previous_status,
+            response_delivery: CloseAgentResponseDisposition::NotApplicable,
+            detached: Some(DetachedAgentResult {
+                thread_id: agent_id,
+                previous_root_thread_id: detached.previous_root_thread_id,
+                unloaded_thread_ids: detached.unloaded_thread_ids,
+            }),
+        });
+    }
     let close_response = local_agent_control
         .prepare_close_agent_response(Arc::clone(&session), MultiAgentVersion::V1, agent_id)
         .await
@@ -77,6 +155,7 @@ async fn handle_close_agent(
         .emit_turn_item_started(
             &turn,
             &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                lifecycle: None,
                 id: call_id.clone(),
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -113,6 +192,7 @@ async fn handle_close_agent(
         .emit_turn_item_completed(
             &turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                lifecycle: None,
                 id: call_id,
                 tool: CollabAgentTool::CloseAgent,
                 status: collab_tool_call_status(&completed_status, Some(agent_id)),
@@ -155,6 +235,7 @@ async fn handle_close_agent(
     Ok(CloseAgentResult {
         previous_status,
         response_delivery,
+        detached: None,
     })
 }
 
@@ -168,6 +249,15 @@ impl CoreToolRuntime for Handler {
 pub(crate) struct CloseAgentResult {
     pub(crate) previous_status: AgentStatus,
     pub(crate) response_delivery: CloseAgentResponseDisposition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detached: Option<DetachedAgentResult>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DetachedAgentResult {
+    thread_id: ThreadId,
+    previous_root_thread_id: ThreadId,
+    unloaded_thread_ids: Vec<ThreadId>,
 }
 
 impl ToolOutput for CloseAgentResult {
@@ -192,6 +282,8 @@ impl ToolOutput for CloseAgentResult {
 struct CloseAgentArgs {
     target: String,
     w: Option<ResponseObservationPolicy>,
+    #[serde(default)]
+    detach: bool,
 }
 
 fn status_for_close_output(

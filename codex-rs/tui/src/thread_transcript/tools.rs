@@ -91,6 +91,7 @@ pub(crate) fn historical_tool_fallback(item: &ThreadItem) -> Option<PlainHistory
             vec![format!("mcp tool: {server}/{tool} · {status}").dim().into()]
         }
         ThreadItem::CollabAgentToolCall {
+            lifecycle: None,
             tool:
                 tool @ (CollabAgentTool::SpawnAgent
                 | CollabAgentTool::SendInput

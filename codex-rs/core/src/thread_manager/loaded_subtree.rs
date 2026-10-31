@@ -20,6 +20,12 @@ pub(crate) enum ThreadRemovalAuthority {
     DurableUnload,
 }
 
+#[derive(Clone, Copy)]
+enum UnloadScope {
+    OwningRoot,
+    SelectedBranch,
+}
+
 /// Owns the existing lifecycle locks and exact runtime instances of one spawn subtree.
 ///
 /// Callers must finish subscription/authorization preflight before invoking shutdown. Dropping
@@ -42,6 +48,41 @@ impl LoadedSubtree {
     /// Loaded runtime IDs captured while membership was fenced, in parent-before-child order.
     pub fn thread_ids(&self) -> &[ThreadId] {
         &self.thread_ids
+    }
+
+    /// Reserve every actor while idle; a failed preparation releases all earlier reservations.
+    pub(super) async fn prepare_idle_handoff(
+        &self,
+    ) -> CodexResult<Vec<tokio::sync::oneshot::Sender<()>>> {
+        let mut reservations = Vec::new();
+        for thread in &self.threads {
+            if thread.session.submission_admission.is_sealed_for_unload() {
+                if thread
+                    .session
+                    .submission_admission
+                    .ownership_handoff_draining
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    // Retry only an acknowledged ownership reservation whose durable drain
+                    // failed. A concurrent ordinary unload or cancellable preparation is busy.
+                    continue;
+                }
+                return Err(CodexErr::InvalidRequest(
+                    "branch is already unloading or changing ownership; retry when idle".into(),
+                ));
+            }
+            if self
+                .state
+                .agent_turn_queue
+                .has_pending_involving(thread.session.thread_id())
+            {
+                return Err(CodexErr::InvalidRequest(
+                    "branch has queued agent work; retry the ownership change when idle".into(),
+                ));
+            }
+            reservations.push(thread.io.prepare_ownership_handoff().await?);
+        }
+        Ok(reservations)
     }
 
     /// Durably stop every captured actor, then remove only those exact runtime instances.
@@ -120,6 +161,23 @@ impl ThreadManager {
     /// Persisted spawn ownership is authoritative; ordinary fork ancestry is not ownership.
     /// Known unloaded subtrees produce an empty capture, permitting lost-acknowledgement retries.
     pub async fn prepare_subtree_unload(&self, thread_id: ThreadId) -> CodexResult<LoadedSubtree> {
+        self.prepare_scoped_unload(thread_id, UnloadScope::OwningRoot)
+            .await
+    }
+
+    pub(crate) async fn prepare_agent_branch_unload(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<LoadedSubtree> {
+        self.prepare_scoped_unload(thread_id, UnloadScope::SelectedBranch)
+            .await
+    }
+
+    async fn prepare_scoped_unload(
+        &self,
+        thread_id: ThreadId,
+        scope: UnloadScope,
+    ) -> CodexResult<LoadedSubtree> {
         let initial_ancestry = self.state.spawn_ancestry(thread_id).await?;
         if self.state.get_thread(thread_id).await.is_err() && initial_ancestry.len() == 1 {
             self.state
@@ -137,9 +195,12 @@ impl ThreadManager {
         }
         loop {
             let ancestry = self.state.spawn_ancestry(thread_id).await?;
-            let root_thread_id = *ancestry
-                .last()
-                .ok_or_else(|| CodexErr::Fatal("thread spawn ancestry is empty".to_string()))?;
+            let root_thread_id = match scope {
+                UnloadScope::OwningRoot => *ancestry
+                    .last()
+                    .ok_or_else(|| CodexErr::Fatal("thread spawn ancestry is empty".to_string()))?,
+                UnloadScope::SelectedBranch => thread_id,
+            };
             let mut guards = vec![
                 self.state
                     .agent_lifecycle_lock(root_thread_id)
@@ -157,8 +218,8 @@ impl ThreadManager {
                 // Persisted source ancestry bridges that gap even without an agent-graph store.
                 for loaded_id in self.state.list_thread_ids().await {
                     let ancestry = self.state.spawn_ancestry(loaded_id).await?;
-                    if ancestry.last() == Some(&root_thread_id) {
-                        discovered.extend(ancestry);
+                    if let Some(index) = ancestry.iter().position(|id| *id == root_thread_id) {
+                        discovered.extend(ancestry.into_iter().take(index + 1));
                     }
                 }
                 let mut additions = Vec::new();
@@ -166,8 +227,8 @@ impl ThreadManager {
                 for descendant in discovered {
                     if !locked.contains(&descendant) && discovered_once.insert(descendant) {
                         let ancestry = self.state.spawn_ancestry(descendant).await?;
-                        if ancestry.last() == Some(&root_thread_id) {
-                            additions.push((ancestry.len(), descendant));
+                        if let Some(depth) = ancestry.iter().position(|id| *id == root_thread_id) {
+                            additions.push((depth, descendant));
                         }
                     }
                 }
@@ -190,8 +251,11 @@ impl ThreadManager {
             // Release and retry rather than unloading a stale ownership snapshot.
             let mut stale = self.state.spawn_ancestry(thread_id).await? != ancestry;
             for descendant in &ordered_ids {
-                stale |=
-                    self.state.spawn_ancestry(*descendant).await?.last() != Some(&root_thread_id);
+                stale |= !self
+                    .state
+                    .spawn_ancestry(*descendant)
+                    .await?
+                    .contains(&root_thread_id);
             }
             if stale {
                 continue;
@@ -282,6 +346,17 @@ impl ThreadManagerState {
                 )));
             }
             ancestry.push(current);
+            // Durable root promotion overrides historical spawn provenance.
+            if self
+                .current_agent_alias(current)
+                .await?
+                .is_some_and(|alias| {
+                    alias.session_id == codex_protocol::SessionId::from(current)
+                        && alias.agent_ref == 1
+                })
+            {
+                return Ok(ancestry);
+            }
             let persisted_parent = match self.agent_graph_store() {
                 Some(store) => store
                     .find_thread_spawn_parent(current)

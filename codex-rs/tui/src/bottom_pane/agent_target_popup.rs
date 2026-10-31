@@ -22,12 +22,13 @@ const AGENT_TARGET_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
     ColumnWidthMode::AutoAllRows,
     /*name_column_width*/ None,
 );
-pub(crate) const AGENT_TARGET_ACTION_CHOICES: [(&str, &str); 5] = [
+pub(crate) const AGENT_TARGET_ACTION_CHOICES: [(&str, &str); 6] = [
     ("queue", "Queue a follow-up for an agent"),
     ("interrupt", "Interrupt an agent"),
     ("close", "Close an agent"),
     ("resume", "Resume or adopt an agent"),
     ("observe", "Change response observation"),
+    ("detach", "Continue this conversation independently"),
 ];
 pub(crate) const AGENT_OBSERVATION_MODE_CHOICES: [(&str, &str); 3] = [
     ("passive", "Deliver the final response without waking"),
@@ -248,6 +249,7 @@ pub(crate) fn agent_target_completion(
         return None;
     }
     let first_end = token_end(first_line, target_start);
+    let first = &first_line[target_start..first_end];
     if cursor <= first_end {
         let range = target_start..first_end;
         return Some(AgentTargetCompletion {
@@ -258,7 +260,6 @@ pub(crate) fn agent_target_completion(
         });
     }
 
-    let first = &first_line[target_start..first_end];
     if first == "new" || is_configured_role_selector(first, targets) {
         return spawn_option_completion(first_line, cursor, first_end);
     }

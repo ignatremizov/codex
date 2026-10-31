@@ -34,7 +34,7 @@ use super::thread_settings;
 pub(super) struct PendingAssistantMessageOrders(pub(super) Mutex<HashMap<String, u64>>);
 
 pub(super) struct CodeModeMessageTasks {
-    tasks: Mutex<TaskTracker>,
+    pub(super) tasks: Mutex<TaskTracker>,
     pending_persistence: Arc<Mutex<Vec<watch::Receiver<()>>>>,
     pub(super) communication_boundary: Arc<Semaphore>,
 }

@@ -3443,6 +3443,10 @@ impl App {
                         .await?;
                 }
             }
+            AppEvent::DetachAgent { source_thread_id, selector } => {
+                // Keep the branch reload future out of the shared dispatcher's stack frame.
+                Box::pin(self.detach_agent_from_command(tui, app_server, source_thread_id, selector)).await?;
+            }
             AppEvent::ResumeAgent {
                 source_thread_id,
                 selector,

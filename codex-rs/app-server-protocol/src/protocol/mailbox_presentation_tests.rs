@@ -23,6 +23,7 @@ use pretty_assertions::assert_eq;
 
 fn send_item() -> CollabAgentToolCallItem {
     CollabAgentToolCallItem {
+        lifecycle: None,
         id: "mail-send".to_string(),
         tool: CollabAgentTool::SendInput,
         status: CollabAgentToolCallStatus::InProgress,

@@ -83,6 +83,7 @@ pub fn item_event_to_server_notification(
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: begin_event.call_id,
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -138,6 +139,7 @@ pub fn item_event_to_server_notification(
                     None => (Vec::new(), Vec::new(), HashMap::new()),
                 };
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: end_event.call_id,
                 tool: CollabAgentTool::SpawnAgent,
                 status,
@@ -165,6 +167,7 @@ pub fn item_event_to_server_notification(
         EventMsg::CollabAgentInteractionBegin(begin_event) => {
             let receiver_thread_ids = vec![begin_event.receiver_thread_id.to_string()];
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: begin_event.call_id,
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -201,6 +204,7 @@ pub fn item_event_to_server_notification(
             let receiver_id = end_event.receiver_thread_id.to_string();
             let received_status = CollabAgentState::from(end_event.status);
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: end_event.call_id,
                 tool: CollabAgentTool::SendInput,
                 status,
@@ -249,6 +253,7 @@ pub fn item_event_to_server_notification(
                 .map(ToString::to_string)
                 .collect();
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: begin_event.call_id,
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -293,6 +298,7 @@ pub fn item_event_to_server_notification(
                 .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
                 .collect();
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: end_event.call_id,
                 tool: CollabAgentTool::Wait,
                 status,
@@ -319,6 +325,7 @@ pub fn item_event_to_server_notification(
         }
         EventMsg::CollabCloseBegin(begin_event) => {
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: begin_event.call_id,
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -360,6 +367,7 @@ pub fn item_event_to_server_notification(
             .into_iter()
             .collect();
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: end_event.call_id,
                 tool: CollabAgentTool::CloseAgent,
                 status,
@@ -386,6 +394,7 @@ pub fn item_event_to_server_notification(
         }
         EventMsg::CollabResumeBegin(begin_event) => {
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: begin_event.call_id,
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -427,6 +436,7 @@ pub fn item_event_to_server_notification(
             .into_iter()
             .collect();
             let item = ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: end_event.call_id,
                 tool: CollabAgentTool::ResumeAgent,
                 status,
@@ -706,6 +716,7 @@ mod tests {
                 started_at_ms: event.started_at_ms,
                 deadline_at_ms: None,
                 item: ThreadItem::CollabAgentToolCall {
+                    lifecycle: None,
                     id: event.call_id,
                     tool: CollabAgentTool::ResumeAgent,
                     status: CollabAgentToolCallStatus::InProgress,
@@ -752,6 +763,7 @@ mod tests {
                 turn_id: "turn-2".to_string(),
                 completed_at_ms: event.completed_at_ms,
                 item: ThreadItem::CollabAgentToolCall {
+                    lifecycle: None,
                     id: event.call_id,
                     tool: CollabAgentTool::ResumeAgent,
                     status: CollabAgentToolCallStatus::Failed,

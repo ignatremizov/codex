@@ -1453,6 +1453,7 @@ async fn unrelated_unified_exec_completion_preserves_collab_wait_countdown() {
             started_at_ms: 0,
             deadline_at_ms: Some(future_deadline_at_ms(60_000)),
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
                 status: AppServerCollabAgentToolCallStatus::InProgress,

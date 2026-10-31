@@ -42,6 +42,8 @@ mod abort_tasks;
 mod additional_context;
 #[path = "agent_control_tests.rs"]
 mod agent_control;
+#[path = "agent_detach_tool_tests.rs"]
+mod agent_detach_tool;
 mod agent_execution;
 mod agent_history_authorization;
 mod agent_message_wake;

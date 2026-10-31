@@ -1,5 +1,6 @@
 pub mod account;
 mod agent_input_attribution;
+mod agent_lifecycle;
 mod agent_path;
 mod agent_subtree_policy;
 pub mod auth;
@@ -17,6 +18,8 @@ mod wake_event_flags;
 pub use agent_input_attribution::AgentInputAttribution;
 pub use agent_input_attribution::AgentInputIdentity;
 pub use agent_input_attribution::AgentTaskPathMapping;
+pub use agent_lifecycle::CollabAgentLifecycle;
+pub use agent_lifecycle::CollabAgentLifecycleAction;
 pub use agent_path::AgentPath;
 pub use agent_subtree_policy::inherited_subtree_policy;
 pub use agent_subtree_policy::is_agent_descendant;

@@ -230,6 +230,7 @@ impl Handler {
                         .emit_wait_item_completed(
                             &turn,
                             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                                lifecycle: None,
                                 id: call_id.clone(),
                                 tool: CollabAgentTool::Wait,
                                 status: wait_tool_call_status(&statuses),
@@ -260,6 +261,7 @@ impl Handler {
             .emit_turn_item_started(
                 &turn,
                 &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    lifecycle: None,
                     id: call_id.clone(),
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
@@ -340,6 +342,7 @@ impl Handler {
             .emit_wait_item_completed(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    lifecycle: None,
                     id: call_id,
                     tool: CollabAgentTool::Wait,
                     status: wait_tool_call_status(&statuses_by_id),

@@ -19,6 +19,7 @@ import type { AgentMessageDelivery } from "./AgentMessageDelivery";
 import type { AgentTaskPathMapping } from "./AgentTaskPathMapping";
 import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
 import type { CollabAgentInputBatch } from "./CollabAgentInputBatch";
+import type { CollabAgentLifecycle } from "./CollabAgentLifecycle";
 import type { CollabAgentRef } from "./CollabAgentRef";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
@@ -103,6 +104,10 @@ durationMs: number | null, } | { "type": "dynamicToolCall", id: string, namespac
  * The duration of the dynamic tool call in milliseconds.
  */
 durationMs: number | null, } | { "type": "mailboxRead" } & MailboxReadItem | { "type": "collabAgentToolCall",
+/**
+ * Explicit ownership action; absent on ordinary close/resume and legacy records.
+ */
+lifecycle: CollabAgentLifecycle | null,
 /**
  * Per-recipient admission outcomes for array-target sends; errors may follow admission.
  */

@@ -10,6 +10,8 @@ use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::AgentModelInputOrigin;
 use crate::agent::control::QueuedInputObservationParams;
 use crate::agent::control::ResponseObservationSubmission;
+use crate::agent::response_observation::FinalResponseObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_protocol::WakeEventMailboxSubscription;
@@ -35,6 +37,7 @@ pub(super) async fn resolve_receiver(
 
 pub(super) struct PreparedReceiver {
     pub(super) agent: CollabAgentRef,
+    pub(super) mode: SendInputMode,
     // Keep a restored V2 receiver resident through its input admission.
     _residency_pin: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
 }
@@ -73,6 +76,24 @@ pub(super) async fn prepare_receiver(
         .get_agent_presentation_ref(receiver)
         .await
         .map_err(|err| collab_agent_error(receiver, err))?;
+    let mode = match mode {
+        SendInputMode::Default => {
+            let final_response = if control
+                .is_live_agent_descendant(receiver, session.thread_id)
+                .await
+                .map_err(|err| collab_agent_error(receiver, err))?
+            {
+                FinalResponseObservation::None
+            } else {
+                FinalResponseObservation::Passive
+            };
+            SendInputMode::Response(ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                final_response,
+            ))
+        }
+        SendInputMode::Response(_) | SendInputMode::Mailbox(_) => mode,
+    };
     let sends_to_descendant = !mailbox
         && control
             .is_live_agent_descendant(session.thread_id, receiver)
@@ -97,6 +118,7 @@ pub(super) async fn prepare_receiver(
     }
     Ok(PreparedReceiver {
         agent,
+        mode,
         _residency_pin: residency_pin,
     })
 }
@@ -106,7 +128,6 @@ pub(super) struct RecipientInput<'a> {
     pub(super) call_id: &'a str,
     pub(super) batch_id: Option<&'a str>,
     pub(super) items: Vec<UserInput>,
-    pub(super) mode: SendInputMode,
 }
 
 pub(super) async fn admit_input(
@@ -119,8 +140,8 @@ pub(super) async fn admit_input(
         call_id,
         batch_id,
         items,
-        mode,
     } = input;
+    let mode = receiver.mode;
     let receiver_id = receiver.agent.thread_id;
     let control = session
         .services

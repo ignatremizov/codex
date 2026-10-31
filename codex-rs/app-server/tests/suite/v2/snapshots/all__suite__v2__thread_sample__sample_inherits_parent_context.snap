@@ -17,8 +17,8 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=a079bf0a13d75dfe):
-        - namespace/functions; hash=c89739a3612ffa35
+00:additional_tools/developer (3; hash=db3e958b95ace642):
+        - namespace/functions; hash=1e8db798482ddec8
           - function/exec_command
           - function/write_stdin
           - function/update_plan
@@ -29,7 +29,7 @@ Settings:
           - function/create_goal
           - function/update_goal
           - function/parent_tool
-        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=061f68c9a0138458
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83
           - function/check_mail
           - function/close_agent
           - function/resume_agent
@@ -83,8 +83,8 @@ Settings:
 ## Window 2 (after request 2: input repeated)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (3; hash=a079bf0a13d75dfe):
-        - namespace/functions; hash=c89739a3612ffa35
+00:additional_tools/developer (3; hash=db3e958b95ace642):
+        - namespace/functions; hash=1e8db798482ddec8
           - function/exec_command
           - function/write_stdin
           - function/update_plan
@@ -95,7 +95,7 @@ Settings: same as window 1
           - function/create_goal
           - function/update_goal
           - function/parent_tool
-        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=061f68c9a0138458
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83
           - function/check_mail
           - function/close_agent
           - function/resume_agent
@@ -148,8 +148,8 @@ Settings: same as window 1
 ## Window 3 (after request 3: input repeated)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=a079bf0a13d75dfe):
-        - namespace/functions; hash=c89739a3612ffa35
+00:additional_tools/developer (3; hash=db3e958b95ace642):
+        - namespace/functions; hash=1e8db798482ddec8
           - function/exec_command
           - function/write_stdin
           - function/update_plan
@@ -160,7 +160,7 @@ Settings: same as window 1
           - function/create_goal
           - function/update_goal
           - function/parent_tool
-        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=061f68c9a0138458
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83
           - function/check_mail
           - function/close_agent
           - function/resume_agent

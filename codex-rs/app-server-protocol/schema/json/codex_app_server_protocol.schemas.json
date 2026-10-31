@@ -403,6 +403,30 @@
             },
             "method": {
               "enum": [
+                "thread/detach"
+              ],
+              "title": "Thread/detachRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadDetachParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/detachRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/name/set"
               ],
               "title": "Thread/name/setRequestMethod",
@@ -10087,6 +10111,31 @@
             "type": "string"
           }
         ]
+      },
+      "CollabAgentLifecycle": {
+        "description": "Root involved in a detach or reattachment; this metadata grants no control authority.",
+        "properties": {
+          "action": {
+            "$ref": "#/definitions/v2/CollabAgentLifecycleAction"
+          },
+          "rootThreadId": {
+            "description": "Source root for detachment, destination root for reattachment.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "rootThreadId"
+        ],
+        "type": "object"
+      },
+      "CollabAgentLifecycleAction": {
+        "description": "Ownership operation, distinct from the tool used to request it.",
+        "enum": [
+          "detach",
+          "reattach"
+        ],
+        "type": "string"
       },
       "CollabAgentRef": {
         "properties": {
@@ -23569,6 +23618,45 @@
         "title": "ThreadDeletedNotification",
         "type": "object"
       },
+      "ThreadDetachParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Explicitly promote an idle child branch to an independent root, retaining its UUIDs.",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadDetachParams",
+        "type": "object"
+      },
+      "ThreadDetachResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "The caller resumes `thread_id` to attach to its new owning root.",
+        "properties": {
+          "previousRootThreadId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "unloadedThreadIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "previousRootThreadId",
+          "threadId",
+          "unloadedThreadIds"
+        ],
+        "title": "ThreadDetachResponse",
+        "type": "object"
+      },
       "ThreadEnvironment": {
         "description": "An environment selected by a loaded thread, independent of connection status.",
         "properties": {
@@ -24669,6 +24757,18 @@
                 ],
                 "default": null,
                 "description": "Per-recipient admission outcomes for array-target sends; errors may follow admission."
+              },
+              "lifecycle": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/CollabAgentLifecycle"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Explicit ownership action; absent on ordinary close/resume and legacy records."
               },
               "mailboxInput": {
                 "default": null,

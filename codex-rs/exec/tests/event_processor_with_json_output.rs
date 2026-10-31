@@ -922,6 +922,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
     let started =
         processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
             item: ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 observe_commentary: None,
                 wake_on_completion: None,
                 target_messages: None,
@@ -947,6 +948,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
             item: ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 observe_commentary: None,
                 wake_on_completion: None,
                 target_messages: None,

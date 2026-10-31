@@ -86,6 +86,7 @@ async fn handle_spawn_agent(
         .emit_turn_item_started(
             turn,
             &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                lifecycle: None,
                 id: call_id.clone(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -256,6 +257,7 @@ async fn handle_spawn_agent(
         .emit_turn_item_completed(
             turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                lifecycle: None,
                 id: call_id,
                 tool: CollabAgentTool::SpawnAgent,
                 status: collab_tool_call_status(&status, new_thread_id),

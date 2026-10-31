@@ -1,4 +1,6 @@
 use super::*;
+use codex_protocol::CollabAgentLifecycle;
+use codex_protocol::CollabAgentLifecycleAction;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
@@ -20,10 +22,24 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
         CollabAgentTool::SpawnAgent,
         CollabAgentTool::SendInput,
         CollabAgentTool::ResumeAgent,
+        CollabAgentTool::CloseAgent,
     ] {
         let parent = ThreadId::new();
         let child = ThreadId::new();
         let mut item = CollabAgentToolCallItem {
+            lifecycle: if tool == CollabAgentTool::CloseAgent {
+                Some(CollabAgentLifecycle {
+                    action: CollabAgentLifecycleAction::Detach,
+                    root_thread_id: parent,
+                })
+            } else if tool == CollabAgentTool::ResumeAgent {
+                Some(CollabAgentLifecycle {
+                    action: CollabAgentLifecycleAction::Reattach,
+                    root_thread_id: parent,
+                })
+            } else {
+                None
+            },
             input_batch: None,
             mailbox_input: None,
             target_messages: Some(true),
@@ -36,8 +52,25 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
             deadline_at_ms: None,
             sender_thread_id: parent,
             receiver_thread_ids: vec![child],
-            receiver_agents: Vec::new(),
-            prompt: (!matches!(tool, CollabAgentTool::ResumeAgent)).then(|| "task".to_string()),
+            receiver_agents: if matches!(
+                tool,
+                CollabAgentTool::CloseAgent | CollabAgentTool::ResumeAgent
+            ) {
+                vec![codex_protocol::protocol::CollabAgentRef {
+                    thread_id: child,
+                    agent_ref: Some("2".into()),
+                    task_path: Some("/root/worker".into()),
+                    agent_nickname: Some("Worker".into()),
+                    agent_role: None,
+                }]
+            } else {
+                Vec::new()
+            },
+            prompt: matches!(
+                tool,
+                CollabAgentTool::SpawnAgent | CollabAgentTool::SendInput
+            )
+            .then(|| "task".to_string()),
             model: matches!(tool, CollabAgentTool::SpawnAgent).then(|| "test-model".to_string()),
             reasoning_effort: matches!(tool, CollabAgentTool::SpawnAgent)
                 .then_some(ReasoningEffort::High),
@@ -90,10 +123,31 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
                 item.clone()
             ))]
         );
+        if item.lifecycle.is_some() {
+            item.status = CollabAgentToolCallStatus::Failed;
+            item.agents_states = HashMap::from([(child, AgentStatus::PendingInit)]);
+            completed.item = TurnItem::CollabAgentToolCall(item.clone());
+            builder.handle_event(&EventMsg::ItemCompleted(completed.clone()));
+            for mirror in EventMsg::ItemCompleted(completed.clone())
+                .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+            {
+                builder.handle_event(&mirror);
+            }
+            assert_eq!(
+                builder
+                    .turn_snapshot("parent-turn")
+                    .expect("parent turn")
+                    .items,
+                vec![ThreadItem::from(TurnItem::CollabAgentToolCall(
+                    item.clone()
+                ))],
+            );
+        }
         item.observe_commentary = None;
         item.wake_on_completion = None;
         item.target_messages = None;
         item.queue_input = None;
+        item.lifecycle = None;
         completed.item = TurnItem::CollabAgentToolCall(item.clone());
         builder.handle_event(&EventMsg::ItemCompleted(completed));
         assert_eq!(

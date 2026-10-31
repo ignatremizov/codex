@@ -24,9 +24,9 @@ const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
 const SPAWN_AGENT_REASONING_OVERRIDE_DESCRIPTION: &str = "Reasoning override for the resolved child model. Overrides selected role and configured defaults; an explicit model without this field uses that model's catalog default.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
-const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags accept any order and repetitions. Count f and x and cancel them pairwise: equal counts mean passive final delivery, more f means wake, and more x means presentation-only. c and q are idempotent presence flags.";
+const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional target-turn handling. When omitted, sending to an ancestor installs no reply subscription; other targets use passive final delivery. Explicit flags apply in either direction. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags accept any order and repetitions. Count f and x and cancel them pairwise: equal counts mean passive final delivery, more f means wake, and more x means presentation-only. c and q are idempotent presence flags.";
 const RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION: &str =
-    "Same target-turn handling as send_input.w.";
+    "Same explicit flags as send_input.w. Omit for passive final delivery.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 
@@ -406,6 +406,12 @@ pub fn create_close_agent_tool_v1() -> ToolSpec {
             JsonSchema::string(Some("Agent to close.".to_string())),
         ),
         (
+            "detach".to_string(),
+            JsonSchema::boolean(Some(
+                "Promote this owned idle child branch to an independent root while preserving UUIDs and history. Omit or false for ordinary close. Cannot combine with w; busy branches refuse without interrupting work.".into(),
+            )),
+        ),
+        (
             "w".to_string(),
             response_observation_schema(
                 "Optional completed-response handling. Omit for passive replay when the exact response is absent from current model context. f: wake for replay. q: queue replay for your next turn. x: keep replay presentation-only. c and m have no effect because close starts no target turn. Flags accept any order and repetitions. f and x cancel pairwise: equal counts mean passive replay, more f means wake, and more x means presentation-only. Repeated q has the same effect as one q.",
@@ -748,6 +754,17 @@ fn close_agent_output_schema() -> Value {
             "response_delivery": {
                 "type": "string",
                 "description": "How the completed response was handled."
+            },
+            "detached": {
+                "type": "object",
+                "description": "Present only after successful independent-root promotion. Resume its thread_id in a new TUI, or explicitly resume by UUID from Main to reattach.",
+                "properties": {
+                    "thread_id": {"type": "string"},
+                    "previous_root_thread_id": {"type": "string"},
+                    "unloaded_thread_ids": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["thread_id", "previous_root_thread_id", "unloaded_thread_ids"],
+                "additionalProperties": false
             }
         },
         "required": ["previous_status", "response_delivery"],

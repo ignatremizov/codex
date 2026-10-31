@@ -201,6 +201,7 @@ pub(crate) use agent_control_pane::AgentControlPanePreview;
 mod agent_control_summary;
 mod agent_control_targets;
 mod agent_cycling;
+mod agent_detach;
 mod agent_lifecycle_control;
 mod agent_mailbox;
 mod agent_message_consolidation;

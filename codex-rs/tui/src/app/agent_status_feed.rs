@@ -6,7 +6,9 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::plain_lines;
 use crate::style::accent_color;
 use crate::text_formatting::truncate_text;
+use codex_app_server_protocol::CollabAgentLifecycleAction;
 use codex_app_server_protocol::CollabAgentTool;
+use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
@@ -172,7 +174,11 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
             return bounded_summary(&format!("Tool {tool}"));
         }
         ThreadItem::CollabAgentToolCall {
-            tool, input_batch, ..
+            tool,
+            input_batch,
+            lifecycle,
+            status,
+            ..
         } => {
             if let Some(batch) = input_batch {
                 // Admission can mean mailbox storage, and an error may follow acceptance.
@@ -180,6 +186,44 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
                     "Input batch: {} receiver results",
                     batch.results.len()
                 ));
+            }
+            if let Some(lifecycle) = lifecycle {
+                return Some(
+                    match (lifecycle.action, status) {
+                        (
+                            CollabAgentLifecycleAction::Detach,
+                            CollabAgentToolCallStatus::InProgress,
+                        ) => "Detaching an agent",
+                        (
+                            CollabAgentLifecycleAction::Detach,
+                            CollabAgentToolCallStatus::Completed,
+                        ) => "Detached an agent",
+                        (CollabAgentLifecycleAction::Detach, CollabAgentToolCallStatus::Failed) => {
+                            "Failed to detach an agent"
+                        }
+                        (
+                            CollabAgentLifecycleAction::Detach,
+                            CollabAgentToolCallStatus::Interrupted,
+                        ) => "Detachment interrupted",
+                        (
+                            CollabAgentLifecycleAction::Reattach,
+                            CollabAgentToolCallStatus::InProgress,
+                        ) => "Reattaching an agent",
+                        (
+                            CollabAgentLifecycleAction::Reattach,
+                            CollabAgentToolCallStatus::Completed,
+                        ) => "Reattached an agent",
+                        (
+                            CollabAgentLifecycleAction::Reattach,
+                            CollabAgentToolCallStatus::Failed,
+                        ) => "Failed to reattach an agent",
+                        (
+                            CollabAgentLifecycleAction::Reattach,
+                            CollabAgentToolCallStatus::Interrupted,
+                        ) => "Reattachment interrupted",
+                    }
+                    .to_string(),
+                );
             }
             let action = match tool {
                 CollabAgentTool::SendMessage

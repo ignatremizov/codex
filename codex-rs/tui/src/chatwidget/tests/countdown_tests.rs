@@ -360,6 +360,7 @@ async fn live_start_without_estimate_replaces_countdown_but_unrelated_terminal_c
             started_at_ms: 0,
             deadline_at_ms: None,
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 mailbox_input: None,
                 id: "wait".into(),
                 tool: AppServerCollabAgentTool::Wait,
@@ -411,6 +412,7 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     handle_turn_started(&mut chat, "turn-1");
     let wait = |id: &str, status| AppServerThreadItem::CollabAgentToolCall {
+        lifecycle: None,
         mailbox_input: None,
         id: id.into(),
         tool: AppServerCollabAgentTool::Wait,

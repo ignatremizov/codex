@@ -155,6 +155,7 @@ fn spawned_agent_settings_merge_user_control_and_v1_spawn_items() {
                 error: None,
             },
             ThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "spawn-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,

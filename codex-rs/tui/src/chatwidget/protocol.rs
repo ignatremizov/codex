@@ -738,6 +738,7 @@ impl ChatWidget {
                 self.on_image_generation_begin();
             }
             ThreadItem::CollabAgentToolCall {
+                lifecycle,
                 id,
                 tool,
                 status,
@@ -756,6 +757,7 @@ impl ChatWidget {
                 agents_states,
             } => self.on_collab_agent_tool_call(
                 ThreadItem::CollabAgentToolCall {
+                    lifecycle,
                     id,
                     tool,
                     status,

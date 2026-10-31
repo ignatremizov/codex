@@ -430,6 +430,31 @@ async fn slash_agent_new_with_only_remote_image_starts_the_first_turn() {
 }
 
 #[tokio::test]
+async fn slash_agent_detach_preserves_its_source_and_optional_target_without_a_model_turn() {
+    for (command, expected_target) in [
+        ("detach", None),
+        (
+            "detach 34",
+            Some(agent_selector(AgentSelectorKind::Ref(34), "34")),
+        ),
+    ] {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        let source = ThreadId::new();
+        chat.thread_id = Some(source);
+        chat.dispatch_command_with_args(SlashCommand::Agent, command.into(), Vec::new());
+        let controls = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|event| !matches!(event, AppEvent::FollowTranscript))
+            .collect::<Vec<_>>();
+        assert_matches!(
+            controls.as_slice(),
+            [AppEvent::DetachAgent { source_thread_id, selector }]
+                if *source_thread_id == source && selector == &expected_target
+        );
+        assert!(op_rx.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
 async fn slash_agent_resume_preserves_source_selector_and_response_handling() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

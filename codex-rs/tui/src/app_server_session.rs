@@ -1835,6 +1835,22 @@ impl AppServerSession {
             .wrap_err("thread/unload failed in TUI")
     }
 
+    pub(crate) async fn thread_detach(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<codex_app_server_protocol::ThreadDetachResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadDetach {
+                request_id,
+                params: codex_app_server_protocol::ThreadDetachParams {
+                    thread_id: thread_id.to_string(),
+                },
+            })
+            .await
+            .wrap_err("thread/detach failed in TUI")
+    }
+
     pub(crate) async fn thread_compact_start(&mut self, thread_id: ThreadId) -> Result<()> {
         let request_id = self.next_request_id();
         let _: ThreadCompactStartResponse = self
@@ -3153,12 +3169,6 @@ pub(crate) fn thread_parent_thread_id(thread: &Thread) -> Option<ThreadId> {
         .parent_thread_id
         .as_deref()
         .and_then(|thread_id| ThreadId::from_string(thread_id).ok())
-        .or(match &thread.source {
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            }) => Some(*parent_thread_id),
-            _ => None,
-        })
 }
 
 #[cfg(test)]

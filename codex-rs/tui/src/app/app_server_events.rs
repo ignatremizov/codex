@@ -189,6 +189,8 @@ impl App {
         app_server_client: &AppServerSession,
         notification: ServerNotification,
     ) {
+        self.track_agent_detachments(app_server_client, &notification)
+            .await;
         // A picker can leave an old runtime's close notification queued while the same thread
         // is resumed. Thread IDs survive reloads, so confirm that the displayed thread is still
         // unloaded before routing a close that would exit the TUI or switch away from it.
@@ -219,7 +221,15 @@ impl App {
                     {
                         return;
                     }
-                    Ok(Ok(_)) => break,
+                    Ok(Ok(_)) => {
+                        if self
+                            .pause_after_agent_ownership_change(app_server_client, thread_id)
+                            .await
+                        {
+                            return;
+                        }
+                        break;
+                    }
                     // Unpersisted closed threads can no longer be read. Preserve that close
                     // and compatibility with servers that do not support this request.
                     Ok(Err(TypedRequestError::Server { source, .. }))

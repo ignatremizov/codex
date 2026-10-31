@@ -56,6 +56,7 @@ pub use extract::is_guardian_review_source;
 pub use extract::rollout_item_affects_thread_metadata;
 pub use model::AddThreadAttachmentOutcome;
 pub use model::AgentAliasAllocation;
+pub use model::AgentAliasDetachRequest;
 pub use model::AgentAliasForkReservation;
 pub use model::AgentAliasRecord;
 pub use model::AgentAliasState;

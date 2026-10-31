@@ -9,6 +9,7 @@ use std::collections::HashMap;
 fn mailbox_send_has_distinct_acceptance_and_failure_titles() {
     let receiver = ThreadId::new();
     let mut item = ThreadItem::CollabAgentToolCall {
+        lifecycle: None,
         id: "mail-send".into(),
         tool: CollabAgentTool::SendInput,
         status: CollabAgentToolCallStatus::Completed,

@@ -201,6 +201,7 @@ fn completion_wait_event(turn_id: &str) -> RolloutItem {
         thread_id: ThreadId::new(),
         turn_id: turn_id.to_string(),
         item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            lifecycle: None,
             id: "wait-agent-call".to_string(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,

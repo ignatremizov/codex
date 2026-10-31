@@ -34,6 +34,40 @@ fn activity_task_summary_keeps_full_readable_prompt() -> color_eyre::Result<()> 
     Ok(())
 }
 
+#[test]
+fn lifecycle_task_summary_preserves_action_and_captured_identity() -> color_eyre::Result<()> {
+    for (action, tool) in [("detach", "closeAgent"), ("reattach", "resumeAgent")] {
+        let item = json!({
+            "type": "collabAgentToolCall", "id": "lifecycle", "tool": tool,
+            "status": "completed",
+            "lifecycle": {"action": action, "rootThreadId": "root"},
+            "senderThreadId": "root", "receiverThreadIds": ["child"],
+            "receiverAgents": [{
+                "threadId": "child", "agentRef": "38",
+                "taskPath": "/root/reattached", "agentNickname": "Mencius",
+                "agentRole": null,
+            }],
+            "prompt": null, "model": null, "reasoningEffort": null,
+            "agentsStates": {},
+        });
+        let turn: Turn = serde_json::from_value(json!({
+            "id": "turn", "status": "completed", "items": [item.clone()],
+        }))?;
+        let mut expected = item;
+        expected
+            .as_object_mut()
+            .expect("item object")
+            .remove("agentsStates");
+        assert_eq!(
+            turn_summary(
+                &turn, /*include_outputs*/ false, /*output_chars*/ 1
+            )["items"],
+            json!([expected]),
+        );
+    }
+    Ok(())
+}
+
 async fn test_server(
     tool_arguments: Value,
 ) -> color_eyre::Result<(TempDir, AppServerSession, String, String)> {

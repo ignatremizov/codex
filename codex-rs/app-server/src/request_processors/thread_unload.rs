@@ -16,9 +16,9 @@ use codex_protocol::error::CodexErrorDetails;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-struct PendingUnloadFence {
-    pending: PendingThreadUnloads,
-    ids: Vec<ThreadId>,
+pub(super) struct PendingUnloadFence {
+    pub(super) pending: PendingThreadUnloads,
+    pub(super) ids: Vec<ThreadId>,
 }
 
 impl Drop for PendingUnloadFence {

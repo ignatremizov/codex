@@ -4428,6 +4428,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(
         spawn_started,
         ThreadItem::CollabAgentToolCall {
+            lifecycle: None,
             id: SPAWN_CALL_ID.to_string(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
@@ -4460,6 +4461,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     })
     .await??;
     let ThreadItem::CollabAgentToolCall {
+        lifecycle: None,
         id,
         tool,
         status,
@@ -4996,6 +4998,7 @@ config_file = "./custom-role.toml"
     })
     .await??;
     let ThreadItem::CollabAgentToolCall {
+        lifecycle: None,
         id,
         tool,
         status,

@@ -427,6 +427,7 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
     publish(
         &mut chat,
         AppServerThreadItem::CollabAgentToolCall {
+            lifecycle: None,
             id: "wait-1".into(),
             tool: AppServerCollabAgentTool::Wait,
             status: AppServerCollabAgentToolCallStatus::Completed,
@@ -506,6 +507,7 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
 
     chat.replay_thread_item(
         AppServerThreadItem::CollabAgentToolCall {
+            lifecycle: None,
             id: "spawn-1".to_string(),
             tool: AppServerCollabAgentTool::SpawnAgent,
             status: AppServerCollabAgentToolCallStatus::Completed,
@@ -540,6 +542,7 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
     );
     chat.replay_thread_item(
         AppServerThreadItem::CollabAgentToolCall {
+            lifecycle: None,
             id: "send-1".to_string(),
             tool: AppServerCollabAgentTool::SendInput,
             status: AppServerCollabAgentToolCallStatus::Completed,

@@ -3,6 +3,8 @@ use super::event_mapping::item_event_to_server_notification;
 use super::thread_history::build_turns_from_rollout_items;
 use super::v2::CollabAgentRef;
 use super::v2::ThreadItem;
+use codex_protocol::CollabAgentLifecycle;
+use codex_protocol::CollabAgentLifecycleAction;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
@@ -17,91 +19,112 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 #[test]
-fn spawned_identity_survives_live_wire_and_replay() {
-    let sender = ThreadId::new();
-    let receiver = ThreadId::new();
-    let agent = CoreCollabAgentRef {
-        thread_id: receiver,
-        agent_ref: Some("2".to_string()),
-        task_path: Some("/root/backend/auth".to_string()),
-        agent_nickname: Some("Pascal".to_string()),
-        agent_role: Some("coder".to_string()),
-    };
-    assert_eq!(
-        CollabAgentRef::from(agent.clone()),
-        CollabAgentRef {
-            thread_id: receiver.to_string(),
+fn identity_and_ownership_action_survive_live_wire_and_replay() {
+    for action in [
+        None,
+        Some(CollabAgentLifecycleAction::Detach),
+        Some(CollabAgentLifecycleAction::Reattach),
+    ] {
+        let sender = ThreadId::new();
+        let receiver = ThreadId::new();
+        let agent = CoreCollabAgentRef {
+            thread_id: receiver,
             agent_ref: Some("2".to_string()),
             task_path: Some("/root/backend/auth".to_string()),
             agent_nickname: Some("Pascal".to_string()),
             agent_role: Some("coder".to_string()),
-        },
-    );
-    let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-        id: "spawn".to_string(),
-        tool: CollabAgentTool::SpawnAgent,
-        status: CollabAgentToolCallStatus::Completed,
-        observe_commentary: Some(false),
-        wake_on_completion: None,
-        target_messages: Some(false),
-        queue_input: Some(false),
-        input_batch: None,
-        mailbox_input: None,
-        deadline_at_ms: None,
-        sender_thread_id: sender,
-        receiver_thread_ids: vec![receiver],
-        receiver_agents: vec![agent],
-        prompt: Some("Implement authentication.".to_string()),
-        model: None,
-        reasoning_effort: None,
-        agents_states: Default::default(),
-        completion_presentation_agent_ids: None,
-    });
-    let expected = ThreadItem::from(item.clone());
-    let completed = EventMsg::ItemCompleted(ItemCompletedEvent {
-        thread_id: sender,
-        turn_id: "turn".to_string(),
-        item,
-        started_at_ms: Some(1),
-        completed_at_ms: 2,
-    });
-    let notification =
-        item_event_to_server_notification(completed.clone(), &sender.to_string(), "turn");
-    let wire = serde_json::to_value(notification).unwrap();
-    assert_eq!(
-        wire["params"]["item"]["receiverAgents"],
-        json!([{
-            "threadId": receiver.to_string(),
-            "agentRef": "2",
-            "taskPath": "/root/backend/auth",
-            "agentNickname": "Pascal",
-            "agentRole": "coder",
-        }]),
-    );
-    let ServerNotification::ItemCompleted(notification) =
-        serde_json::from_value::<ServerNotification>(wire).unwrap()
-    else {
-        panic!("expected item/completed");
-    };
-    assert_eq!(notification.item, expected);
-    let rollout = vec![
-        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-            turn_attribution: None,
+        };
+        assert_eq!(
+            CollabAgentRef::from(agent.clone()),
+            CollabAgentRef {
+                thread_id: receiver.to_string(),
+                agent_ref: Some("2".to_string()),
+                task_path: Some("/root/backend/auth".to_string()),
+                agent_nickname: Some("Pascal".to_string()),
+                agent_role: Some("coder".to_string()),
+            },
+        );
+        let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            lifecycle: action.map(|action| CollabAgentLifecycle {
+                action,
+                root_thread_id: sender,
+            }),
+            id: "spawn".to_string(),
+            tool: match action {
+                None => CollabAgentTool::SpawnAgent,
+                Some(CollabAgentLifecycleAction::Detach) => CollabAgentTool::CloseAgent,
+                Some(CollabAgentLifecycleAction::Reattach) => CollabAgentTool::ResumeAgent,
+            },
+            status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: Some(false),
+            wake_on_completion: None,
+            target_messages: Some(false),
+            queue_input: Some(false),
+            input_batch: None,
+            mailbox_input: None,
+            deadline_at_ms: None,
+            sender_thread_id: sender,
+            receiver_thread_ids: vec![receiver],
+            receiver_agents: vec![agent],
+            prompt: Some("Implement authentication.".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: Default::default(),
+            completion_presentation_agent_ids: None,
+        });
+        let expected = ThreadItem::from(item.clone());
+        let completed = EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id: sender,
             turn_id: "turn".to_string(),
-            trace_id: None,
-            started_at: None,
-            model_context_window: None,
-            collaboration_mode_kind: Default::default(),
-            agent_queue: None,
-            root_turn_id: None,
-        })),
-        RolloutItem::EventMsg(completed),
-    ];
-    let replay: Vec<RolloutItem> =
-        serde_json::from_str(&serde_json::to_string(&rollout).unwrap()).unwrap();
-    let turns = build_turns_from_rollout_items(&replay);
-    assert_eq!(turns.len(), 1);
-    assert_eq!(turns[0].items, vec![expected]);
+            item,
+            started_at_ms: Some(1),
+            completed_at_ms: 2,
+        });
+        let notification =
+            item_event_to_server_notification(completed.clone(), &sender.to_string(), "turn");
+        let mut wire = serde_json::to_value(notification).unwrap();
+        assert_eq!(
+            wire["params"]["item"]["receiverAgents"],
+            json!([{
+                "threadId": receiver.to_string(),
+                "agentRef": "2",
+                "taskPath": "/root/backend/auth",
+                "agentNickname": "Pascal",
+                "agentRole": "coder",
+            }]),
+        );
+        if action.is_none() {
+            // Older records can omit the optional ownership-action field.
+            wire["params"]["item"]
+                .as_object_mut()
+                .unwrap()
+                .remove("lifecycle");
+        }
+        let ServerNotification::ItemCompleted(notification) =
+            serde_json::from_value::<ServerNotification>(wire).unwrap()
+        else {
+            panic!("expected item/completed");
+        };
+        assert_eq!(notification.item, expected);
+        let rollout = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
+                turn_id: "turn".to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+                root_turn_id: None,
+            })),
+            RolloutItem::EventMsg(completed),
+        ];
+        let replay: Vec<RolloutItem> =
+            serde_json::from_str(&serde_json::to_string(&rollout).unwrap()).unwrap();
+        let turns = build_turns_from_rollout_items(&replay);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items, vec![expected]);
+    }
 }
 
 #[test]

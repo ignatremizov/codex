@@ -518,6 +518,10 @@ pub enum CollabAgentToolCallStatus {
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CollabAgentToolCallItem {
+    /// Explicit ownership action; absent on ordinary close/resume and legacy records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub lifecycle: Option<crate::CollabAgentLifecycle>,
     /// Present only for array-target send_input calls, including arrays of length one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

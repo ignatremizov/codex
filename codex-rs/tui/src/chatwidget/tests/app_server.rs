@@ -736,6 +736,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             started_at_ms: 0,
             deadline_at_ms: None,
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-spawn".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
@@ -762,6 +763,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "call-spawn".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::Completed,
@@ -1086,6 +1088,7 @@ async fn live_app_server_primary_events_use_main_agent_metadata() {
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "send-main".to_string(),
                 tool: AppServerCollabAgentTool::SendInput,
                 status: AppServerCollabAgentToolCallStatus::Completed,
@@ -1894,6 +1897,7 @@ async fn live_app_server_collab_wait_items_render_history() {
             started_at_ms: 0,
             deadline_at_ms: None,
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
@@ -1924,6 +1928,7 @@ async fn live_app_server_collab_wait_items_render_history() {
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
                 status: AppServerCollabAgentToolCallStatus::Completed,
@@ -1986,6 +1991,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
             started_at_ms: 0,
             deadline_at_ms: None,
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "spawn-1".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
@@ -2013,6 +2019,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
             item: AppServerThreadItem::CollabAgentToolCall {
+                lifecycle: None,
                 id: "spawn-1".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::Completed,

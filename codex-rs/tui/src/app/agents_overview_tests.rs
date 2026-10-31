@@ -258,7 +258,7 @@ pub(in crate::app) fn overview_thread(
         daybreak_enabled: None,
         session_id: parent_thread_id.unwrap_or(thread_id).to_string(),
         forked_from_id: None,
-        parent_thread_id: None,
+        parent_thread_id: parent_thread_id.map(|thread_id| thread_id.to_string()),
         preview: name.to_string(),
         ephemeral: false,
         section: None,
