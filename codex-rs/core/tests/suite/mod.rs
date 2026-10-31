@@ -47,6 +47,8 @@ mod agent_detach_tool;
 mod agent_execution;
 mod agent_history_authorization;
 mod agent_message_wake;
+#[path = "agent_resume_model_tests.rs"]
+mod agent_resume_model;
 mod agent_websocket;
 mod agents_md;
 mod app_tool_exposure;

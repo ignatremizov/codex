@@ -13,10 +13,11 @@ Scenario: A worker inherits the parent prefix with only the classified developer
           - function/wait
           - function/compact
           - function/request_user_input
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent
@@ -56,10 +57,11 @@ Scenario: A worker inherits the parent prefix with only the classified developer
           - function/wait
           - function/compact
           - function/request_user_input
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent

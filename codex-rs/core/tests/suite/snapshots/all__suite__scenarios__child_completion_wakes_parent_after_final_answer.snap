@@ -27,10 +27,11 @@ Settings:
           - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=47888e937f34385c
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c2381caffbd851ed
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent
@@ -66,10 +67,11 @@ Settings: same as window 1
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=47888e937f34385c
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c2381caffbd851ed
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent

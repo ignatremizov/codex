@@ -11,15 +11,17 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
         - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent
@@ -54,15 +56,17 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
         - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
           - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent

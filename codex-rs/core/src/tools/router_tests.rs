@@ -70,6 +70,7 @@ async fn build_tool_call_retains_native_evidence_only_for_reviewed_mav2_tools() 
                 ("send_message", true),
                 ("followup_task", true),
                 ("interrupt_agent", true),
+                ("resume_agent", true),
                 ("list_agents", false),
                 ("wait_agent", false),
             ] {

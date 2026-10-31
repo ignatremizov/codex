@@ -21,7 +21,7 @@ Scenario: Permission discovery preserves legacy output, exposes reply-only acces
         - namespace/clock: Tools for reading and waiting on time.; hash=a80435c7a3a3943f
           - function/curr_time
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=167370a223646314
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=881b4ad540781a7d
           - function/create_channel
           - function/followup_task
           - function/get_channels
@@ -31,6 +31,7 @@ Scenario: Permission discovery preserves legacy output, exposes reply-only acces
           - function/post
           - function/read_post
           - function/read_thread
+          - function/resume_agent
           - function/search_posts
           - function/send_message
           - function/spawn_agent

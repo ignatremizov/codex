@@ -7,18 +7,21 @@ Scenario: Available file references pass through. A later request replaces missi
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
+          - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent
@@ -43,18 +46,21 @@ Scenario: Available file references pass through. A later request replaces missi
 
 ## Window 2 (after request 1: input diverged at item 06)
 -- request 2 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
           - function/request_user_input_async
+          - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent

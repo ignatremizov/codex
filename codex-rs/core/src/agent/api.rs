@@ -18,6 +18,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::Result;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -80,6 +81,12 @@ pub trait AgentControl: Send + Sync {
     /// Implementations validate ownership and restore the child under the parent's current
     /// authority. Success makes the child available for attachment through its thread manager.
     fn ensure_child_loaded(&self, parent: ThreadId, child: ThreadId) -> BoxFuture<'_, Result<()>>;
+
+    /// Restore an owned V2 child without sending input or interrupting current work.
+    /// Apply only explicitly supplied model/effort choices to future turns, preserving saved
+    /// settings for omitted fields. Success includes durable acknowledgement of settings.
+    /// The selected backend owns restoration and validation; callers must not fall back locally.
+    fn resume(&self, request: ResumeRequest) -> BoxFuture<'_, Result<AgentInfo>>;
 
     /// Stop current work and return the pre-interrupt snapshot. V2 rejects root/self
     /// targets and tolerates known unloaded agents; other modes retain direct-ID interruption.
@@ -223,6 +230,15 @@ pub struct SendRequest {
     pub resume_config: Config,
     pub input: AgentInput,
     pub start_options: TurnStartOptions,
+}
+
+pub struct ResumeRequest {
+    pub caller: ThreadId,
+    pub target: AgentTarget,
+    /// Captured caller settings used only to restore the target's owning runtime.
+    pub resume_config: Config,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 pub struct DeliveryReceipt {

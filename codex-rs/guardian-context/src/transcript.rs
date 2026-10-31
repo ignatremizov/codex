@@ -317,7 +317,11 @@ fn collect_transcript_for_review(
                         })
                     && matches!(
                         name.as_str(),
-                        "spawn_agent" | "send_message" | "followup_task" | "interrupt_agent"
+                        "spawn_agent"
+                            | "send_message"
+                            | "followup_task"
+                            | "interrupt_agent"
+                            | "resume_agent"
                     )
                 {
                     entries.push(ConversationTranscriptEntry {

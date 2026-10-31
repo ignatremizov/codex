@@ -136,6 +136,7 @@ mod mailbox;
 mod residency;
 pub use residency::ThreadEvictionOutcome;
 mod resume;
+mod resume_model;
 mod resume_role;
 mod root_adoption;
 mod root_handoff;
