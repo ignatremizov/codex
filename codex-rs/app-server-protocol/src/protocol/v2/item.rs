@@ -574,6 +574,9 @@ pub enum ThreadItemPayload {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     CollabAgentToolCall {
+        /// Explicit ownership action; absent on ordinary close/resume and legacy records.
+        #[serde(default)]
+        lifecycle: Option<super::CollabAgentLifecycle>,
         /// Per-recipient admission outcomes for array-target sends; errors may follow admission.
         #[serde(default)]
         input_batch: Option<CollabAgentInputBatch>,
@@ -1281,6 +1284,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
             },
             CoreTurnItem::MailboxRead(item) => Self::MailboxRead(MailboxReadItem::from(item)),
             CoreTurnItem::CollabAgentToolCall(call) => Self::CollabAgentToolCall {
+                lifecycle: call.lifecycle.map(Into::into),
                 input_batch: call.input_batch,
                 id: call.id,
                 tool: call.tool.into(),

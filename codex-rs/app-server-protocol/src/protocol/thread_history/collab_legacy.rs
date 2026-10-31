@@ -17,6 +17,9 @@ impl ThreadHistoryBuilder {
         });
         if let (
             Some(ThreadItemPayload::CollabAgentToolCall {
+                lifecycle: previous_lifecycle,
+                receiver_agents: previous_receivers,
+                status: previous_status,
                 tool: previous_tool,
                 sender_thread_id: previous_sender,
                 observe_commentary: previous_commentary,
@@ -28,6 +31,9 @@ impl ThreadHistoryBuilder {
                 ..
             }),
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle,
+                receiver_agents,
+                status,
                 tool,
                 sender_thread_id,
                 observe_commentary,
@@ -42,6 +48,13 @@ impl ThreadHistoryBuilder {
             && *tool == *previous_tool
             && sender_thread_id.as_str() == previous_sender.as_str()
         {
+            if lifecycle.is_none() {
+                lifecycle.clone_from(previous_lifecycle);
+                if previous_lifecycle.is_some() {
+                    receiver_agents.clone_from(previous_receivers);
+                    status.clone_from(previous_status);
+                }
+            }
             if observe_commentary.is_none() {
                 *observe_commentary = *previous_commentary;
             }

@@ -1,4 +1,8 @@
+mod detach;
 mod fork_aliases;
+pub(crate) use detach::AgentBranchHandoff;
+pub(crate) use detach::AgentDetachAuthority;
+pub use detach::DetachedAgentBranch;
 mod loaded_subtree;
 mod managed;
 mod model_catalog;
@@ -2984,14 +2988,24 @@ impl ThreadManagerState {
             }
             (_, control) => control,
         };
-        let parent_thread_id = parent_thread_id
-            .or_else(|| initial_history.get_resumed_parent_thread_id())
-            .or(match &session_source {
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id, ..
-                }) => Some(*parent_thread_id),
-                _ => None,
-            });
+        let parent_thread_id = if thread_extension_init
+            .get::<crate::session::AgentSessionOwnershipOverride>()
+            .is_some()
+        {
+            // A validated current root deliberately has no parent, even if its rollout
+            // records the spawn edge from before detachment.
+            parent_thread_id
+        } else {
+            parent_thread_id
+                .or_else(|| initial_history.get_resumed_parent_thread_id())
+                .or(match &session_source {
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        ..
+                    }) => Some(*parent_thread_id),
+                    _ => None,
+                })
+        };
         // Both resume entry points must restore identities before children can be loaded lazily.
         if let InitialHistory::Resumed(resumed) = &initial_history
             && initial_history.get_multi_agent_version() == Some(MultiAgentVersion::V2)

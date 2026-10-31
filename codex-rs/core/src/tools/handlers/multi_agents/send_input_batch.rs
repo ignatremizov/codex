@@ -59,11 +59,19 @@ pub(super) async fn handle_batch(
         .filter(|root_id| *root_id != session.thread_id)
         .map(|_| session.thread_id);
     let mut item = CollabAgentToolCallItem {
+        lifecycle: None,
         id: call_id.clone(),
         tool: CollabAgentTool::SendInput,
         status: CollabAgentToolCallStatus::InProgress,
         observe_commentary: Some(observation.commentary()),
-        wake_on_completion: observation.wake_on_completion_item_value(),
+        // An omitted batch policy is resolved per recipient; a mixed batch has no
+        // single final-observation mode to advertise on its aggregate row.
+        wake_on_completion: match mode {
+            SendInputMode::Default => None,
+            SendInputMode::Response(_) | SendInputMode::Mailbox(_) => {
+                observation.wake_on_completion_item_value()
+            }
+        },
         target_messages: Some(false),
         queue_input: Some(observation.queue_input()),
         mailbox_input: mailbox.then_some(true),
@@ -133,7 +141,6 @@ pub(super) async fn handle_batch(
                     call_id: &call_id,
                     batch_id: Some(&call_id),
                     items: items.clone(),
-                    mode,
                 },
             )
             .await;

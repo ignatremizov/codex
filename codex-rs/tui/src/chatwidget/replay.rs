@@ -588,6 +588,7 @@ impl ChatWidget {
             }
             ThreadItemPayload::HookPrompt { .. } => {}
             ThreadItemPayload::CollabAgentToolCall {
+                lifecycle,
                 id,
                 tool,
                 status,
@@ -606,6 +607,7 @@ impl ChatWidget {
                 agents_states,
             } => self.on_collab_agent_tool_call(
                 ThreadItemPayload::CollabAgentToolCall {
+                    lifecycle,
                     id,
                     tool,
                     status,

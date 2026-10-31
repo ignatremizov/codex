@@ -1202,7 +1202,10 @@ impl Session {
         &self,
     ) -> Option<(Arc<tokio::sync::Mutex<TurnState>>, TurnStartOptions)> {
         let mut active_turn = self.active_turn.lock().await;
-        if active_turn.is_some() || self.outcome_handoffs_closed() {
+        if active_turn.is_some()
+            || self.outcome_handoffs_closed()
+            || self.submission_admission.is_sealed_for_unload()
+        {
             return None;
         }
         let needs_new_turn = self.input_queue.has_queued_turn_trigger().await

@@ -6,6 +6,17 @@ use codex_thread_store::PersistContext;
 use std::collections::HashSet;
 
 impl LocalAgentControl {
+    /// Release runtime slots after durable removal, including retained cold descendants.
+    pub(crate) fn forget_unloaded_agent_registrations(
+        &self,
+        thread_ids: impl IntoIterator<Item = ThreadId>,
+    ) {
+        for thread_id in thread_ids {
+            self.forget_v2_residency(thread_id);
+            self.runtime.registry.release_spawned_thread(thread_id);
+        }
+    }
+
     /// Remove only the runtime whose durable unload has acknowledged writer release.
     pub(crate) async fn remove_durably_unloaded_instance(
         &self,
@@ -24,8 +35,7 @@ impl LocalAgentControl {
                 thread,
                 crate::thread_manager::ThreadRemovalAuthority::DurableUnload,
                 || {
-                    self.forget_v2_residency(thread_id);
-                    self.runtime.registry.release_spawned_thread(thread_id);
+                    self.forget_unloaded_agent_registrations([thread_id]);
                 },
             )
             .await;

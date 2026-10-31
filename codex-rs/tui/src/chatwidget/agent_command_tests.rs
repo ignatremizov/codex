@@ -15,6 +15,45 @@ fn empty_command_opens_the_control_pane() {
 }
 
 #[test]
+fn detach_accepts_an_optional_existing_target_without_input() {
+    assert_eq!(
+        parse_agent_command("detach"),
+        Ok(AgentCommand::Detach { selector: None })
+    );
+    assert_eq!(
+        parse_agent_command("detach 34"),
+        Ok(AgentCommand::Detach {
+            selector: Some(selector(AgentSelectorKind::Ref(34), "34")),
+        }),
+    );
+    assert_eq!(
+        parse_agent_command("detach nick:\"Code reviewer\""),
+        Ok(AgentCommand::Detach {
+            selector: Some(selector(
+                AgentSelectorKind::Nickname("Code reviewer".into()),
+                "nick:\"Code reviewer\""
+            )),
+        }),
+    );
+    for command in ["detach 34 prompt", "detach 34 w:f"] {
+        assert_eq!(
+            parse_agent_command(command),
+            Err("`detach` does not accept additional arguments.".into()),
+        );
+    }
+    assert_eq!(
+        parse_agent_command_with_attached_input("detach", /*has_attached_input*/ true),
+        Err("/agent detach accepts no prompt or attachments".into()),
+    );
+    assert!(matches!(
+        parse_agent_command("role:detach"),
+        Ok(AgentCommand::SelectOrDispatch { selector: AgentSelector {
+            kind: AgentSelectorKind::Role(role), ..
+        }, .. }) if role == "detach"
+    ));
+}
+
+#[test]
 fn response_flags_accept_reordering_repetition_and_counted_cancellation() {
     for (input, canonical) in [
         ("qfx", "q"),

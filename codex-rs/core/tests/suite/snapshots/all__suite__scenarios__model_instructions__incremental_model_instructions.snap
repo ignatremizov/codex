@@ -16,14 +16,14 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=0927dc5f09ed862d):
-        - namespace/functions; hash=c24edee5832395d6
+00:additional_tools/developer (2; hash=2a7da84df6d0e1ad):
+        - namespace/functions; hash=39014f8682d1d4ed
           - function/exec_command
           - function/write_stdin
           - function/update_plan
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=bc633dd531d9fcda
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=bda21ad634212f49
           - function/check_mail
           - function/close_agent
           - function/resume_agent
@@ -65,14 +65,14 @@ Settings:
 ## Window 2 (after request 4: input diverged at item 01)
 Settings: same as window 1
 -- request 5 (turn) --
-00:additional_tools/developer (2; hash=0927dc5f09ed862d):
-        - namespace/functions; hash=c24edee5832395d6
+00:additional_tools/developer (2; hash=2a7da84df6d0e1ad):
+        - namespace/functions; hash=39014f8682d1d4ed
           - function/exec_command
           - function/write_stdin
           - function/update_plan
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=bc633dd531d9fcda
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=bda21ad634212f49
           - function/check_mail
           - function/close_agent
           - function/resume_agent

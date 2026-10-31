@@ -16,7 +16,7 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (12; hash=64343b4a4a044060):
+  tools (13; hash=cbe16cec75adb2a0):
     - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=841a4b17cc4e6a88
     - function/write_stdin: Writes chars to or polls an exec session, returning recent output. Polls return immediately on pr...; args=[chars, max_output_tokens, session_id, wait_until_exit, yield_time_ms]; hash=47f6053a3c9aecc5
     - function/list_mcp_resources: Lists resources provided by MCP servers. Resources allow servers to share data that provides cont...; args=[cursor, server]; hash=6792edaff13561bd
@@ -26,7 +26,7 @@ Settings:
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.; hash=b2e944cd9efc0f58
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
-    - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=4c160a708f68b189
+    - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=915040b2cf2ae70c
       - function/check_mail
       - function/close_agent
       - function/resume_agent

@@ -231,6 +231,7 @@ fn wait_completion_preserves_multiline_agent_response_snapshot() {
     let message = "first line\n  indented line\nlast line\n";
 
     let item = ThreadItemPayload::CollabAgentToolCall {
+        lifecycle: None,
         id: "call-wait".to_string(),
         mailbox_input: None,
         tool: CollabAgentTool::Wait,
@@ -300,6 +301,7 @@ fn spawn_prompt_preview_preserves_multiline_prompt_snapshot() {
     let prompt = "Review the change.\nFocus on regressions.\nDo not run tests.\nReport findings.";
 
     let item = ThreadItemPayload::CollabAgentToolCall {
+        lifecycle: None,
         id: "call-spawn".to_string(),
         mailbox_input: None,
         tool: CollabAgentTool::SpawnAgent,
@@ -369,6 +371,7 @@ fn preview_caps_wrapped_rows_for_long_single_lines() {
 
     let spawn = tool_call_history_cell(
         &ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             id: "call-spawn".to_string(),
             mailbox_input: None,
             tool: CollabAgentTool::SpawnAgent,
@@ -398,6 +401,7 @@ fn preview_caps_wrapped_rows_for_long_single_lines() {
 
     let wait = tool_call_history_cell(
         &ThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             id: "call-wait".to_string(),
             mailbox_input: None,
             tool: CollabAgentTool::Wait,

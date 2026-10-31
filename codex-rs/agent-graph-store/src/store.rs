@@ -178,6 +178,15 @@ pub trait AgentGraphStore: Send + Sync {
         unsupported_alias_store()
     }
 
+    /// Promote an exclusively reserved child subtree into its own root in one transaction.
+    /// The previous owner and complete descendant set must still match the supplied snapshot.
+    fn detach_agent_alias(
+        &self,
+        _request: crate::DetachAgentAliasRequest,
+    ) -> AgentGraphStoreFuture<'_, AgentAliasTransfer> {
+        unsupported_alias_store()
+    }
+
     /// Change ordinary active/closed lifecycle state without releasing refs, nicknames, or task paths.
     ///
     /// Ownership transfer is intentionally rejected here and belongs to a separate atomic

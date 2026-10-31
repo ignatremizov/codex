@@ -21,6 +21,8 @@ pub(crate) struct SubmissionAdmission {
     pub(super) state: StdMutex<State>,
     writer_closed: AtomicBool,
     pub(super) subtree_unload_pending: AtomicBool,
+    pub(super) ownership_handoff: StdMutex<Option<uuid::Uuid>>,
+    pub(crate) ownership_handoff_draining: AtomicBool,
     pub(super) durable_shutdown_complete: AtomicBool,
     pub(super) durable_shutdown_target: Option<Arc<super::SessionIo>>,
     pub(super) completion_closed: AtomicBool,

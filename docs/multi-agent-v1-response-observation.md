@@ -16,11 +16,13 @@ The model-facing flags are:
 - `x`: keep the final response in the transcript without adding it to model context.
 - `z` (`send_input` only): save durable mail for explicit `check_mail` consumption without steering or starting a payload-bearing turn. `zf` also requests the consumed/advertised turn's final response; `z` rejects `c` and `q`.
 
-The field is additive. Omitting it preserves each tool's current behavior for the selected target turn: the final response is delivered passively, but it does not wake an idle observer.
+Omitted `w` on `send_input` installs no commentary or final subscription when the recipient is an ancestor of the sender. A child can report to Main without receiving Main's acknowledgement back into its own context. Other recipients, `spawn_agent`, and `resume_agent` retain passive final delivery, which does not wake an idle observer. Explicit flags retain their meaning in either direction; `w:"fx"` explicitly requests passive delivery. An omitted send does not revoke an earlier explicit subscription.
 
 Committed passive finals interrupt active `clock.sleep` without waking idle agents. Presentation-only completions and unread mailbox arrivals do not.
 
 This is a compatible v1 extension, not a new multi-agent v3 contract. It keeps the existing lifecycle tools, `wait_agent`, canonical thread UUIDs, and default active-turn steering behavior. It adds no second model-facing message or task API: `send_input` remains the single operation for immediate, queued, parent, child, and sibling input within the same owned tree.
+
+For array targets, resolve this default independently for each canonical receiver. A batch containing Main and a descendant has no aggregate final-observation mode; its individual admissions retain their effective policies.
 
 ## Implementation
 

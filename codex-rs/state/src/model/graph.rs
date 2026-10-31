@@ -63,6 +63,14 @@ pub struct AgentAliasTransferRequest {
     pub authored_selector: String,
 }
 
+/// Promote a reserved child subtree into its own root without changing thread identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAliasDetachRequest {
+    pub thread_id: ThreadId,
+    pub expected_previous_session_id: SessionId,
+    pub expected_descendant_thread_ids: Vec<ThreadId>,
+}
+
 /// Durable audit result for an exclusive alias ownership transfer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentAliasTransfer {

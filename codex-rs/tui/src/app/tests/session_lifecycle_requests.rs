@@ -834,6 +834,9 @@ async fn queued_start_rejection_restores_the_draft() -> Result<()> {
 pub(super) type RecordedRequests = Arc<Mutex<Vec<JSONRPCRequest>>>;
 pub(super) type RecordingAppServer = (AppServerSession, RecordedRequests, JoinHandle<Result<()>>);
 
+#[path = "agent_detach_ui_tests.rs"]
+mod agent_detach;
+
 fn is_recording_client_disconnect(error: &WebSocketError) -> bool {
     match error {
         WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => true,
@@ -5857,6 +5860,7 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
             thread_id,
             turn_id: "multi-page-turn".to_string(),
             item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                lifecycle: None,
                 id: "multi-page-spawn".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,

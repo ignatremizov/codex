@@ -12,11 +12,14 @@ use codex_protocol::WakeEventSurface;
 use codex_protocol::openai_models::ReasoningEffort;
 
 pub(super) const AGENT_COMMAND_USAGE: &str =
-    "Usage: /agent [new|<target>|<role>|queue|interrupt|close|resume|observe] ...";
+    "Usage: /agent [new|<target>|<role>|queue|interrupt|close|resume|observe|detach] ...";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum AgentCommand<'a> {
     OpenPane,
+    Detach {
+        selector: Option<AgentSelector>,
+    },
     New {
         task: Option<String>,
         fork: Option<AgentForkMode>,
@@ -136,6 +139,21 @@ pub(super) fn parse_agent_command_with_attached_input(
     };
 
     match first.value.as_str() {
+        "detach" => {
+            if has_attached_input {
+                return Err("/agent detach accepts no prompt or attachments".into());
+            }
+            let selector = parser
+                .next_token()?
+                .map(|token| {
+                    let selector = parse_selector(&token.value, token.raw)?;
+                    selector.control_target()?;
+                    Ok::<_, String>(selector)
+                })
+                .transpose()?;
+            parser.require_end("detach")?;
+            Ok(AgentCommand::Detach { selector })
+        }
         "new" => {
             let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Spawn)?;
             Ok(AgentCommand::New {

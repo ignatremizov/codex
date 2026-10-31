@@ -1074,6 +1074,7 @@ impl MessageProcessor {
             | ClientRequest::ThreadFork { .. }
             | ClientRequest::ThreadResume { .. }
             | ClientRequest::ThreadRevert { .. }
+            | ClientRequest::ThreadDetach { .. }
             | ClientRequest::ThreadRollback { .. }
             | ClientRequest::ThreadSettingsUpdate { .. }
             | ClientRequest::TurnSettingsUpdate { .. }
@@ -1393,6 +1394,11 @@ impl MessageProcessor {
             ClientRequest::ThreadUnload { params, .. } => {
                 self.thread_processor
                     .thread_unload(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadDetach { params, .. } => {
+                self.thread_processor
+                    .thread_detach(request_id.clone(), params)
                     .await
             }
             ClientRequest::ThreadUnsubscribe { params, .. } => {

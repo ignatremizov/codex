@@ -51,6 +51,7 @@ async fn live_batch_audit_preserves_turn_scoped_ids_without_writing_root_history
         ("opaque", "turn/call"),
     ] {
         let mut item = CollabAgentToolCallItem {
+            lifecycle: None,
             input_batch: Some(CollabAgentInputBatch {
                 flags: String::new(),
                 sender_thread_id: Some(sender_id),

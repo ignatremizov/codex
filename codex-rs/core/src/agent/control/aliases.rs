@@ -106,7 +106,11 @@ impl LocalAgentControl {
             .is_some_and(|session_id| current_owner == Some(session_id))
             || (current_owner.is_none()
                 && (known_to_current_root || self.bound_session_id().is_none()));
-        if !matches!(status, AgentStatus::NotFound) && !belongs_to_current_root {
+        let independent_root = current_alias.as_ref().is_some_and(|alias| {
+            alias.session_id == SessionId::from(thread_id) && alias.agent_ref == 1
+        });
+        if !matches!(status, AgentStatus::NotFound) && !belongs_to_current_root && !independent_root
+        {
             return Err(CodexErr::InvalidRequest(format!(
                 "agent {thread_id} is live under another root; close it before adoption"
             )));

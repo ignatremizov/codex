@@ -54,6 +54,11 @@ fn targets() -> Vec<AgentPromptTarget> {
         },
         AgentPromptTarget {
             thread_id: None,
+            selector: "detach".to_string(),
+            label: "Continue this conversation independently".to_string(),
+        },
+        AgentPromptTarget {
+            thread_id: None,
             selector: "reviewer".to_string(),
             label: "New reviewer agent".to_string(),
         },
@@ -264,6 +269,22 @@ fn agent_target_popup_snapshot() {
       close      Close an agent
       resume     Resume or adopt an agent
     ");
+}
+
+#[test]
+fn detach_completion_selects_an_existing_target() {
+    let command = "/agent detach 2";
+    assert_eq!(
+        completion(command, command.len()),
+        Some(AgentTargetCompletion {
+            range: 14..15,
+            query: "2".into(),
+            scope: AgentTargetCompletionScope::ExistingTarget,
+            action: Some("detach"),
+        }),
+    );
+    let popup = AgentTargetPopup::new(targets(), "det", AgentTargetCompletionScope::Any);
+    insta::assert_snapshot!(render_popup(&popup), @"  detach  Continue this conversation independently");
 }
 
 #[test]

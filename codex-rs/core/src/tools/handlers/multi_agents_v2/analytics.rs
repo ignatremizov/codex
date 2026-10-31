@@ -21,6 +21,7 @@ impl ToolCallAnalytics {
             client: invocation.session.services.analytics_events_client.clone(),
             turn_id: invocation.turn.sub_id.clone(),
             item: CollabAgentToolCallItem {
+                lifecycle: None,
                 observe_commentary: None,
                 wake_on_completion: None,
                 // Activity and analytics must use the same ID for turn-count deduplication.

@@ -85,6 +85,32 @@ fn parent_thread_id_tracks_immediate_parent_until_removal() {
 }
 
 #[test]
+fn an_independent_root_alias_clears_the_previous_parent_and_detach_notice() {
+    let (mut state, root, child, _) = populated_state();
+    state.set_parent_thread_id(child, Some(root));
+    state.upsert_alias(
+        child,
+        /*agent_ref*/ 34,
+        Some("Reviewer".into()),
+        AgentAliasState::Transferred,
+    );
+    state.announced_detachments.insert(child);
+    state.upsert_alias(
+        child,
+        /*agent_ref*/ 1,
+        Some("Main".into()),
+        AgentAliasState::Active,
+    );
+    assert_eq!(
+        (
+            state.parent_thread_id(child),
+            state.announced_detachments.contains(&child)
+        ),
+        (None, false),
+    );
+}
+
+#[test]
 fn wake_subscriptions_are_observer_relative_and_end_with_the_target_turn() {
     let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
 

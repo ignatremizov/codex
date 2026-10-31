@@ -90,6 +90,7 @@ async fn collaboration_live_and_replay_use_local_limits_and_keep_full_raw_source
         AppServerCollabAgentTool::Wait,
     ] {
         let item = AppServerThreadItemPayload::CollabAgentToolCall {
+            lifecycle: None,
             mailbox_input: None,
             id: format!("call-{tool:?}"),
             tool,

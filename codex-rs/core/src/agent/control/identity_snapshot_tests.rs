@@ -89,6 +89,31 @@ async fn identity_reads_do_not_initialize_an_unowned_namespace() {
             .expect("owner"),
         None,
     );
+    let foreign_root = ThreadId::new();
+    graph
+        .ensure_agent_alias_namespace(SessionId::from(foreign_root))
+        .await
+        .expect("foreign root alias");
+    assert_eq!(
+        control
+            .get_agent_presentation_ref(foreign_root)
+            .await
+            .expect("foreign display"),
+        codex_protocol::protocol::CollabAgentRef {
+            thread_id: foreign_root,
+            agent_ref: None,
+            task_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        },
+    );
+    assert_eq!(
+        graph
+            .list_agent_aliases(session_id)
+            .await
+            .expect("caller aliases"),
+        before,
+    );
 }
 
 #[test]

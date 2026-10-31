@@ -9,6 +9,7 @@ mod local_aliases;
 mod store;
 mod types;
 
+pub use codex_state::AgentAliasDetachRequest as DetachAgentAliasRequest;
 pub use codex_state::AgentLifecycleAuthorityUpdate;
 pub use codex_state::AgentSendMode;
 pub use codex_state::AgentSendScope;

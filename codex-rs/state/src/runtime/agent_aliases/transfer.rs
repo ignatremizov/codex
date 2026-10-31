@@ -16,13 +16,13 @@ use super::queries::find_spawn_parent_in_transaction;
 use super::queries::require_active_parent_alias;
 use crate::DirectionalThreadSpawnEdgeStatus;
 
-struct TransferMember {
-    thread_id: ThreadId,
-    previous_parent_thread_id: Option<ThreadId>,
-    state: crate::AgentAliasState,
-    nickname: Option<String>,
-    task_path: Option<String>,
-    current_owner: Option<crate::AgentAliasRecord>,
+pub(super) struct TransferMember {
+    pub(super) thread_id: ThreadId,
+    pub(super) previous_parent_thread_id: Option<ThreadId>,
+    pub(super) state: crate::AgentAliasState,
+    pub(super) nickname: Option<String>,
+    pub(super) task_path: Option<String>,
+    pub(super) current_owner: Option<crate::AgentAliasRecord>,
 }
 
 impl StateRuntime {
@@ -245,7 +245,7 @@ fn validate_transfer_request(
     Ok(())
 }
 
-async fn load_transfer_members(
+pub(super) async fn load_transfer_members(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     thread_id: ThreadId,
     previous_parent_thread_id: Option<ThreadId>,
@@ -361,7 +361,7 @@ fn validate_member_owner(
     Ok(())
 }
 
-async fn tombstone_previous_aliases(
+pub(super) async fn tombstone_previous_aliases(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     members: &[TransferMember],
 ) -> anyhow::Result<()> {
@@ -394,7 +394,7 @@ WHERE session_id = ?
     Ok(())
 }
 
-async fn activate_transferred_member(
+pub(super) async fn activate_transferred_member(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     new_session_id: SessionId,
     member: &TransferMember,

@@ -3,8 +3,10 @@ use codex_protocol::protocol::agent_delivery_receipt_from_response_item_id;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
-#[test_case(ThreadHistoryMode::Legacy, None, SubAgentCompletionModelVisibility::Visible; "legacy_passive")]
-#[test_case(ThreadHistoryMode::Paginated, None, SubAgentCompletionModelVisibility::Visible; "paginated_passive")]
+#[test_case(ThreadHistoryMode::Legacy, None, SubAgentCompletionModelVisibility::NotVisible; "legacy_default_upward")]
+#[test_case(ThreadHistoryMode::Paginated, None, SubAgentCompletionModelVisibility::NotVisible; "paginated_default_upward")]
+#[test_case(ThreadHistoryMode::Legacy, Some("fx"), SubAgentCompletionModelVisibility::Visible; "legacy_explicit_passive")]
+#[test_case(ThreadHistoryMode::Paginated, Some("fx"), SubAgentCompletionModelVisibility::Visible; "paginated_explicit_passive")]
 #[test_case(ThreadHistoryMode::Legacy, Some("x"), SubAgentCompletionModelVisibility::NotVisible; "legacy_presentation_only")]
 #[test_case(ThreadHistoryMode::Paginated, Some("x"), SubAgentCompletionModelVisibility::NotVisible; "paginated_presentation_only")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -40,7 +42,8 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
         .await?
         .target_thread_id;
     let child = test.thread_manager.get_thread(child_id).await?;
-    // Default passive delivery omits w; an explicitly empty flag string is invalid.
+    // Omitted upward handling has no reverse observation. Explicitly cancelled f/x
+    // flags still select passive handling; an empty flag string is invalid.
     let mut send_args = json!({"target": "Main", "message": MESSAGE});
     if let Some(response_handling) = response_handling {
         send_args["w"] = json!(response_handling);
@@ -106,6 +109,77 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
         "Main must accept the input before receipt delivery is checked",
     );
     wait_for_request_containing_text(&root_reply, MESSAGE).await?;
+
+    if response_handling.is_none() {
+        wait_for_terminal_status(child.as_ref()).await?;
+        wait_for_terminal_status(test.codex.as_ref()).await?;
+        child.flush_rollout().await?;
+        let history = test
+            .thread_store
+            .load_canonical_artifact_segments(LoadThreadHistoryParams {
+                thread_id: child_id,
+                include_archived: false,
+            })
+            .await?;
+        let completed = history
+            .segments
+            .iter()
+            .flatten()
+            .find_map(|item| match item {
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => match &event.item {
+                    TurnItem::CollabAgentToolCall(call) if call.id == CALL_ID => Some(call),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .context("completed upward send")?;
+        assert_eq!(
+            (
+                completed.status,
+                completed.observe_commentary,
+                completed.wake_on_completion
+            ),
+            (
+                codex_protocol::items::CollabAgentToolCallStatus::Completed,
+                Some(false),
+                None
+            ),
+        );
+        for item in history.segments.iter().flatten() {
+            if let RolloutItem::AgentResponseObservation(observation) = item
+                && observation.observer_thread_id == child_id
+                && observation.target_thread_id == main_id
+            {
+                assert_eq!(
+                    (observation.pending_commentary, observation.final_delivery),
+                    (false, AgentResponseFinalDelivery::None),
+                );
+            }
+        }
+        const FOLLOWUP: &str = "Continue the child without subscribing to Main.";
+        let followup = mount_sse_once_match(
+            &server,
+            |request: &wiremock::Request| body_contains(request, FOLLOWUP),
+            sse(vec![
+                ev_response_created("upward-default-followup"),
+                ev_completed("upward-default-followup"),
+            ]),
+        )
+        .await;
+        child
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: FOLLOWUP.into(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        let request = wait_for_request_containing_text(&followup, FOLLOWUP).await?;
+        assert!(
+            !request.body_json().to_string().contains(ANSWER),
+            "omitted upward handling must leave Main's answer out of child model context",
+        );
+        wait_for_terminal_status(child.as_ref()).await?;
+        return Ok(());
+    }
 
     let mut receipts = Vec::new();
     let mut root_child_completion = None;
