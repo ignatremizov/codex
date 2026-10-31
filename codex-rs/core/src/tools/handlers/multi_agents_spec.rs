@@ -316,7 +316,7 @@ pub fn create_followup_task_tool(message_delivery: MultiAgentMessageDelivery) ->
 }
 
 pub fn create_resume_agent_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    let mut properties = BTreeMap::from([
         (
             "id".to_string(),
             JsonSchema::string(Some("Agent to resume.".to_string())),
@@ -333,6 +333,7 @@ pub fn create_resume_agent_tool() -> ToolSpec {
             response_observation_schema(RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION),
         ),
     ]);
+    properties.extend(super::multi_agents_resume_spec::resume_model_properties());
 
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: MULTI_AGENT_V1_NAMESPACE.to_string(),
@@ -340,7 +341,7 @@ pub fn create_resume_agent_tool() -> ToolSpec {
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "resume_agent".to_string(),
             description:
-                "Resume a previously closed agent so it can receive send_input and wait_agent calls. Cannot target current thread."
+                "Resume a previously closed agent so it can receive send_input and wait_agent calls. Optional model and reasoning_effort also update an already loaded agent's future turns without interrupting its current work. Omitted fields preserve that agent's saved settings. Use explicit overrides only when requested by the user or applicable AGENTS.md/skill instructions. Cannot target current thread."
                     .to_string(),
             strict: false,
             defer_loading: None,
@@ -456,7 +457,7 @@ pub fn create_interrupt_agent_tool_v2() -> ToolSpec {
     })
 }
 
-fn agent_status_output_schema() -> Value {
+pub(super) fn agent_status_output_schema() -> Value {
     json!({
         "oneOf": [
             {

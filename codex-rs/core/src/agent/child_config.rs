@@ -221,14 +221,14 @@ async fn apply_spawn_agent_role_and_model_overrides(
     }
     // A role's model is a default, but its custom base instructions define the selected role.
     // An explicit model override changes the former without silently discarding the latter.
-    apply_requested_spawn_agent_model_overrides(
+    apply_requested_agent_model_overrides(
         session,
         config,
         requested_model,
         requested_reasoning_effort,
+        "spawn_agent",
     )
-    .await?;
-    validate_spawn_agent_model_selection(session, config).await
+    .await
 }
 
 fn apply_default_spawn_agent_model_overrides(turn: &TurnContext, config: &mut Config) {
@@ -247,16 +247,14 @@ fn apply_default_spawn_agent_model_overrides(turn: &TurnContext, config: &mut Co
     }
 }
 
-async fn apply_requested_spawn_agent_model_overrides(
+/// Applies explicit model choices and validates the resulting pair without applying spawn defaults.
+pub(crate) async fn apply_requested_agent_model_overrides(
     session: &Session,
     config: &mut Config,
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
+    tool_name: &str,
 ) -> Result<(), String> {
-    if requested_model.is_none() && requested_reasoning_effort.is_none() {
-        return Ok(());
-    }
-
     if let Some(requested_model) = requested_model {
         // A role or configured default may intentionally select a provider model that is not
         // present in the discovery catalog. Repeating that already-resolved selection is not a
@@ -268,19 +266,15 @@ async fn apply_requested_spawn_agent_model_overrides(
                 .list_models(RefreshStrategy::Offline, config.http_client_factory())
                 .await;
             let selected_model_name =
-                find_spawn_agent_model_name(&available_models, requested_model)?;
+                find_spawn_agent_model_name(&available_models, requested_model, tool_name)?;
             config.model = Some(selected_model_name);
         }
         config.model_reasoning_effort = requested_reasoning_effort;
-
-        return Ok(());
-    }
-
-    if let Some(reasoning_effort) = requested_reasoning_effort {
+    } else if let Some(reasoning_effort) = requested_reasoning_effort {
         config.model_reasoning_effort = Some(reasoning_effort);
     }
 
-    Ok(())
+    validate_spawn_agent_model_selection(session, config, tool_name).await
 }
 
 /// Resolves a missing effort from the final model and validates the final pair once all layers
@@ -288,9 +282,10 @@ async fn apply_requested_spawn_agent_model_overrides(
 async fn validate_spawn_agent_model_selection(
     session: &Session,
     config: &mut Config,
+    tool_name: &str,
 ) -> Result<(), String> {
     let model = config.model.clone().ok_or_else(|| {
-        "spawn_agent could not resolve the child model for reasoning effort validation".to_string()
+        format!("{tool_name} could not resolve the child model for reasoning effort validation")
     })?;
     let model_info = session
         .services
@@ -369,6 +364,7 @@ pub(crate) async fn apply_spawn_agent_service_tier(
 fn find_spawn_agent_model_name(
     available_models: &[ModelPreset],
     requested_model: &str,
+    tool_name: &str,
 ) -> Result<String, String> {
     available_models
         .iter()
@@ -381,7 +377,7 @@ fn find_spawn_agent_model_name(
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "Unknown model `{requested_model}` for spawn_agent. Available models: {available}"
+                "Unknown model `{requested_model}` for {tool_name}. Available models: {available}"
             )
         })
 }

@@ -15,6 +15,7 @@ use codex_core::ForkSnapshot;
 use codex_core::GuardianRootSnapshot;
 use codex_core::LiveAgent;
 use codex_core::PendingAgentMessage;
+use codex_core::ResumeRequest;
 use codex_core::RolloutBudgetReminder;
 use codex_core::SendRequest;
 use codex_core::SpawnRequest;
@@ -32,6 +33,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
@@ -126,6 +128,15 @@ impl AgentControl for TestAgentControl {
                 "host resume rejection for {child}"
             )))
         })
+    }
+
+    fn resume(&self, request: ResumeRequest) -> BoxFuture<'_, CodexResult<AgentInfo>> {
+        assert_eq!(request.caller, self.thread_id);
+        assert_eq!(
+            (request.model.as_deref(), request.reasoning_effort),
+            (Some("gpt-5.1"), Some(ReasoningEffort::High)),
+        );
+        Box::pin(async { Err(CodexErr::InvalidRequest("host resume rejection".into())) })
     }
 
     fn interrupt(
@@ -520,6 +531,15 @@ async fn collaboration_tools_dispatch_to_the_host_controller() -> anyhow::Result
                 "task_message": "hello"
             }),
         ),
+        (
+            "resume",
+            "resume_agent",
+            serde_json::json!({
+                "target": ThreadId::new().to_string(),
+                "model": "gpt-5.1",
+                "reasoning_effort": "high"
+            }),
+        ),
         ("list", "list_agents", serde_json::json!({})),
     ] {
         events.push(responses::ev_function_call_with_namespace(
@@ -541,7 +561,7 @@ async fn collaboration_tools_dispatch_to_the_host_controller() -> anyhow::Result
     test.submit_text_turn("use collaboration").await?;
     let requests = calls.requests();
     assert_eq!(requests.len(), 2);
-    for call in ["spawn", "send", "list"] {
+    for call in ["spawn", "send", "resume", "list"] {
         let output = requests[1].function_call_output(call).to_string();
         assert!(
             output.contains(&format!("host {call} rejection")),
