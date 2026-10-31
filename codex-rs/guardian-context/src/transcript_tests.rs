@@ -897,3 +897,70 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
         );
     }
 }
+
+#[test]
+fn resume_agent_native_transcript_respects_namespace_and_budget() {
+    let arguments = r#"{"target":"/root/worker","model":"gpt-5.2","reasoning_effort":"high"}"#;
+    for (configured_namespace, namespace, retains_native) in [
+        (None, None, false),
+        (None, Some(""), false),
+        (None, Some("functions"), false),
+        (None, Some("team"), false),
+        (None, Some("foreign"), false),
+        (Some("functions"), None, true),
+        (Some("functions"), Some(""), true),
+        (Some("functions"), Some("functions"), true),
+        (Some("functions"), Some("team"), false),
+        (Some("functions"), Some("foreign"), false),
+        (Some("team"), None, false),
+        (Some("team"), Some(""), false),
+        (Some("team"), Some("functions"), false),
+        (Some("team"), Some("team"), true),
+        (Some("team"), Some("foreign"), false),
+    ] {
+        let call: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "function_call",
+            "id": "resume-review-item",
+            "call_id": "resume-review-call",
+            "namespace": namespace,
+            "name": "resume_agent",
+            "arguments": arguments,
+            "encrypted_content": "opaque-resume-evidence",
+            "encrypted_function_args": ["model"],
+        }))
+        .unwrap();
+        let history = vec![call.clone()];
+        let mut config = transcript_config();
+        config.options.native_multi_agent_namespace = configured_namespace.map(str::to_owned);
+        let entries = collect_transcript(&history, &config);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].kind,
+            ConversationTranscriptEntryKind::ToolCall("tool resume_agent call".into()),
+        );
+        if retains_native {
+            let crate::TranscriptContent::NativeMessage(original) = &entries[0].content else {
+                panic!("matching resume namespace must retain original call evidence");
+            };
+            assert_eq!(original.as_ref(), &call);
+            let mut limited = crate::ContextProfile::synchronous();
+            limited.transcript = config.clone();
+            limited.transcript.entry_limits.tool_tokens = 0;
+            let prepared = limited.prepare_transcript(&entries, /*entry_number_offset*/ 0);
+            let [entry] = prepared.items.as_slice() else {
+                panic!("expected one prepared transcript entry");
+            };
+            let crate::TranscriptContent::Record(record) = &entry.content else {
+                panic!("over-budget native resume evidence must be omitted");
+            };
+            assert_eq!(record.text(), super::TRANSCRIPT_OMISSION_NOTICE);
+        } else {
+            let crate::TranscriptContent::Text(text) = &entries[0].content else {
+                panic!("disabled or foreign resume namespace must keep the text transcript");
+            };
+            assert_eq!(text.as_str(), arguments);
+        }
+        config.options.include_tool_calls = false;
+        assert!(collect_transcript(&history, &config).is_empty());
+    }
+}

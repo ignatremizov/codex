@@ -10,6 +10,7 @@ use crate::agent::api::AgentInput;
 use crate::agent::api::AgentTarget;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent::api::DeliveryReceipt;
+use crate::agent::api::ResumeRequest;
 use crate::agent::api::SendRequest;
 use crate::agent::api::SpawnRequest;
 use crate::agent::types::AgentExecutionGuard;
@@ -211,6 +212,10 @@ impl AgentControl for LocalAgentControl {
                 .await
                 .map(drop)
         })
+    }
+
+    fn resume(&self, request: ResumeRequest) -> BoxFuture<'_, Result<AgentInfo>> {
+        Box::pin(self.resume_v2_agent(request))
     }
 
     fn interrupt(

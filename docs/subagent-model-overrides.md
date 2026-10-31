@@ -25,6 +25,13 @@ validated against the final model. History authorization and provider/runtime ow
 remain separate. Model-authored overrides still require explicit user, applicable `AGENTS.md`,
 or skill instructions; the presence of these fields is not permission to infer a new preference.
 
+V1 and V2 `resume_agent` also accept explicit model and reasoning overrides. Resume keeps each
+omitted field from the target's saved settings, including a saved effort when changing only the
+model; it rejects an unsupported resulting pair. This differs from spawn's model-default rule
+because resume continues an existing thread. Changes are persisted for future turns, while
+current work keeps its captured settings. See [agent restoration](agent-restoration.md) for
+targeting, ownership, and controller behavior.
+
 When a role specifies `model_instructions_file`, the file path is resolved relative to the role
 configuration file (or may be absolute). Its non-empty contents replace inherited base
 instructions for that child and are marked as custom; developer instructions remain a separate

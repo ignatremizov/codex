@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_compaction_tests.rs
+assertion_line: 105
 expression: "context_snapshot::format_context_snapshot(\"Pending mail survives repeated /compact and cold resume, then normal inference acknowledges it for subsequent compaction.\",\n&[SnapshotEntry::captured(&requests[0]).labeled(\"Before /compact\"),\nSnapshotEntry::captured(&requests[1]).labeled(\"Remote /compact request\"),\nSnapshotEntry::captured(&requests[2]).labeled(\"Repeated /compact after resume\"),\nSnapshotEntry::captured(&requests[3]).labeled(\"First turn after /compact\"),\nSnapshotEntry::captured(&requests[4]).labeled(\"Compaction after mail was sampled\"),],\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Pending mail survives repeated /compact and cold resume, then normal inference acknowledges it for subsequent compaction.
@@ -26,10 +27,11 @@ Settings:
           - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent
@@ -112,8 +114,8 @@ Settings:
 ## Window 2 (after request 2: input diverged at item 07)
 Settings: same as window 1
 -- request 3 (compaction; Repeated /compact after resume) --
-00:additional_tools/developer (3; hash=e019c949fc483f83):
-        - namespace/functions; hash=03340277aa23936f
+00:additional_tools/developer (3; hash=6053284c911099e1):
+        - namespace/functions; hash=f58e7555e1161b16
           - custom/exec
           - function/wait
           - function/compact
@@ -122,10 +124,11 @@ Settings: same as window 1
           - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent
@@ -215,10 +218,11 @@ Settings: same as window 1
           - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
+          - function/resume_agent
           - function/send_message
           - function/spawn_agent
           - function/wait_agent

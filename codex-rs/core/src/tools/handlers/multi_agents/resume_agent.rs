@@ -29,7 +29,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
         multi_agent_tool_search_info(
-            "resume_agent resume reopen closed agent subagent thread id target",
+            "resume_agent resume reopen closed agent subagent thread id target model reasoning effort",
             self.spec(),
         )
     }
@@ -184,6 +184,18 @@ async fn handle_resume_agent(
     } else {
         (receiver_agent, live_adoption_error)
     };
+    if error.is_none()
+        && (args.model.is_some() || args.reasoning_effort.is_some())
+        && let Err(err) = local_agent_control
+            .update_resumed_agent_model(
+                receiver_thread_id,
+                args.model.as_deref(),
+                args.reasoning_effort.clone(),
+            )
+            .await
+    {
+        error = Some(collab_agent_error(receiver_thread_id, err));
+    }
     if error.is_none() && was_not_found && !matches!(status, AgentStatus::NotFound) {
         match local_agent_control
             .ensure_v1_completion_watcher(
@@ -274,6 +286,8 @@ impl CoreToolRuntime for Handler {
 struct ResumeAgentArgs {
     id: String,
     task: Option<String>,
+    model: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
     w: ResponseObservationPolicy,
 }

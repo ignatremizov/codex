@@ -32,10 +32,11 @@ Settings:
       - function/sleep
     - custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.; hash=b2e944cd9efc0f58
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
-    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
+    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=90ea3707ea350b0c
       - function/followup_task
       - function/interrupt_agent
       - function/list_agents
+      - function/resume_agent
       - function/send_message
       - function/spawn_agent
       - function/wait_agent
