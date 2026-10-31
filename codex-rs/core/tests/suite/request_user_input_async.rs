@@ -33,6 +33,9 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use test_case::test_case;
 
+#[path = "async_subagent_questions_tests.rs"]
+mod async_subagent_questions_tests;
+
 #[test_case(SessionSource::Exec, None, true, false; "root_without_capability")]
 #[test_case(SessionSource::Exec, Some("send_user_message_async"), true, true; "legacy_capability_enabled")]
 #[test_case(SessionSource::Exec, Some("send_user_message_async"), false, false; "legacy_capability_disabled")]

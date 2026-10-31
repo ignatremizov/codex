@@ -303,8 +303,7 @@ impl ChatWidget {
                         .into_iter()
                         .map(|reply| reply.question_item_id)
                         .collect::<Vec<_>>();
-                    let displayed_answer_changed =
-                        self.bottom_pane.question_editor().resolve_answers(&ids);
+                    let displayed_answer_changed = self.resolve_displayed_question_answers(&ids);
                     if displayed_answer_changed && !self.bottom_pane.has_active_view() {
                         self.bottom_pane.key_chord_reset_requested = true;
                     }

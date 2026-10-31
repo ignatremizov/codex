@@ -516,6 +516,7 @@ pub(super) enum RealtimeRequestBehavior {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AgentControlRequestBehavior {
     Synthetic,
+    UnknownPromptOutcome,
     Forward,
 }
 
@@ -590,7 +591,8 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                 toml::Value::String(config.model_provider_id.clone()),
             ),
         ],
-        AgentControlRequestBehavior::Synthetic => Vec::new(),
+        AgentControlRequestBehavior::Synthetic
+        | AgentControlRequestBehavior::UnknownPromptOutcome => Vec::new(),
     };
     let mut embedded = crate::start_embedded_app_server(
         codex_arg0::Arg0DispatchPaths::default(),
@@ -1085,7 +1087,7 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                             data: None,
                                         })
                                     } else {
-                                        let unknown = input.iter().any(|item| matches!(
+                                        let unknown = agent_control_behavior == AgentControlRequestBehavior::UnknownPromptOutcome || input.iter().any(|item| matches!(
                                             item,
                                             AppServerUserInput::Text { text, .. } if text == "outcome unknown"
                                         ));
@@ -8205,3 +8207,6 @@ async fn provider_error_preserves_partial_history_notice() -> Result<()> {
     }
     Ok(())
 }
+
+#[path = "agent_question_routing_tests.rs"]
+mod agent_question_routing_tests;

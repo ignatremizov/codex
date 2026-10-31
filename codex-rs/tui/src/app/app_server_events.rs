@@ -548,12 +548,25 @@ impl App {
                 let untracked_thread =
                     self.primary_thread_id.is_some() && !self.owns_thread_for_routing(thread_id);
                 if untracked_thread
+                    && matches!(&notification, ServerNotification::ItemCompleted(item)
+                        if matches!(item.item.payload, ThreadItemPayload::UserMessage { .. }))
+                {
+                    // Retained bound questions can outlive the task whose channels were reset.
+                    // Reconcile only their scoped receipts before ordinary routing rejects it.
+                    self.track_agent_questions(app_server_client, thread_id, &notification);
+                }
+                let question_needs_parent =
+                    super::agent_questions::is_native_async_question(&notification)
+                        && Some(thread_id) != self.agent_root_thread_id()
+                        && self.agent_navigation.parent_thread_id(thread_id).is_none();
+                if (untracked_thread || question_needs_parent)
                     && !self
                         .owns_untracked_notification(app_server_client, thread_id, &notification)
                         .await
                 {
                     return;
                 }
+                self.track_agent_questions(app_server_client, thread_id, &notification);
                 let result = if self.primary_thread_id.is_none() && !background_voice {
                     self.enqueue_primary_thread_notification(notification).await
                 } else {

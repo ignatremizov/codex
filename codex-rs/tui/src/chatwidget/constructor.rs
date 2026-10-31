@@ -271,6 +271,7 @@ impl ChatWidget {
             suppress_session_configured_redraw: false,
             suppress_initial_user_message_submit: false,
             pending_notification: None,
+            question_backend_id: None,
             quit_shortcut_expires_at: None,
             quick_dial_menu: false,
             quick_dial_menu_key_guard: None,

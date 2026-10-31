@@ -590,6 +590,7 @@ impl App {
             );
         }
         chat_widget.restore_kill_buffer_snapshot(self.chat_widget.take_kill_buffer_snapshot());
+        chat_widget.inherit_agent_questions(&mut self.chat_widget);
         crate::markdown_render::preferences::init(chat_widget.local_settings.tui.rendering);
         let mut previous = std::mem::replace(&mut self.chat_widget, chat_widget);
         if previous.realtime_conversation_is_running() {
@@ -874,6 +875,8 @@ impl App {
             /*initial_user_message*/ None,
         );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
+        self.chat_widget
+            .set_question_backend(app_server.backend_id());
         self.chat_widget
             .set_task_mentions_enabled(app_server.task_tools_available(thread_id));
         self.chat_widget

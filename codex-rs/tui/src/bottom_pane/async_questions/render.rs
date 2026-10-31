@@ -35,7 +35,7 @@ impl Renderable for AsyncQuestions {
             + 2
             + u16::from(!self.has_options() && self.unanswered_count() > 1)
             + self.footer_lines(width, /*option_tip*/ None).len() as u16
-            + u16::from(self.unanswered_count() > 1)
+            + u16::from(self.shows_progress())
             + menu_surface_padding_height();
         u16::try_from(self.wrapped_question_lines(width).len() + usize::from(extra_height))
             .unwrap_or(u16::MAX)

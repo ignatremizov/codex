@@ -65,6 +65,33 @@ repeating the prompt, options, transport ID, or verbose reply envelope.
 The TUI uses the same short reference in submitted answer history, queued previews,
 and recalled answers, so the question text is not repeated in each reply.
 
+Spawned subagents can use the same tool when asynchronous user input is enabled and
+the model advertises support. Their live questions appear with the requesting
+agent's label. The TUI binds each question to its requesting UUID and server when
+it arrives. Answering from Main, a sibling, or the requester itself sends genuine
+user input directly to that requester through agent control; changing the selected
+conversation cannot redirect the answer. The model supplies the question, and the
+client derives the reply destination from the server event.
+
+Live spawn results register the child relationship before its first question; no
+picker refresh is required. If a question arrives ahead of its spawn result, the
+TUI checks the server's current parent metadata before routing it. Historical
+spawn provenance alone cannot bind a question from a detached root.
+
+Enter sends the answer immediately; while editing text, the configured queue key
+queues it for the requester's next turn. The selected conversation's draft stays intact. An answer
+is literal text, so command prefixes and mentions cannot run commands or add
+attachments. Answer submission adds no response subscription for the source model.
+Existing subscriptions retain their policies.
+
+Pending subagent questions and answer drafts follow TUI view changes and survive
+unrelated turn completion or prompts. Accepted answers and replies committed by
+another client dismiss only the matching requester's question. A definite refusal
+preserves the draft for an explicit retry. An uncertain outcome holds the answer
+without resending; check the requesting conversation for its receipt before
+submitting the answer manually again. A server or ownership change never silently
+redirects or adopts the requester.
+
 Canonical transport and replay still retain the original question and stable item
 identity for clients to display and dismiss the correct question. Older desktop
 reply envelopes remain readable; unknown or mixed-text replies are not guessed at

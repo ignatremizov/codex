@@ -1,4 +1,5 @@
 //! Route question actions through the shared composer, preserving drafts until delivery accepts them.
+//! Bound agent replies preserve an explicit queue key even when the displayed thread is idle.
 //! Inline Other reserves Up/Down for choices; j/k retain their Vim behavior.
 
 use super::*;
@@ -44,6 +45,7 @@ impl AsyncQuestions {
             self.composer.flush_pending_input();
         }
         let before = self.composer.snapshot_draft();
+        let queue_requested = self.keymap.composer.queue.is_pressed(key);
         let (result, _) = self.composer.handle_key_event(key);
         let queued = matches!(result, InputResult::Queued { .. });
         if matches!(
@@ -52,8 +54,19 @@ impl AsyncQuestions {
         ) {
             self.composer.restore_draft(before);
             self.go_next_or_submit();
-            if queued && let Some(QuestionSubmission::Submit(text)) = self.submission.take() {
-                self.submission = Some(QuestionSubmission::Queue(text));
+            if queued
+                || (queue_requested
+                    && matches!(self.submission.as_ref(), Some(QuestionSubmission::Agent(_))))
+            {
+                self.submission = self.submission.take().map(|submission| match submission {
+                    QuestionSubmission::Submit(text) | QuestionSubmission::Queue(text) => {
+                        QuestionSubmission::Queue(text)
+                    }
+                    QuestionSubmission::Agent(mut answer) => {
+                        answer.delivery = crate::agent_question::AgentQuestionDelivery::Queued;
+                        QuestionSubmission::Agent(answer)
+                    }
+                });
             }
         }
     }
@@ -170,7 +183,11 @@ impl BottomPaneView for AsyncQuestions {
             return;
         }
         if key.kind == KeyEventKind::Press && self.keymap.chat.skip_question.is_pressed(key) {
-            if self.delivery_enabled {
+            if self.delivery_enabled
+                || self
+                    .current_answer()
+                    .is_some_and(|answer| matches!(answer.origin, QuestionOrigin::Agent(_)))
+            {
                 self.accept_answer();
             }
             return;

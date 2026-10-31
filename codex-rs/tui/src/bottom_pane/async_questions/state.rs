@@ -1,7 +1,8 @@
-//! Pending async questions retain drafts until handled locally, answered by another client, or a live turn ends.
-//! Message IDs survive removal so replay cannot reopen an answered or skipped question.
+//! Local questions retain drafts until answered or their turn ends; bound agent questions
+//! survive unrelated turns and view changes. Replay identities are scoped to the requester.
 
 use super::*;
+use crate::agent_question::AgentQuestionDelivery;
 use crate::history_cell::sanitize_user_text;
 use codex_context_fragments::AnsweredQuestion;
 use codex_context_fragments::ContextualUserFragment;
@@ -12,7 +13,16 @@ const MAX_RECOVERED_QUESTION_TITLE_BYTES: usize = 512;
 
 impl AsyncQuestions {
     pub(crate) fn append(&mut self, message_id: &str, questions: &[AsyncUserInputQuestion]) {
-        if questions.is_empty() || !self.state.seen_ids.insert(message_id.to_string()) {
+        self.append_from(message_id, questions, QuestionOrigin::Local);
+    }
+
+    pub(crate) fn append_from(
+        &mut self,
+        message_id: &str,
+        questions: &[AsyncUserInputQuestion],
+        origin: QuestionOrigin,
+    ) {
+        if questions.is_empty() || !self.state.seen_ids.insert(origin.qualify(message_id)) {
             return;
         }
         let was_empty = self.state.pending.is_empty();
@@ -21,8 +31,14 @@ impl AsyncQuestions {
             // Match the desktop's JSON.stringify([tool name, item id, question index]).
             let question_id =
                 serde_json::json!(["request_user_input_async", message_id, index]).to_string();
-            if self.state.answered_ids.contains(&question_id)
-                || self.state.answered_ids.contains(message_id)
+            if self
+                .state
+                .answered_ids
+                .contains(&origin.qualify(&question_id))
+                || self
+                    .state
+                    .answered_ids
+                    .contains(&origin.qualify(message_id))
             {
                 continue;
             }
@@ -47,6 +63,8 @@ impl AsyncQuestions {
             self.state.pending.push(PendingQuestion {
                 message_id: message_id.into(),
                 question_id,
+                origin: origin.clone(),
+                submission_pending: false,
                 question,
                 options_state,
                 draft: ComposerDraft::default(),
@@ -106,12 +124,14 @@ impl AsyncQuestions {
 
     pub(super) fn go_next_or_submit(&mut self) {
         self.save_current_draft();
-        if !self.delivery_enabled {
-            return;
-        }
         let Some(answer) = self.current_answer() else {
             return;
         };
+        if answer.submission_pending
+            || !self.delivery_enabled && matches!(answer.origin, QuestionOrigin::Local)
+        {
+            return;
+        }
         let selected = answer
             .options_state
             .selected_idx
@@ -146,6 +166,17 @@ impl AsyncQuestions {
                 "Answer too long; shorten it before sending".into(),
                 Duration::from_secs(5),
             );
+        } else if let QuestionOrigin::Agent(binding) = &answer.origin {
+            let submission = AgentQuestionAnswer {
+                binding: binding.clone(),
+                question_id: answer.question_id.clone(),
+                text: reply,
+                delivery: AgentQuestionDelivery::Direct,
+            };
+            if let Some(answer) = self.current_answer_mut() {
+                answer.submission_pending = true;
+            }
+            self.submission = Some(QuestionSubmission::Agent(submission));
         } else {
             self.submission = Some(QuestionSubmission::Submit(reply));
         }
@@ -153,12 +184,16 @@ impl AsyncQuestions {
 
     /// Return whether resolving these answers changed the expanded question's input target.
     pub(crate) fn resolve_answers(&mut self, question_ids: &[String]) -> bool {
+        self.resolve_answer_keys(question_ids)
+    }
+
+    pub(super) fn resolve_answer_keys(&mut self, question_ids: &[String]) -> bool {
         // History can arrive before live questions or before restoring local drafts.
         self.state.answered_ids.extend(question_ids.iter().cloned());
         // Older desktop replies identify the whole source message instead of one question.
         let answered = |question: &PendingQuestion| {
-            question_ids.contains(&question.question_id)
-                || question_ids.contains(&question.message_id)
+            question_ids.contains(&question.origin.qualify(&question.question_id))
+                || question_ids.contains(&question.origin.qualify(&question.message_id))
         };
         if !self.state.pending.iter().any(answered) {
             return false;
@@ -196,7 +231,10 @@ impl AsyncQuestions {
         }
         self.composer.flush_pending_input();
         self.visible_options.set((0, 0));
-        self.state.pending.remove(self.state.current_idx);
+        let answer = self.state.pending.remove(self.state.current_idx);
+        self.state
+            .answered_ids
+            .insert(answer.origin.qualify(&answer.question_id));
         if self.state.current_idx >= self.state.pending.len() {
             self.state.current_idx = 0;
         }
@@ -206,10 +244,23 @@ impl AsyncQuestions {
     }
 
     pub(crate) fn clear_pending(&mut self) {
-        // Keep seen_ids so replay cannot restore questions from the previous prompt.
-        self.state.pending.clear();
-        self.state.current_idx = 0;
-        self.expanded = false;
+        self.save_current_draft();
+        // A local prompt or turn end cannot dismiss a different agent's question.
+        let retained_index = self
+            .state
+            .pending
+            .iter()
+            .take(self.state.current_idx)
+            .filter(|question| matches!(question.origin, QuestionOrigin::Agent(_)))
+            .count();
+        let retained_current = self
+            .current_answer()
+            .is_some_and(|question| matches!(question.origin, QuestionOrigin::Agent(_)));
+        self.state
+            .pending
+            .retain(|question| matches!(question.origin, QuestionOrigin::Agent(_)));
+        self.state.current_idx = retained_index.min(self.state.pending.len().saturating_sub(1));
+        self.expanded &= retained_current && !self.state.pending.is_empty();
         self.submission = None;
         self.visible_options.set((0, 0));
         self.restore_current_draft();
@@ -223,6 +274,7 @@ impl AsyncQuestions {
             .state
             .pending
             .iter()
+            .filter(|question| matches!(question.origin, QuestionOrigin::Local))
             .filter_map(PendingQuestion::recovered_draft)
             .collect();
         self.clear_pending();
@@ -233,7 +285,43 @@ impl AsyncQuestions {
         self.composer.cancel_history_search();
         self.save_current_draft();
         self.state.expanded = self.expanded;
-        self.state.clone()
+        let pending = self
+            .state
+            .pending
+            .iter()
+            .filter(|question| matches!(question.origin, QuestionOrigin::Local))
+            .cloned()
+            .collect::<Vec<_>>();
+        let current_idx = self
+            .state
+            .pending
+            .iter()
+            .take(self.state.current_idx)
+            .filter(|question| matches!(question.origin, QuestionOrigin::Local))
+            .count()
+            .min(pending.len().saturating_sub(1));
+        QuestionState {
+            pending,
+            current_idx,
+            expanded: self.expanded
+                && self
+                    .current_answer()
+                    .is_some_and(|question| matches!(question.origin, QuestionOrigin::Local)),
+            seen_ids: self
+                .state
+                .seen_ids
+                .iter()
+                .filter(|id| !id.starts_with("agent:"))
+                .cloned()
+                .collect(),
+            answered_ids: self
+                .state
+                .answered_ids
+                .iter()
+                .filter(|id| !id.starts_with("agent:"))
+                .cloned()
+                .collect(),
+        }
     }
 
     pub(crate) fn restore(&mut self, saved: QuestionState) {
@@ -241,19 +329,21 @@ impl AsyncQuestions {
         let incoming = std::mem::replace(&mut self.state, saved);
         let mut answered_ids = incoming.answered_ids;
         answered_ids.extend(self.state.answered_ids.iter().cloned());
-        self.state.pending.extend(
-            incoming
-                .pending
-                .into_iter()
-                .filter(|question| !self.state.seen_ids.contains(&question.message_id)),
-        );
+        self.state
+            .pending
+            .extend(incoming.pending.into_iter().filter(|question| {
+                !self
+                    .state
+                    .seen_ids
+                    .contains(&question.origin.qualify(&question.message_id))
+            }));
         self.state.seen_ids.extend(incoming.seen_ids);
         self.expanded = self.state.expanded && !self.state.pending.is_empty();
         if self.expanded {
             self.snooze_auto_resolution();
         }
         self.restore_current_draft();
-        self.resolve_answers(&answered_ids.into_iter().collect::<Vec<_>>());
+        self.resolve_answer_keys(&answered_ids.into_iter().collect::<Vec<_>>());
     }
 }
 

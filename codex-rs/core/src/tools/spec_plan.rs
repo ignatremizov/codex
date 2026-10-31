@@ -85,6 +85,8 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_tools::IndirectNamespacePrefixes;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
@@ -1395,7 +1397,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     }
 
     if turn_context.config.experimental_request_user_input_enabled
-        && !turn_context.session_source.is_non_root_agent()
+        && (!turn_context.session_source.is_non_root_agent()
+            || matches!(
+                &turn_context.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            ))
         && context
             .model_info
             .experimental_supported_tools
@@ -1408,11 +1414,20 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
             })
     {
         let model_messages = ResolvedModelMessages::from_model(context.model_info);
+        let mut description = model_messages
+            .request_user_input_async_description()
+            .to_string();
+        if matches!(
+            &turn_context.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            description.push_str(
+                " Ask the user directly when you need an answer. Supporting clients bind replies to this requesting agent, even while another conversation is selected.",
+            );
+        }
         registry.add_with_exposure(
             RequestUserInputAsyncHandler {
-                description: model_messages
-                    .request_user_input_async_description()
-                    .to_string(),
+                description,
                 parameters: model_messages
                     .request_user_input_async_parameters_override()
                     .map(str::to_owned),
