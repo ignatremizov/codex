@@ -7,6 +7,7 @@ use crate::agent::status::is_final;
 use crate::function_tool::FunctionCallError;
 use crate::session::TerminalStatusEvent;
 use crate::session::TerminalStatusSubscription;
+use crate::session::TurnInput;
 use crate::session::mailbox::MailboxConsumption;
 use crate::session::session::Session;
 use codex_protocol::ThreadId;
@@ -125,93 +126,136 @@ async fn wait_for_final_status(
 
 pub(super) async fn wait_for_outcome(
     session: &Arc<Session>,
+    turn_id: &str,
     status_rxs: Vec<(ThreadId, TerminalStatusSubscription)>,
     initial_statuses: Vec<(ThreadId, TerminalStatusEvent)>,
     deadline: Instant,
     selection: Option<&MailboxSelection>,
 ) -> Result<(Vec<(ThreadId, TerminalStatusEvent)>, WaitReturnReason), FunctionCallError> {
-    // Subscribe before any inventory read. The watch is a versioned hint, not
-    // payload storage; acceptance during a read remains visible to changed().
-    let mut activity = session.subscribe_mailbox_activity();
-    if !initial_statuses.is_empty() {
-        return Ok((initial_statuses, WaitReturnReason::Completion));
-    }
-    let mut futures = FuturesUnordered::new();
-    for (id, rx) in status_rxs {
-        futures.push(wait_for_final_status(Arc::clone(session), id, rx));
-    }
-    let mut results = Vec::new();
-    let mut refresh_inventory = selection.is_some();
-    let mut mail_ready = false;
-    loop {
-        if refresh_inventory && let Some(selection) = selection {
-            let inventory = tokio::select! {
+    let input = async {
+        let Some(turn_state) = session
+            .input_queue
+            .turn_state_for_sub_id(&session.active_turn, turn_id)
+            .await
+        else {
+            return std::future::pending::<()>().await;
+        };
+        // Subscribe before checking pending input so input accepted during setup
+        // cannot be missed. Global hints must still match this originating turn.
+        let (mut activity, has_pending) = session
+            .input_queue
+            .subscribe_steer_activity(Some(turn_state.as_ref()))
+            .await;
+        if has_pending {
+            return;
+        }
+        while activity.changed().await.is_ok() {
+            if turn_state
+                .lock()
+                .await
+                .pending_input
+                .as_slice()
+                .iter()
+                .any(TurnInput::is_prompt)
+            {
+                return;
+            }
+        }
+        std::future::pending::<()>().await
+    };
+    let outcome = async {
+        // Subscribe before any inventory read. The watch is a versioned hint, not
+        // payload storage; acceptance during a read remains visible to changed().
+        let mut activity = session.subscribe_mailbox_activity();
+        if !initial_statuses.is_empty() {
+            return Ok((initial_statuses, WaitReturnReason::Completion));
+        }
+        let mut futures = FuturesUnordered::new();
+        for (id, rx) in status_rxs {
+            futures.push(wait_for_final_status(Arc::clone(session), id, rx));
+        }
+        let mut results = Vec::new();
+        let mut refresh_inventory = selection.is_some();
+        let mut mail_ready = false;
+        loop {
+            if refresh_inventory && let Some(selection) = selection {
+                let inventory = tokio::select! {
+                    biased;
+                    result = futures.next(), if !futures.is_empty() => {
+                        if let Some(Some(result)) = result {
+                            results.push(result);
+                            refresh_inventory = false;
+                        }
+                        continue;
+                    }
+                    inventory = session.services.thread_store.read_mailbox_inventory(session.thread_id) => {
+                        inventory.map_err(|err| FunctionCallError::RespondToModel(format!(
+                            "failed to read wait_agent mailbox inventory: {err}"
+                        )))?
+                    }
+                    _ = tokio::time::sleep_until(deadline) => {
+                        return Ok((results, WaitReturnReason::Timeout));
+                    }
+                };
+                mail_ready = inventory.pending_senders.iter().any(|entry| {
+                    entry.count > 0
+                        && match selection {
+                            MailboxSelection::All => true,
+                            MailboxSelection::Senders(senders) => senders.contains(&entry.sender),
+                        }
+                });
+                refresh_inventory = false;
+            }
+            // Poll terminal futures after the inventory await as well: a completion
+            // that became ready during that read wins over mail and timeout.
+            loop {
+                match futures.next().now_or_never() {
+                    Some(Some(Some(result))) => results.push(result),
+                    Some(Some(None)) => continue,
+                    Some(None) | None => break,
+                }
+            }
+            if !results.is_empty() {
+                return Ok((results, WaitReturnReason::Completion));
+            }
+            if mail_ready {
+                return Ok((results, WaitReturnReason::Mail));
+            }
+            // Preserve nested completion-only exhaustion behavior. Direct mail-only
+            // waits must remain subscribed even without any terminal-status futures.
+            if (selection.is_none() && futures.is_empty()) || Instant::now() >= deadline {
+                return Ok((results, WaitReturnReason::Timeout));
+            }
+            tokio::select! {
                 biased;
                 result = futures.next(), if !futures.is_empty() => {
                     if let Some(Some(result)) = result {
                         results.push(result);
-                        refresh_inventory = false;
                     }
-                    continue;
                 }
-                inventory = session.services.thread_store.read_mailbox_inventory(session.thread_id) => {
-                    inventory.map_err(|err| FunctionCallError::RespondToModel(format!(
-                        "failed to read wait_agent mailbox inventory: {err}"
-                    )))?
+                changed = activity.changed(), if selection.is_some() => {
+                    changed.map_err(|err| FunctionCallError::RespondToModel(
+                        format!("wait_agent mailbox activity closed: {err}")
+                    ))?;
+                    refresh_inventory = true;
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     return Ok((results, WaitReturnReason::Timeout));
                 }
-            };
-            mail_ready = inventory.pending_senders.iter().any(|entry| {
-                entry.count > 0
-                    && match selection {
-                        MailboxSelection::All => true,
-                        MailboxSelection::Senders(senders) => senders.contains(&entry.sender),
-                    }
-            });
-            refresh_inventory = false;
-        }
-        // Poll terminal futures after the inventory await as well: a completion
-        // that became ready during that read wins over mail and timeout.
-        loop {
-            match futures.next().now_or_never() {
-                Some(Some(Some(result))) => results.push(result),
-                Some(Some(None)) => continue,
-                Some(None) | None => break,
             }
         }
-        if !results.is_empty() {
-            return Ok((results, WaitReturnReason::Completion));
-        }
-        if mail_ready {
-            return Ok((results, WaitReturnReason::Mail));
-        }
-        // Preserve nested completion-only exhaustion behavior. Direct mail-only
-        // waits must remain subscribed even without any terminal-status futures.
-        if (selection.is_none() && futures.is_empty()) || Instant::now() >= deadline {
-            return Ok((results, WaitReturnReason::Timeout));
-        }
-        tokio::select! {
-            biased;
-            result = futures.next(), if !futures.is_empty() => {
-                if let Some(Some(result)) = result {
-                    results.push(result);
-                }
-            }
-            changed = activity.changed(), if selection.is_some() => {
-                changed.map_err(|err| FunctionCallError::RespondToModel(
-                    format!("wait_agent mailbox activity closed: {err}")
-                ))?;
-                refresh_inventory = true;
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                return Ok((results, WaitReturnReason::Timeout));
-            }
-        }
+    };
+    tokio::select! {
+        biased;
+        result = outcome => result,
+        _ = input => Ok((Vec::new(), WaitReturnReason::Input)),
     }
 }
 
 #[cfg(test)]
 #[path = "wait_mailbox_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "wait_input_tests.rs"]
+mod input_tests;

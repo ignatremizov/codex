@@ -128,7 +128,7 @@ fn direct_wait_invocation(
 
 #[tokio::test]
 async fn activity_rechecks_selection_without_claiming_or_consuming() -> anyhow::Result<()> {
-    let (mut session, _) = make_session_and_context().await;
+    let (mut session, turn) = make_session_and_context().await;
     attach_in_memory_thread_store(&mut session).await;
     let session = Arc::new(session);
     let selected = ThreadId::new();
@@ -136,6 +136,7 @@ async fn activity_rechecks_selection_without_claiming_or_consuming() -> anyhow::
     let selection = MailboxSelection::Senders(vec![MailboxSender::Agent(selected)]);
     let wait = wait_for_outcome(
         &session,
+        &turn.sub_id,
         Vec::new(),
         Vec::new(),
         Instant::now() + Duration::from_secs(/*secs*/ 10),
@@ -188,7 +189,7 @@ async fn activity_rechecks_selection_without_claiming_or_consuming() -> anyhow::
 
 #[tokio::test]
 async fn pending_mail_needs_no_activity_signal_and_completion_wins() -> anyhow::Result<()> {
-    let (mut session, _) = make_session_and_context().await;
+    let (mut session, turn) = make_session_and_context().await;
     attach_in_memory_thread_store(&mut session).await;
     let session = Arc::new(session);
     let sender = ThreadId::new();
@@ -196,6 +197,7 @@ async fn pending_mail_needs_no_activity_signal_and_completion_wins() -> anyhow::
     let selection = MailboxSelection::Senders(vec![MailboxSender::Agent(sender)]);
     let (statuses, reason) = wait_for_outcome(
         &session,
+        &turn.sub_id,
         Vec::new(),
         Vec::new(),
         Instant::now(),
@@ -205,6 +207,7 @@ async fn pending_mail_needs_no_activity_signal_and_completion_wins() -> anyhow::
     assert_eq!((statuses, reason), (Vec::new(), WaitReturnReason::Mail));
     let (statuses, reason) = wait_for_outcome(
         &session,
+        &turn.sub_id,
         Vec::new(),
         vec![(
             sender,
@@ -235,13 +238,14 @@ async fn pending_mail_needs_no_activity_signal_and_completion_wins() -> anyhow::
 
 #[tokio::test]
 async fn unselected_pending_mail_does_not_prevent_timeout() -> anyhow::Result<()> {
-    let (mut session, _) = make_session_and_context().await;
+    let (mut session, turn) = make_session_and_context().await;
     attach_in_memory_thread_store(&mut session).await;
     let session = Arc::new(session);
     accept_agent_mail(&session, ThreadId::new()).await?;
     let selection = MailboxSelection::Senders(vec![MailboxSender::Agent(ThreadId::new())]);
     let (statuses, reason) = wait_for_outcome(
         &session,
+        &turn.sub_id,
         Vec::new(),
         Vec::new(),
         Instant::now(),
@@ -254,7 +258,7 @@ async fn unselected_pending_mail_does_not_prevent_timeout() -> anyhow::Result<()
 
 #[tokio::test]
 async fn ready_terminal_subscription_wins_over_selected_mail() -> anyhow::Result<()> {
-    let (mut session, _) = make_session_and_context().await;
+    let (mut session, turn) = make_session_and_context().await;
     attach_in_memory_thread_store(&mut session).await;
     let session = Arc::new(session);
     let (sender, _) = make_session_and_context().await;
@@ -265,6 +269,7 @@ async fn ready_terminal_subscription_wins_over_selected_mail() -> anyhow::Result
     let selection = MailboxSelection::Senders(vec![MailboxSender::Agent(sender.thread_id)]);
     let (statuses, reason) = wait_for_outcome(
         &session,
+        &turn.sub_id,
         vec![(sender.thread_id, subscription)],
         Vec::new(),
         Instant::now(),
