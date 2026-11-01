@@ -34,8 +34,12 @@ Settings:
 01:compaction:encrypted=true; chars=17; hash=3733598f92aa081a
 02:message/user:
     Keep the working tree unchanged.
-03:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+03:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
@@ -67,8 +71,12 @@ Settings: relative to window 1
     <MODEL_INSTRUCTIONS>
 02:message/user:
     Keep the working tree unchanged.
-03:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+03:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
@@ -197,8 +205,12 @@ Settings: same as window 2
     <MODEL_INSTRUCTIONS>
 02:message/user:
     Keep the working tree unchanged.
-03:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+03:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
@@ -232,8 +244,12 @@ Settings: same as window 2
     Confirm where publishing is allowed.
 04:message/user:
     Continue with the new model.
-05:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+05:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 06:message/user:
     <ENVIRONMENT_CONTEXT>
 07:message/user:
@@ -359,8 +375,12 @@ Settings: same as window 2
     Confirm where publishing is allowed.
 04:message/user:
     Continue with the new model.
-05:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+05:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 06:message/user:
     <ENVIRONMENT_CONTEXT>
 07:message/user:

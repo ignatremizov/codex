@@ -1858,7 +1858,7 @@ async fn run_sampling_request(
                     sess.services
                         .local_agent_runtime
                         .control(sess.session_id())
-                        .v1_agent_identity_snapshot()
+                        .v1_agent_identity_snapshot(sess.thread_id)
                         .or_cancel(&cancellation_token)
                         .await??,
                 )

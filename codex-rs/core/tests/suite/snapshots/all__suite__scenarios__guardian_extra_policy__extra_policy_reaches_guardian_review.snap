@@ -51,24 +51,28 @@ Settings:
     <codex_internal_context source="user_goal">
     User set the goal: "Inspect the workspace; do not run commands outside the sandbox."
     </codex_internal_context>
-02:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
-    # Escalation Requests
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
+        # Escalation Requests
 
-    Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
+        Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
 
-    - Pipes: |
-    - Logical operators: &&, ||
-    <OMITTED 47 LINES; ~812 TOKENS; hash=035ff6687b0303fa>
-    Good examples of prefixes:
-    - ["npm", "run", "dev"]
-    - ["gh", "pr", "check"]
-    - ["cargo", "test"]
+        - Pipes: |
+        - Logical operators: &&, ||
+        <OMITTED 47 LINES; ~812 TOKENS; hash=035ff6687b0303fa>
+        Good examples of prefixes:
+        - ["npm", "run", "dev"]
+        - ["gh", "pr", "check"]
+        - ["cargo", "test"]
 
 
-    `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
-    </permissions instructions>
+        `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
+        </permissions instructions>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -211,24 +215,28 @@ Settings: same as window 1
     <codex_internal_context source="user_goal">
     User set the goal: "Inspect the workspace; do not run commands outside the sandbox."
     </codex_internal_context>
-02:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
-    # Escalation Requests
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
+        # Escalation Requests
 
-    Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
+        Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
 
-    - Pipes: |
-    - Logical operators: &&, ||
-    <OMITTED 47 LINES; ~812 TOKENS; hash=035ff6687b0303fa>
-    Good examples of prefixes:
-    - ["npm", "run", "dev"]
-    - ["gh", "pr", "check"]
-    - ["cargo", "test"]
+        - Pipes: |
+        - Logical operators: &&, ||
+        <OMITTED 47 LINES; ~812 TOKENS; hash=035ff6687b0303fa>
+        Good examples of prefixes:
+        - ["npm", "run", "dev"]
+        - ["gh", "pr", "check"]
+        - ["cargo", "test"]
 
 
-    `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
-    </permissions instructions>
+        `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
+        </permissions instructions>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>

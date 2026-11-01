@@ -4678,8 +4678,23 @@ async fn manual_compact_retries_after_context_window_error() {
         "expected user turn and two compact attempts"
     );
 
-    let compact_attempt = requests[1].body_json();
-    let retry_attempt = requests[2].body_json();
+    let receiver_contexts = requests[1]
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|text| text.starts_with("<agent_self>\n"))
+        .collect::<Vec<_>>();
+    assert_eq!(receiver_contexts.len(), 1);
+    assert_eq!(
+        requests[2]
+            .message_input_texts("developer")
+            .into_iter()
+            .filter(|text| text.starts_with("<agent_self>\n"))
+            .collect::<Vec<_>>(),
+        receiver_contexts,
+    );
+    let compact_attempt =
+        responses::strip_agent_receiver_identity_from_json(requests[1].body_json());
+    let retry_attempt = responses::strip_agent_receiver_identity_from_json(requests[2].body_json());
 
     let compact_input = compact_attempt["input"]
         .as_array()
@@ -6050,17 +6065,7 @@ async fn snapshot_request_shape_pre_turn_compaction_context_window_exceeded() {
         ev_assistant_message("m1", FIRST_REPLY),
         ev_completed_with_tokens("r1", /*total_tokens*/ 500),
     ]);
-    let mut responses = vec![first_turn];
-    responses.extend(
-        (0..5).map(|_| {
-            sse_failed(
-                "compact-failed",
-                "context_length_exceeded",
-                "Your input exceeds the context window of this model. Please adjust your input and try again.",
-            )
-        }),
-    );
-    let request_log = mount_sse_sequence(&server, responses).await;
+    let request_log = mount_sse_once(&server, first_turn).await;
 
     let mut model_provider = non_openai_model_provider(&server);
     model_provider.stream_max_retries = Some(0);
@@ -6085,6 +6090,18 @@ async fn snapshot_request_shape_pre_turn_compaction_context_window_exceeded() {
         .expect("submit first user");
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
+    // Keep rejecting every compaction attempt so regenerated request context cannot
+    // hide an unbounded retry behind an exhausted finite response sequence.
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(request_log.clone())
+        .respond_with(sse_response(sse_failed(
+            "compact-failed",
+            "context_length_exceeded",
+            CONTEXT_LIMIT_MESSAGE,
+        )))
+        .mount(&server)
+        .await;
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "USER_TWO".to_string(),
@@ -6119,6 +6136,19 @@ async fn snapshot_request_shape_pre_turn_compaction_context_window_exceeded() {
     assert!(
         error_message.contains("ran out of room in the model's context window"),
         "expected context window exceeded message, got {error_message}"
+    );
+    let last_request = requests.last().expect("final compaction attempt");
+    assert!(
+        last_request
+            .message_input_texts("developer")
+            .iter()
+            .any(|text| text.starts_with("<agent_self>\n")),
+        "the terminal capacity attempt must retain receiver identity",
+    );
+    assert_eq!(
+        last_request.message_input_texts("user"),
+        vec![SUMMARIZATION_PROMPT.to_string()],
+        "capacity retries stop at the compaction prompt after canonical history is exhausted",
     );
 }
 

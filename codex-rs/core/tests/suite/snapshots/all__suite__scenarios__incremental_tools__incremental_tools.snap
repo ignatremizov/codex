@@ -33,8 +33,12 @@ Settings:
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
 04:message/user:
@@ -63,8 +67,12 @@ Settings: relative to window 1
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
 04:message/user:
@@ -116,8 +124,12 @@ Settings: same as window 2
     Continue with the same tools.
 04:message/user:
     Continue with the updated execution instructions.
-05:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+05:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 06:message/user:
     <ENVIRONMENT_CONTEXT>
 07:message/user:

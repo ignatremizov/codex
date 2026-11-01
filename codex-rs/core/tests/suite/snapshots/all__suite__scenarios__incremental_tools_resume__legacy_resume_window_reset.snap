@@ -35,14 +35,18 @@ Settings:
           - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/developer[3]:
     [01] <context_window>
     [02]
         Agent name: Main
-        First context window id: <UUID 1>
-        Current context window id: <UUID 1>
+        First context window id: <UUID 2>
+        Current context window id: <UUID 2>
 
     [03] </context_window>
 04:message/user:
@@ -76,15 +80,19 @@ Settings: relative to window 1
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/developer[3]:
     [01] <context_window>
     [02]
         Agent name: Main
-        First context window id: <UUID 1>
-        Current context window id: <UUID 2>
-        Previous context window id: <UUID 1>
+        First context window id: <UUID 2>
+        Current context window id: <UUID 3>
+        Previous context window id: <UUID 2>
 
     [03] </context_window>
 04:message/user:

@@ -373,7 +373,7 @@ async fn run_compact_task_inner_impl(
                 sess.services
                     .local_agent_runtime
                     .control(sess.session_id())
-                    .v1_agent_identity_snapshot()
+                    .v1_agent_identity_snapshot(sess.thread_id)
                     .await?,
             )
         } else {
@@ -382,6 +382,8 @@ async fn run_compact_task_inner_impl(
     let (compaction_response, completion_source_items) = loop {
         sess.await_history_publication().await;
         sess.check_history_publication()?;
+        // Request-only identity hydration cannot make canonical history more trimmable.
+        let history_len = history.raw_items().len();
         // Clone is required because of the loop
         let mut turn_input = history
             .clone()
@@ -407,7 +409,6 @@ async fn run_compact_task_inner_impl(
                 &identities.refs,
             );
         }
-        let turn_input_len = turn_input.len();
         let base_instructions = if turn_input
             .iter()
             .any(|item| BaseInstructionsFragment::text_from_item(item).is_some())
@@ -480,7 +481,7 @@ async fn run_compact_task_inner_impl(
                 return Err(e);
             }
             Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
-                if turn_input_len > 1 {
+                if history_len > 1 {
                     // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
                     error!(
                         "Context window exceeded while compacting; removing oldest history item. Error: {e}"

@@ -25,24 +25,28 @@ Scenario: A host replaces the provider after the parent restarts, then updates a
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-01:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
-    # Escalation Requests
+01:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":null}
+        </agent_self>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
+        # Escalation Requests
 
-    Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
+        Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
 
-    - Pipes: |
-    - Logical operators: &&, ||
-    <OMITTED 44 LINES; ~790 TOKENS; hash=3a8900343e968d61>
-    NEVER provide a prefix_rule if your command uses a heredoc or herestring.
+        - Pipes: |
+        - Logical operators: &&, ||
+        <OMITTED 44 LINES; ~790 TOKENS; hash=3a8900343e968d61>
+        NEVER provide a prefix_rule if your command uses a heredoc or herestring.
 
-    ### Examples
-    Good examples of prefixes:
-    - ["npm", "run", "dev"]
-    - ["gh", "pr", "check"]
-    - ["cargo", "test"]
-    </permissions instructions>
+        ### Examples
+        Good examples of prefixes:
+        - ["npm", "run", "dev"]
+        - ["gh", "pr", "check"]
+        - ["cargo", "test"]
+        </permissions instructions>
 02:message/user[2]:
     [01] # AGENTS.md instructions
 
@@ -82,7 +86,7 @@ Scenario: A host replaces the provider after the parent restarts, then updates a
 08:message/user:
     continue with the current instructions
 
-## Window 2 (after request 4: input truncated at item 04, settings changed (prompt_cache_key))
+## Window 2 (after request 4: input diverged at item 01, settings changed (prompt_cache_key))
 -- request 5 (turn) --
 00:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
@@ -102,24 +106,28 @@ Scenario: A host replaces the provider after the parent restarts, then updates a
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-01:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
-    # Escalation Requests
+01:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 2>","self_ref":null}
+        </agent_self>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
+        # Escalation Requests
 
-    Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
+        Commands are run outside the sandbox if they are approved by the user, or match an existing rule that al...hell control operators, including but not limited to: [hash=d24ebf5fa4e4b9bb]
 
-    - Pipes: |
-    - Logical operators: &&, ||
-    <OMITTED 44 LINES; ~790 TOKENS; hash=3a8900343e968d61>
-    NEVER provide a prefix_rule if your command uses a heredoc or herestring.
+        - Pipes: |
+        - Logical operators: &&, ||
+        <OMITTED 44 LINES; ~790 TOKENS; hash=3a8900343e968d61>
+        NEVER provide a prefix_rule if your command uses a heredoc or herestring.
 
-    ### Examples
-    Good examples of prefixes:
-    - ["npm", "run", "dev"]
-    - ["gh", "pr", "check"]
-    - ["cargo", "test"]
-    </permissions instructions>
+        ### Examples
+        Good examples of prefixes:
+        - ["npm", "run", "dev"]
+        - ["gh", "pr", "check"]
+        - ["cargo", "test"]
+        </permissions instructions>
 02:message/user[2]:
     [01] # AGENTS.md instructions
 

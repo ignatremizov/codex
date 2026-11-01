@@ -23,9 +23,13 @@ Settings:
 -- request 1 (request) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[2]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -33,14 +37,14 @@ Settings:
 -- request 2 (request) --
 04:function_call/mcp__codex_worktrees.create_worktree:{"allowAsync":true}
 05:function_call_output:Wall time: <DURATION> seconds
-    Output: | {"type":"pending","operationId":"<UUID 1>","message":"Creation is running. Poll status; do not repeat creation. Work on independent tasks while waiting."}
+    Output: | {"type":"pending","operationId":"<UUID 2>","message":"Creation is running. Poll status; do not repeat creation. Work on independent tasks while waiting."}
 -- request 3 (request) --
 06:message/assistant:
     Done.
 07:message/user:
     Run get_worktree_creation_status.
 -- request 4 (request) --
-08:function_call/mcp__codex_worktrees.get_worktree_creation_status:{"operationId":"<UUID 1>"}
+08:function_call/mcp__codex_worktrees.get_worktree_creation_status:{"operationId":"<UUID 2>"}
 09:function_call_output:Wall time: <DURATION> seconds
     Output: | {"type":"created","worktree":{"root":"<WORKTREE>","workspaceRoot":"<WORKTREE>/","sourceCwd":"<SOURCE>"},...citly and request filesystem permissions if needed."} [hash=b855a2f161fd3a36]
 -- request 5 (request) --
@@ -51,4 +55,4 @@ Settings:
 -- request 6 (request) --
 12:function_call/mcp__codex_worktrees.list_worktrees:{}
 13:function_call_output:Wall time: <DURATION> seconds
-    Output: | {"data":[{"id":"<UUID 2>","type":"worktree","root":"<WORKTREE>","workspaceRoot":"<WORKTREE>/","sourceCwd":"<SOURCE>"}],"nextCursor":null}
+    Output: | {"data":[{"id":"<UUID 3>","type":"worktree","root":"<WORKTREE>","workspaceRoot":"<WORKTREE>/","sourceCwd":"<SOURCE>"}],"nextCursor":null}

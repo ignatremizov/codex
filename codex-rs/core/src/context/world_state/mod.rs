@@ -1,4 +1,5 @@
 mod agent_identities;
+mod agent_receiver_identity;
 mod agents_md;
 mod apps_instructions;
 mod collaboration_mode;
@@ -40,6 +41,7 @@ use std::fmt;
 
 pub(crate) use agent_identities::AgentIdentitiesState;
 pub(crate) use agent_identities::prepare_v1_agent_model_input;
+pub(crate) use agent_receiver_identity::AgentReceiverIdentityState;
 pub(crate) use agents_md::AgentsMdState;
 pub(crate) use apps_instructions::AppsInstructionsState;
 pub(crate) use collaboration_mode::CollaborationModeState;

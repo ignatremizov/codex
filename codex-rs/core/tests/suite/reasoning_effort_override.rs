@@ -171,7 +171,9 @@ pub(super) async fn prediction_fork_requests() -> anyhow::Result<Vec<ResponsesRe
         body.as_object_mut()
             .expect("request body")
             .remove("client_metadata");
-        responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(body))
+        responses::strip_agent_receiver_identity_from_json(
+            responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(body)),
+        )
     };
     assert_eq!(comparable(2), comparable(3));
     Ok(requests)
@@ -264,7 +266,9 @@ async fn prediction_fork_pins_effort_from_parent_with_overrides_disabled(
         body.as_object_mut()
             .expect("request body")
             .remove("client_metadata");
-        responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(body))
+        responses::strip_agent_receiver_identity_from_json(
+            responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(body)),
+        )
     };
     let parent = comparable(1);
     let mut child = comparable(2);

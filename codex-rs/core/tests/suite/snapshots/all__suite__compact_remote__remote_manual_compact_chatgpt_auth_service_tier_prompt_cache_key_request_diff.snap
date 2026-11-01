@@ -48,11 +48,15 @@ Settings:
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-01:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
-    Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
-    </permissions instructions>
+01:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
+        Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
+        </permissions instructions>
 02:message/user:
     <environment_context>
       <cwd><CWD></cwd>

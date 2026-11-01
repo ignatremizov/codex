@@ -113,7 +113,9 @@ fn input(text: &str) -> Vec<UserInput> {
 }
 
 fn comparable_request(body: Value) -> Value {
-    let mut body = responses::strip_response_item_ids_from_json(body);
+    let mut body = responses::strip_agent_receiver_identity_from_json(
+        responses::strip_response_item_ids_from_json(body),
+    );
     body.as_object_mut()
         .expect("request object")
         .remove("client_metadata");
