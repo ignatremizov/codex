@@ -288,6 +288,8 @@ mod user_shell_completion;
 mod user_shell_processes;
 mod v1_agent_identity_context;
 mod v1_agent_identity_retry;
+#[path = "v1_agent_receiver_identity_tests.rs"]
+mod v1_agent_receiver_identity;
 mod view_image;
 #[path = "wait_agent_input_tests.rs"]
 mod wait_agent_input;

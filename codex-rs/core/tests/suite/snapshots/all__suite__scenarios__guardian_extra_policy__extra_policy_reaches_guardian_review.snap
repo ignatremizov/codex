@@ -16,7 +16,7 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (10; hash=2e1700c589748f39):
+  tools (10; hash=aa65a2d00b8ce63d):
     - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=841a4b17cc4e6a88
     - function/write_stdin: Writes chars to or polls an exec session, returning recent output. Polls return immediately on pr...; args=[chars, max_output_tokens, session_id, wait_until_exit, yield_time_ms]; hash=47f6053a3c9aecc5
     - function/update_plan: Updates the task plan. Provide an optional explanation and a list of plan items, each with a step...; args=[explanation, plan]; hash=cbba5ed302a9c0eb
@@ -26,7 +26,7 @@ Settings:
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
     - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
       - function/check_mail
-    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
+    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
     - web_search; hash=f103e327c6870a46
 -- request 1 (turn) --
 00:message/developer:
@@ -51,8 +51,12 @@ Settings:
     <codex_internal_context source="user_goal">
     User set the goal: "Inspect the workspace; do not run commands outside the sandbox."
     </codex_internal_context>
-02:message/developer[2]:
-    [01] <permissions instructions>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         # Escalation Requests
 
@@ -69,9 +73,9 @@ Settings:
 
         `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
         </permissions instructions>
-    [02] <tools>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <environment_context>
@@ -215,8 +219,12 @@ Settings: same as window 1
     <codex_internal_context source="user_goal">
     User set the goal: "Inspect the workspace; do not run commands outside the sandbox."
     </codex_internal_context>
-02:message/developer[2]:
-    [01] <permissions instructions>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         # Escalation Requests
 
@@ -233,9 +241,9 @@ Settings: same as window 1
 
         `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
         </permissions instructions>
-    [02] <tools>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <environment_context>

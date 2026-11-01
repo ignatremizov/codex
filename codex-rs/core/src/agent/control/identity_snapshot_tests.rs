@@ -12,14 +12,23 @@ use serde_json::json;
 
 #[tokio::test]
 async fn standalone_control_has_no_alias_authority() {
+    let receiver = ThreadId::new();
     let control = LocalAgentControl::default()
         .with_session_id(SessionId::from(ThreadId::new()), /*max_threads*/ 4);
-    let snapshot = control.v1_agent_identity_snapshot().await.unwrap();
+    let snapshot = control.v1_agent_identity_snapshot(receiver).await.unwrap();
     assert!(snapshot.refs.is_empty());
+    assert_eq!(
+        (snapshot.receiver_thread_id, snapshot.receiver_ref),
+        (Some(receiver), None)
+    );
     assert_eq!(snapshot.hydration_body(), "");
     let mut input = Vec::new();
     prepare_v1_agent_model_input(&mut input, &snapshot);
-    assert!(input.is_empty());
+    assert_eq!(
+        input.len(),
+        1,
+        "only the canonical receiver identity is advertised"
+    );
 }
 
 #[tokio::test]
@@ -57,7 +66,7 @@ async fn identity_reads_do_not_initialize_an_unowned_namespace() {
     let before = graph.list_agent_aliases(session_id).await.expect("aliases");
     assert!(before.is_empty());
     let snapshot = control
-        .v1_agent_identity_snapshot()
+        .v1_agent_identity_snapshot(root)
         .await
         .expect("snapshot");
     assert_eq!(snapshot.refs, HashMap::new());
@@ -122,6 +131,7 @@ fn root_only_namespace_has_neither_hydration_nor_projectable_refs() {
     let session_id = SessionId::from(root);
     let snapshot = V1AgentIdentitySnapshot::from_aliases(
         session_id,
+        root,
         vec![AgentAlias {
             session_id,
             thread_id: root,
@@ -133,6 +143,10 @@ fn root_only_namespace_has_neither_hydration_nor_projectable_refs() {
     );
     assert_eq!(snapshot.refs, HashMap::new());
     assert_eq!(snapshot.hydration_body(), "");
+    assert_eq!(
+        (snapshot.receiver_thread_id, snapshot.receiver_ref),
+        (Some(root), Some(1))
+    );
 }
 
 #[test]
@@ -141,6 +155,7 @@ fn compaction_evidence_retains_canonical_payload_before_receiver_projection() {
     let child = ThreadId::new();
     let snapshot = V1AgentIdentitySnapshot::from_aliases(
         session_id,
+        child,
         vec![AgentAlias {
             session_id,
             thread_id: child,
@@ -193,6 +208,7 @@ fn identity_labels_cannot_terminate_hydration_and_budget_counts_escaping() {
     let task_path = "/root/<label>".to_owned();
     let snapshot = V1AgentIdentitySnapshot::from_aliases(
         session_id,
+        child,
         vec![AgentAlias {
             session_id,
             thread_id: child,
@@ -211,6 +227,7 @@ fn identity_labels_cannot_terminate_hydration_and_budget_counts_escaping() {
     );
     let oversized = V1AgentIdentitySnapshot::from_aliases(
         session_id,
+        child,
         vec![AgentAlias {
             session_id,
             thread_id: child,
@@ -253,10 +270,10 @@ fn summary_budget_prioritizes_active_then_newer_closed_refs_and_matches_projecti
             },
         })
         .collect::<Vec<_>>();
-    let snapshot = V1AgentIdentitySnapshot::from_aliases(session_id, aliases.clone());
+    let snapshot = V1AgentIdentitySnapshot::from_aliases(session_id, root, aliases.clone());
     let mut reversed = aliases.clone();
     reversed.reverse();
-    let repeated = V1AgentIdentitySnapshot::from_aliases(session_id, reversed);
+    let repeated = V1AgentIdentitySnapshot::from_aliases(session_id, root, reversed);
     assert_eq!(snapshot.hydration_body(), repeated.hydration_body());
     assert!(snapshot.omitted);
     let rendered = crate::context::world_state::AgentIdentitiesState::new(&snapshot)
@@ -310,8 +327,12 @@ fn oversized_identity_is_skipped_whole_without_hiding_smaller_entries() {
             state: AgentAliasState::Active,
         },
     ];
-    let snapshot = V1AgentIdentitySnapshot::from_aliases(session_id, aliases.clone());
+    let snapshot = V1AgentIdentitySnapshot::from_aliases(session_id, oversized, aliases.clone());
     assert_eq!(snapshot.refs, HashMap::from([(small, 3)]));
+    assert_eq!(
+        (snapshot.receiver_thread_id, snapshot.receiver_ref),
+        (Some(oversized), Some(2)),
+    );
     assert!(snapshot.omitted);
     let body = snapshot.hydration_body();
     assert!(!body.contains("oversized-label"));
@@ -320,7 +341,7 @@ fn oversized_identity_is_skipped_whole_without_hiding_smaller_entries() {
         json!([{"ref":"3", "nickname":"Complete nickname", "task_path":"/root/complete-path", "state":"active"}])
     );
     let only_oversized =
-        V1AgentIdentitySnapshot::from_aliases(session_id, vec![aliases[0].clone()]);
+        V1AgentIdentitySnapshot::from_aliases(session_id, oversized, vec![aliases[0].clone()]);
     assert_eq!(only_oversized.refs, HashMap::new());
     assert!(only_oversized.hydration_body().contains(OMITTED_IDENTITIES));
     assert!(
@@ -393,7 +414,7 @@ fn snapshots_include_closed_owned_aliases_and_refresh_without_reusing_transferre
         alias(transferred, 3, AgentAliasState::Transferred),
         foreign_alias,
     ];
-    let captured = V1AgentIdentitySnapshot::from_aliases(session_id, aliases.clone());
+    let captured = V1AgentIdentitySnapshot::from_aliases(session_id, child, aliases.clone());
     assert_eq!(captured.refs, HashMap::from([(root, 1), (child, 2)]));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(
@@ -408,7 +429,7 @@ fn snapshots_include_closed_owned_aliases_and_refresh_without_reusing_transferre
     let mut changed = aliases;
     changed[0].nickname = Some("Renamed".to_string());
     changed[0].task_path = Some("/root/new-assignment".to_string());
-    let refreshed = V1AgentIdentitySnapshot::from_aliases(session_id, changed);
+    let refreshed = V1AgentIdentitySnapshot::from_aliases(session_id, child, changed);
     assert_eq!(refreshed.refs, captured.refs);
     assert!(!captured.hydration_body().contains("Renamed"));
     assert!(refreshed.hydration_body().contains("Renamed"));

@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/token_budget.rs
-assertion_line: 1755
+assertion_line: 1825
 expression: snapshot
 ---
 Scenario: New context window tool installs fresh full context before the next follow-up request.
@@ -9,10 +9,14 @@ Scenario: New context window tool installs fresh full context before the next fo
 -- request 1 (turn; Final Follow-Up Request) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[3]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
-    [03] <tools>
+01:message/developer[4]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
+    [04] <tools>
         Deferred tool namespaces:
         - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
@@ -20,9 +24,9 @@ Scenario: New context window tool installs fresh full context before the next fo
     [01] <context_window>
     [02]
         Agent name: Main
-        First context window id: <UUID 1>
-        Current context window id: <UUID 2>
-        Previous context window id: <UUID 1>
+        First context window id: <UUID 2>
+        Current context window id: <UUID 3>
+        Previous context window id: <UUID 2>
 
     [03] </context_window>
 03:message/user:

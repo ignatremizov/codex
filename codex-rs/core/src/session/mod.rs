@@ -4235,7 +4235,7 @@ impl Session {
                     self.services
                         .local_agent_runtime
                         .control(self.session_id())
-                        .v1_agent_identity_snapshot()
+                        .v1_agent_identity_snapshot(self.thread_id)
                         .or_cancel(cancellation_token)
                         .await??,
                 )

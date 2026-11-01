@@ -15,11 +15,11 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (1; hash=436fd2c773918985):
+  tools (1; hash=ababc631991639f1):
     - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
 -- request 1 (turn) --
-00:additional_tools/developer (1; hash=b07492b5514a41d0):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (2; hash=84751b86b2c1338d):
+        - namespace/functions; hash=7122467fe71b1924
           - custom/exec
           - function/wait
           - function/exec_command
@@ -28,13 +28,19 @@ Settings:
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -52,8 +58,8 @@ Settings:
 Settings: relative to window 1
   tools: <removed>
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=b07492b5514a41d0):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (3; hash=4af0f6f7ea4d9b61):
+        - namespace/functions; hash=7122467fe71b1924
           - custom/exec
           - function/wait
           - function/exec_command
@@ -62,16 +68,22 @@ Settings: relative to window 1
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/user:
     Begin with the legacy tool prefix.
-03:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+03:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 04:message/user:
     <ENVIRONMENT_CONTEXT>

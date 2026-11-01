@@ -5,6 +5,7 @@ use super::step_context::StepContext;
 use crate::connectors;
 use crate::context::TokenBudgetContext;
 use crate::context::world_state::AgentIdentitiesState;
+use crate::context::world_state::AgentReceiverIdentityState;
 use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::CollaborationModeState;
@@ -197,6 +198,9 @@ impl Session {
         }
         if let Some(identities) = &step_context.agent_identities {
             world_state.add_section(AgentIdentitiesState::new(identities));
+            if let Some(receiver) = AgentReceiverIdentityState::new(identities) {
+                world_state.add_section(receiver);
+            }
         }
         world_state.add_section(model_state);
         let token_budget_enabled = turn_context.config.features.enabled(Feature::TokenBudget)

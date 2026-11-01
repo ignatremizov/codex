@@ -292,6 +292,7 @@ async fn token_budget_guidance_precedes_standalone_context_window(
 
     let request = response.single_request();
     assert!(request.has_content_kinds(&[
+        "multi_agent.self",
         "token_budget.context_window_guidance",
         "permissions.instructions",
         "tools.deferred_namespaces",

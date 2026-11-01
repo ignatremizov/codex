@@ -86,7 +86,37 @@ Routine V1 commentary and completion envelopes likewise project only the receive
 
 Projection applies to disposable sampling, local compaction, and V2 remote-compaction requests. Canonical envelopes and typed presentation retain the full UUID and send-time attribution. Fresh attributed user-role input is marked at its trusted recording boundary using the existing content-kind metadata; marker-looking ordinary user text is not rewritten. Unsupported legacy envelopes remain readable without inventing identity. Retaining canonical UUIDs lets later requests safely project against changed receiver mappings after transfer or adoption.
 
-Spawn and resume results hydrate the ref, nickname, and task path together. Receiver-scoped identity context is refreshed for model requests and after compaction, including closed but addressable members; it is not conditional on environment-context display. A namespace containing only its root omits both hydration and compact-ref projection; once another owned member exists, Main is eligible alongside that member. The discovery summary has a 2,048 approximate-token budget, including framing and an omission notice. It prioritizes active aliases in ascending ref order, then closed aliases in descending durable ref order; newer refs are not a measure of last closure time. Entries fit whole or are skipped, never shortened. The projection map contains exactly the advertised subset, with UUID fallback for omissions and an omission notice pointing to existing agent discovery. This budget does not cap labels, task assignment, messages, spawn/resume results, or canonical history. Current labels support targeting, while the durable audit retains historical send-time labels.
+Spawn and resume results hydrate the ref, nickname, and task path together. Receiver-scoped identity context is refreshed for model requests and after compaction, including closed but addressable members; it is not conditional on environment-context display. A namespace containing only its root omits directory hydration and compact-ref message projection; once another owned member exists, Main is eligible alongside that member. The discovery summary has a 2,048 approximate-token budget, including framing and an omission notice. It prioritizes active aliases in ascending ref order, then closed aliases in descending durable ref order; newer refs are not a measure of last closure time. Entries fit whole or are skipped, never shortened. The projection map contains exactly the advertised subset, with UUID fallback for omissions and an omission notice pointing to existing agent discovery. This budget does not cap labels, task assignment, messages, spawn/resume results, or canonical history. Current labels support targeting, while the durable audit retains historical send-time labels.
+
+Each V1 thread also receives a small, separate developer `<agent_self>` fragment
+that explicitly identifies the receiver:
+
+```text
+<agent_self>
+This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+{"agent_id":"<receiving thread UUID>","self_ref":"3"}
+</agent_self>
+```
+
+The directory describes the root's namespace; `agent_self` identifies which agent
+is receiving the context. A message's `ref` identifies its sender. Receiver identity
+does not depend on the environment-context or token-budget features, and remains
+present for root-only namespaces. Its UUID is always the actual receiving thread;
+`self_ref` is the current owned alias or `null` when no local alias is authoritative.
+The receiver's alias can remain explicit even when its directory row exceeds the
+discovery budget; ordinary message projection still uses only advertised directory
+rows. This fixed-size identity fragment is separate from that directory budget.
+
+Unchanged receiver identity adds no repeated fragment. Compaction, resume, stream
+retry, and inherited parent context recover the current receiver binding from the
+same request snapshot used for directory projection. Promotion changes the same
+UUID to self ref `1`; explicit adoption replaces it with the alias in its new root.
+Historical self fragments remain history and the latest binding supersedes them.
+Neither a sender envelope nor a user-written lookalike establishes receiver identity.
+
+Local compaction capacity retries retain receiver identity while trimming canonical
+history. Once only the compaction prompt remains, another context-window rejection
+ends the attempt; regenerated request context cannot extend the trimming loop.
 
 Incremental identity updates have a separate 16,384-byte rendered-fragment ceiling. Replaying individually bounded deltas must not accumulate a larger identity map. An oversized or unusable retained chain, or a removal/update delta that exceeds the ceiling, falls back to the complete current bounded authority without rewriting earlier history. These limits do not truncate agent messages or their canonical evidence.
 
