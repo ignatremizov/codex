@@ -14,8 +14,8 @@ use super::LocalAgentControl;
 
 // Discovery context only: never truncate instructions, payloads, or alias labels.
 const IDENTITY_SUMMARY_TOKENS: usize = 2_048;
-const IDENTITY_INSTRUCTIONS: &str = "This is the current receiving root's agent identity mapping and replaces earlier mappings. \
-     Refs identify only the agents listed here; use a canonical agent_id for other agents. \
+const IDENTITY_INSTRUCTIONS: &str = "This is the agent directory for your current root and replaces earlier mappings. \
+     Refs are scoped to this root; use a canonical agent_id for agents omitted from this directory. \
      Task paths and nicknames are descriptive and may change.";
 const OMITTED_IDENTITIES: &str =
     " Additional identities are omitted; use the existing agent directory/discovery for details.";
@@ -24,12 +24,20 @@ const OMITTED_IDENTITIES: &str =
 #[derive(Clone, Debug, Default)]
 pub(crate) struct V1AgentIdentitySnapshot {
     pub(crate) refs: HashMap<ThreadId, u64>,
+    /// Actual receiving thread, independent of the root's shared alias namespace.
+    pub(crate) receiver_thread_id: Option<ThreadId>,
+    /// Current owned alias, including when the discovery budget omits its directory row.
+    pub(crate) receiver_ref: Option<u64>,
     entries: Vec<AgentAlias>,
     omitted: bool,
 }
 
 impl V1AgentIdentitySnapshot {
-    fn from_aliases(session_id: SessionId, aliases: Vec<AgentAlias>) -> Self {
+    fn from_aliases(
+        session_id: SessionId,
+        receiver_thread_id: ThreadId,
+        aliases: Vec<AgentAlias>,
+    ) -> Self {
         let mut entries = aliases
             .into_iter()
             .filter(|alias| {
@@ -40,13 +48,22 @@ impl V1AgentIdentitySnapshot {
                     )
             })
             .collect::<Vec<_>>();
-        // A root-only namespace needs no cross-agent mapping. Clear both views
-        // together so projection cannot emit a ref without its hydration.
+        let receiver_ref = entries
+            .iter()
+            .find(|alias| alias.thread_id == receiver_thread_id)
+            .map(|alias| alias.agent_ref);
+        let receiver = Self {
+            receiver_thread_id: Some(receiver_thread_id),
+            receiver_ref,
+            ..Self::default()
+        };
+        // A root-only namespace needs no discovery directory. Clear directory and message
+        // projection together while retaining the receiver's independent self identity.
         if entries
             .iter()
             .all(|alias| SessionId::from(alias.thread_id) == session_id)
         {
-            return Self::default();
+            return receiver;
         }
         // Refs are monotonic within a namespace. Prefer active members, then newer
         // closed refs; the store does not expose closure timestamps in this query.
@@ -92,6 +109,7 @@ impl V1AgentIdentitySnapshot {
             refs,
             entries,
             omitted,
+            ..receiver
         }
     }
 
@@ -121,24 +139,31 @@ impl V1AgentIdentitySnapshot {
 }
 
 impl LocalAgentControl {
-    pub(crate) async fn v1_agent_identity_snapshot(&self) -> CodexResult<V1AgentIdentitySnapshot> {
-        let Some(session_id) = self.bound_session_id() else {
-            return Ok(V1AgentIdentitySnapshot::default());
+    pub(crate) async fn v1_agent_identity_snapshot(
+        &self,
+        receiver_thread_id: ThreadId,
+    ) -> CodexResult<V1AgentIdentitySnapshot> {
+        let receiver = V1AgentIdentitySnapshot {
+            receiver_thread_id: Some(receiver_thread_id),
+            ..V1AgentIdentitySnapshot::default()
         };
-        // Standalone sessions have no manager/alias authority. Keep that supported
-        // no-op distinct from a managed store failing to read its namespace.
+        let Some(session_id) = self.bound_session_id() else {
+            return Ok(receiver);
+        };
+        // Standalone sessions retain canonical self identity without local alias authority.
+        // Keep that supported fallback distinct from a managed store failing to read its namespace.
         let Some(manager) = self.runtime.manager.upgrade() else {
-            return Ok(V1AgentIdentitySnapshot::default());
+            return Ok(receiver);
         };
         // A selected host owns its identities; local bookkeeping cannot substitute an alias map.
         if manager.ensure_native_agent_control().is_err() {
-            return Ok(V1AgentIdentitySnapshot::default());
+            return Ok(receiver);
         }
         let Some(store) = manager
             .agent_graph_store()
             .filter(|store| store.supports_agent_aliases())
         else {
-            return Ok(V1AgentIdentitySnapshot::default());
+            return Ok(receiver);
         };
         // Reading model/display context must not initialize or adopt graph ownership.
         let aliases = store
@@ -149,7 +174,11 @@ impl LocalAgentControl {
                     "failed to read durable agent identities for {session_id}: {error}"
                 ))
             })?;
-        Ok(V1AgentIdentitySnapshot::from_aliases(session_id, aliases))
+        Ok(V1AgentIdentitySnapshot::from_aliases(
+            session_id,
+            receiver_thread_id,
+            aliases,
+        ))
     }
 }
 

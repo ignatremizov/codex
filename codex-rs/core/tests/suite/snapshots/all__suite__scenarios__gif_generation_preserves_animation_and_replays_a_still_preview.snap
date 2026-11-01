@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 499
 expression: "context_snapshot::format_request_history_snapshot(\"GIF generation exposes animation controls and guidance, preserves the animated artifact, and replays a still preview through a follow-up turn.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: GIF generation exposes animation controls and guidance, preserves the animated artifact, and replays a still preview through a follow-up turn.
@@ -16,23 +17,31 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=cec010d63fda60d5):
-        - namespace/functions; hash=106dd1b983efd2f7
+00:additional_tools/developer (4; hash=26a30cdf65fecdb2):
+        - namespace/functions; hash=514e79ba5341637d
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
+          - function/compact
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
         - namespace/image_gen: Tools in the image_gen namespace.; hash=7f9a214246396279
           - function/imagegen
         - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <ENVIRONMENT_CONTEXT>

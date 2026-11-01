@@ -176,11 +176,15 @@ async fn prediction_forks_do_not_auto_compact(
     let requests = mock.requests();
     let comparable = |index: usize| {
         let body = requests[index].body_json();
-        responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(json!({
-            "input": body["input"],
-            "instructions": body["input"][0]["content"][0]["text"],
-            "tools": body["tools"],
-        })))
+        responses::strip_agent_receiver_identity_from_json(
+            responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(
+                json!({
+                    "input": body["input"],
+                    "instructions": body["input"][0]["content"][0]["text"],
+                    "tools": body["tools"],
+                }),
+            )),
+        )
     };
     assert_eq!(comparable(1), comparable(4));
     assert!(requests[1].body_contains_text("Retain this skill metadata"));

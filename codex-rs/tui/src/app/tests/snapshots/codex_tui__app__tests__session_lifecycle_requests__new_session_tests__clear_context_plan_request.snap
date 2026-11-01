@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/tests/new_session_tests.rs
+assertion_line: 622
 expression: "context_snapshot::format_context_snapshot(\"Clear context and implement the approved plan in a fresh thread.\",\n&[context_snapshot::SnapshotEntry::body(&body)],\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Clear context and implement the approved plan in a fresh thread.
@@ -8,11 +9,15 @@ Scenario: Clear context and implement the approved plan in a fresh thread.
 -- request 1 (request) --
 00:message/developer:
     Help the user.
-01:message/developer[4]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
-    [03] <COLLABORATION_MODE>
-    [04] <tools>
+01:message/developer[5]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
+    [04] <COLLABORATION_MODE>
+    [05] <tools>
         Deferred tool namespaces:
         - codex_tui: Manage Codex tasks available through the connected app server.
         </tools>

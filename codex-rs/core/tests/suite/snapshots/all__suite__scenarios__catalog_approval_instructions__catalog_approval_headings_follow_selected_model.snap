@@ -16,14 +16,17 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=23179252be1abe5f):
-        - namespace/functions; hash=9962be1e4c2d492b
+00:additional_tools/developer (2; hash=e1f9034b51590e8b):
+        - namespace/functions; hash=121e16e61280d6bb
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
+          - function/compact
           - function/request_user_input
           - function/request_permissions
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83
+          - function/check_mail
           - function/close_agent
           - function/resume_agent
           - function/send_input
@@ -31,24 +34,28 @@ Settings:
           - function/wait_agent
 01:message/developer:
     Help with the workspace.
-02:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
-    # Permission Requests
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
+        # Permission Requests
 
-    Commands may require user approval before execution. Prefer requesting sandboxed additional permissions instead of asking to run fully outside the sandbox.
+        Commands may require user approval before execution. Prefer requesting sandboxed additional permissions instead of asking to run fully outside the sandbox.
 
-    ## Preferred request mode
+        ## Preferred request mode
 
-    <OMITTED 29 LINES; ~379 TOKENS; hash=d11e3f29e8628ec8>
-    # Model A permission requests
+        <OMITTED 29 LINES; ~379 TOKENS; hash=d11e3f29e8628ec8>
+        # Model A permission requests
 
-    The built-in `request_permissions` tool is available in this session. Invoke it when you need to request... only the specific permissions required for the task. [hash=a29255aad0722385]
+        The built-in `request_permissions` tool is available in this session. Invoke it when you need to request... only the specific permissions required for the task. [hash=a29255aad0722385]
 
-    # Model A automatic review
+        # Model A automatic review
 
-    `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
-    </permissions instructions>
+        `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
+        </permissions instructions>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -64,14 +71,17 @@ Settings:
 Settings: relative to window 1
   model: "catalog-approval-headings-b"
 -- request 2 (turn) --
-00:additional_tools/developer (2; hash=23179252be1abe5f):
-        - namespace/functions; hash=9962be1e4c2d492b
+00:additional_tools/developer (2; hash=e1f9034b51590e8b):
+        - namespace/functions; hash=121e16e61280d6bb
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
+          - function/compact
           - function/request_user_input
           - function/request_permissions
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=12931775d619ea83
+          - function/check_mail
           - function/close_agent
           - function/resume_agent
           - function/send_input
@@ -79,24 +89,28 @@ Settings: relative to window 1
           - function/wait_agent
 01:message/developer:
     Help with the workspace.
-02:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
-    # Permission Requests
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
+        # Permission Requests
 
-    Commands may require user approval before execution. Prefer requesting sandboxed additional permissions instead of asking to run fully outside the sandbox.
+        Commands may require user approval before execution. Prefer requesting sandboxed additional permissions instead of asking to run fully outside the sandbox.
 
-    ## Preferred request mode
+        ## Preferred request mode
 
-    <OMITTED 29 LINES; ~379 TOKENS; hash=d11e3f29e8628ec8>
-    # Model A permission requests
+        <OMITTED 29 LINES; ~379 TOKENS; hash=d11e3f29e8628ec8>
+        # Model A permission requests
 
-    The built-in `request_permissions` tool is available in this session. Invoke it when you need to request... only the specific permissions required for the task. [hash=a29255aad0722385]
+        The built-in `request_permissions` tool is available in this session. Invoke it when you need to request... only the specific permissions required for the task. [hash=a29255aad0722385]
 
-    # Model A automatic review
+        # Model A automatic review
 
-    `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
-    </permissions instructions>
+        `approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for c...he risk and send a final message to ask for approval. [hash=c592d119d24cd2d6]
+        </permissions instructions>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>

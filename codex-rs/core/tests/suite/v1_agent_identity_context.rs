@@ -330,5 +330,16 @@ async fn root_only_sampling_omits_identity_hydration() -> Result<()> {
             .iter()
             .any(|text| text.contains("<agent_identity_context>"))
     );
+    let messages = request.single_request().message_input_texts("developer");
+    let receiver = messages
+        .iter()
+        .find_map(|text| text.strip_prefix("<agent_self>\n"))
+        .and_then(|text| text.strip_suffix("\n</agent_self>"))
+        .expect("root receiver identity");
+    let (_, identity) = receiver.split_once('\n').expect("receiver instructions");
+    assert_eq!(
+        serde_json::from_str::<Value>(identity)?,
+        json!({"agent_id": test.session_configured.thread_id, "self_ref": "1"}),
+    );
     Ok(())
 }

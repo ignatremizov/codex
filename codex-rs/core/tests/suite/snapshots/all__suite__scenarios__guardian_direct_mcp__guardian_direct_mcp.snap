@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_guardian_direct_mcp.rs
-assertion_line: 174
+assertion_line: 165
 expression: snapshot
 ---
 Scenario: A live MCP denial and a direct approval render the same action; neither dispatches the tool.
@@ -9,13 +9,17 @@ Scenario: A live MCP denial and a direct approval render the same action; neithe
 -- request 1 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[3]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <APPS_INSTRUCTIONS>
-    [03] <tools>
+01:message/developer[4]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <APPS_INSTRUCTIONS>
+    [04] <tools>
         Deferred tool namespaces:
         - mcp__codex_apps__calendar: Plan events and manage your calendar.
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -24,8 +28,8 @@ Scenario: A live MCP denial and a direct approval render the same action; neithe
 
 ## Window 2 (after request 1: input diverged at item 00, settings changed (model, parallel_tool_calls, prompt_cache_key, reasoning, text, tools))
 -- request 2 (turn) --
-00:additional_tools/developer (1; hash=7758f662cd124827):
-        - namespace/functions; hash=70d14ec929ba5cd7
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:
@@ -101,13 +105,17 @@ Scenario: A live MCP denial and a direct approval render the same action; neithe
 -- request 3 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[3]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <APPS_INSTRUCTIONS>
-    [03] <tools>
+01:message/developer[4]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <APPS_INSTRUCTIONS>
+    [04] <tools>
         Deferred tool namespaces:
         - mcp__codex_apps__calendar: Plan events and manage your calendar.
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -118,11 +126,16 @@ Scenario: A live MCP denial and a direct approval render the same action; neithe
     Output: | This action was rejected due to unacceptable risk.
     Reason: Auto-review returned a deny decision without a rationale.
     The agent must not attempt to achieve the same outcome via workaround, indirect execution, or policy cir... of the risk. Otherwise, stop and request user input. [hash=316a6640caee3870]
+06:message/developer:
+    <tools>
+    Removed deferred tool namespaces:
+    - mcp__codex_apps__calendar: Plan events and manage your calendar.
+    </tools>
 
 ## Window 4 (after request 3: input diverged at item 00, settings changed (model, parallel_tool_calls, prompt_cache_key, reasoning, text, tools))
 -- request 4 (turn) --
-00:additional_tools/developer (1; hash=7758f662cd124827):
-        - namespace/functions; hash=70d14ec929ba5cd7
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:

@@ -218,6 +218,58 @@ pub fn strip_response_item_ids_from_json(value: Value) -> Value {
     }
 }
 
+/// Removes receiver-specific self context for comparisons between distinct threads.
+///
+/// Preserve all other content and its aligned annotations. Receiver identity itself is
+/// asserted against the unmodified requests in the agent identity integration tests.
+pub fn strip_agent_receiver_identity_from_json(mut value: Value) -> Value {
+    let Some(input) = value.get_mut("input").and_then(Value::as_array_mut) else {
+        return value;
+    };
+    for item in input.iter_mut() {
+        if item["type"] != "message" || item["role"] != "developer" {
+            continue;
+        }
+        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let receiver_indices = content
+            .iter()
+            .enumerate()
+            .filter_map(|(index, content)| {
+                content["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("<agent_self>\n"))
+                    .then_some(index)
+            })
+            .rev()
+            .collect::<Vec<_>>();
+        for &index in &receiver_indices {
+            content.remove(index);
+        }
+        if let Some(metadata) = item
+            .get_mut("internal_chat_message_metadata_passthrough")
+            .and_then(Value::as_object_mut)
+        {
+            for field in ["content_item_kinds", "content_item_metadata"] {
+                if let Some(annotations) = metadata.get_mut(field).and_then(Value::as_array_mut) {
+                    for &index in &receiver_indices {
+                        annotations.remove(index);
+                    }
+                }
+            }
+        }
+    }
+    input.retain(|item| {
+        item["type"] != "message"
+            || item["role"] != "developer"
+            || item["content"]
+                .as_array()
+                .is_none_or(|content| !content.is_empty())
+    });
+    value
+}
+
 /// Returns JSON without internal transport metadata for semantic assertions.
 pub fn strip_metadata_from_json(value: Value) -> Value {
     match value {

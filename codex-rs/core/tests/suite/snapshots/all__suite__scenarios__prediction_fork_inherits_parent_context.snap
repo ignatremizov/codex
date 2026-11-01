@@ -17,7 +17,7 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=b9cde252faab7330):
+00:additional_tools/developer (3; hash=082079a9aa767098):
         - namespace/functions; hash=514e79ba5341637d
           - function/exec_command
           - function/write_stdin
@@ -28,7 +28,7 @@ Settings:
           - function/view_image
         - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
           - function/check_mail
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
 01:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
 
@@ -47,8 +47,12 @@ Settings:
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-02:message/developer[2]:
-    [01] <permissions instructions>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         # Escalation Requests
 
@@ -65,9 +69,9 @@ Settings:
         - ["gh", "pr", "check"]
         - ["cargo", "test"]
         </permissions instructions>
-    [02] <tools>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <environment_context>
@@ -91,14 +95,19 @@ Settings:
 10:reasoning:summary=Keep the existing context.:encrypted=true
 11:message/assistant:
     Ready to continue.
-12:message/user:
+12:message/developer:
+    <agent_self>
+    This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+    {"agent_id":"<UUID 2>","self_ref":"1"}
+    </agent_self>
+13:message/user:
     continue identically
-13:configuration_update:reasoning={"effort":"medium"}
+14:configuration_update:reasoning={"effort":"medium"}
 
-## Window 2 (after request 3: input repeated)
+## Window 2 (after request 3: input diverged at item 12)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=b9cde252faab7330):
+00:additional_tools/developer (3; hash=082079a9aa767098):
         - namespace/functions; hash=514e79ba5341637d
           - function/exec_command
           - function/write_stdin
@@ -109,7 +118,7 @@ Settings: same as window 1
           - function/view_image
         - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
           - function/check_mail
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
 01:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
 
@@ -128,8 +137,12 @@ Settings: same as window 1
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-02:message/developer[2]:
-    [01] <permissions instructions>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         # Escalation Requests
 
@@ -146,9 +159,9 @@ Settings: same as window 1
         - ["gh", "pr", "check"]
         - ["cargo", "test"]
         </permissions instructions>
-    [02] <tools>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <environment_context>

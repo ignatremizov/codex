@@ -41,9 +41,13 @@ Settings:
           - function/run
 01:message/developer:
     Retain these base instructions.
-02:message/developer[4]:
+02:message/developer[5]:
     [01] Retain this system policy context.
-    [02] <skills_instructions>
+    [02] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [03] <skills_instructions>
         This listing updates the skills from the sources shown below. Listings from other sources remain available.
 
         ## Skills
@@ -57,11 +61,11 @@ Settings:
         - skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo pat...g private repos). (file: r0/skill-installer/SKILL.md) [hash=d3eb4395bd8e52c5]
 
         </skills_instructions>
-    [03] <permissions instructions>
+    [04] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
+    [05] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -77,11 +81,16 @@ Settings:
 06:reasoning:summary=Check the release.:encrypted=true
 07:message/assistant:
     Done
-08:message/user:
+08:message/developer:
+    <agent_self>
+    This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+    {"agent_id":"<UUID 2>","self_ref":"1"}
+    </agent_self>
+09:message/user:
     Continue identically
-09:configuration_update:reasoning={"effort":"medium"}
+10:configuration_update:reasoning={"effort":"medium"}
 
-## Window 2 (after request 2: input repeated)
+## Window 2 (after request 2: input diverged at item 08)
 Settings: same as window 1
 -- request 3 (turn) --
 00:additional_tools/developer (3; hash=0ddc9660a019b39d):
@@ -108,9 +117,13 @@ Settings: same as window 1
           - function/run
 01:message/developer:
     Retain these base instructions.
-02:message/developer[4]:
+02:message/developer[5]:
     [01] Retain this system policy context.
-    [02] <skills_instructions>
+    [02] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [03] <skills_instructions>
         This listing updates the skills from the sources shown below. Listings from other sources remain available.
 
         ## Skills
@@ -124,11 +137,11 @@ Settings: same as window 1
         - skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo pat...g private repos). (file: r0/skill-installer/SKILL.md) [hash=d3eb4395bd8e52c5]
 
         </skills_instructions>
-    [03] <permissions instructions>
+    [04] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
+    [05] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -143,11 +156,16 @@ Settings: same as window 1
 06:reasoning:summary=Check the release.:encrypted=true
 07:message/assistant:
     Done
-08:message/user:
+08:message/developer:
+    <agent_self>
+    This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+    {"agent_id":"<UUID 3>","self_ref":"1"}
+    </agent_self>
+09:message/user:
     Continue identically
-09:configuration_update:reasoning={"effort":"medium"}
+10:configuration_update:reasoning={"effort":"medium"}
 
-## Window 3 (after request 3: input repeated)
+## Window 3 (after request 3: input diverged at item 08)
 Settings: same as window 1
 -- request 4 (turn) --
 00:additional_tools/developer (3; hash=0ddc9660a019b39d):
@@ -174,9 +192,13 @@ Settings: same as window 1
           - function/run
 01:message/developer:
     Retain these base instructions.
-02:message/developer[4]:
+02:message/developer[5]:
     [01] Retain this system policy context.
-    [02] <skills_instructions>
+    [02] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [03] <skills_instructions>
         This listing updates the skills from the sources shown below. Listings from other sources remain available.
 
         ## Skills
@@ -190,11 +212,11 @@ Settings: same as window 1
         - skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo pat...g private repos). (file: r0/skill-installer/SKILL.md) [hash=d3eb4395bd8e52c5]
 
         </skills_instructions>
-    [03] <permissions instructions>
+    [04] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
+    [05] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>

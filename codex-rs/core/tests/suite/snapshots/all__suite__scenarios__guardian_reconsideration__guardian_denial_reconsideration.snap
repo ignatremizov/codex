@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_guardian_reconsideration.rs
+assertion_line: 152
 expression: snapshot
 ---
 Scenario: Guardian retries the same request after a denial and preserves evidence for the next review. Only selected assessments enter history. Parent and reviewer streams are grouped.
@@ -8,11 +9,15 @@ Scenario: Guardian retries the same request after a denial and preserves evidenc
 -- request 1 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+01:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -37,8 +42,8 @@ Scenario: Guardian retries the same request after a denial and preserves evidenc
 
 ## Window 2 (after request 3: input diverged at item 00, settings changed (model, parallel_tool_calls, prompt_cache_key, reasoning, text, tools))
 -- request 4 (turn) --
-00:additional_tools/developer (1; hash=7758f662cd124827):
-        - namespace/functions; hash=70d14ec929ba5cd7
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:
@@ -106,8 +111,8 @@ Scenario: Guardian retries the same request after a denial and preserves evidenc
 
 ## Window 3 (after request 5: input repeated)
 -- request 6 (turn) --
-00:additional_tools/developer (1; hash=7758f662cd124827):
-        - namespace/functions; hash=70d14ec929ba5cd7
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:

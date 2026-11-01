@@ -10,9 +10,9 @@ use codex_agent_graph_store::AgentAliasState;
 use serde_json::Value;
 use serde_json::json;
 
-const EMPTY_AUTHORITY_INSTRUCTIONS: &str = "This is the current receiving root's agent identity \
-    mapping and replaces earlier mappings. Refs identify only the agents listed here; use a \
-    canonical agent_id for other agents. Task paths and nicknames are descriptive and may change.";
+const EMPTY_AUTHORITY_INSTRUCTIONS: &str = "This is the agent directory for your current root \
+    and replaces earlier mappings. Refs are scoped to this root; use a canonical agent_id for \
+    agents omitted from this directory. Task paths and nicknames are descriptive and may change.";
 const OMITTED_IDENTITIES: &str =
     "Additional identities are omitted; use the existing agent directory/discovery for details.";
 // Current full authorities are capped at 2,048 approximate tokens. Allow a complete

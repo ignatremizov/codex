@@ -1,5 +1,6 @@
 //! Current V1 aliases, independent of environment context and retained history size.
 
+use super::AgentReceiverIdentityState;
 use super::PreviousSectionState;
 use super::SectionTransition;
 use super::WorldStateSection;
@@ -89,6 +90,9 @@ pub(crate) fn prepare_v1_agent_model_input(
         .map(ResponseItemEnvelope::new)
         .collect();
     AgentIdentitiesState::new(snapshot).reconcile_annotated(&mut annotated);
+    if let Some(receiver) = AgentReceiverIdentityState::new(snapshot) {
+        receiver.reconcile_annotated(&mut annotated);
+    }
     *items = annotated
         .into_iter()
         .map(ResponseItemEnvelope::into_item)
@@ -102,6 +106,9 @@ pub(crate) fn prepare_v1_agent_model_input_annotated(
     snapshot: &V1AgentIdentitySnapshot,
 ) {
     AgentIdentitiesState::new(snapshot).reconcile_annotated(items);
+    if let Some(receiver) = AgentReceiverIdentityState::new(snapshot) {
+        receiver.reconcile_annotated(items);
+    }
     items.retain_mut(|envelope| {
         crate::context::project_v1_agent_item(&mut envelope.item, &snapshot.refs)
     });

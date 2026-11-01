@@ -1,7 +1,7 @@
 ---
 source: core/tests/suite/scenarios_audio_file_tests.rs
-assertion_line: 170
-expression: "context_snapshot::format_request_history_snapshot(if measured\n{\n    \"Two measured clips and five unmeasured files fit in the retained budget. All seven audio file IDs survive compaction and cold resume.\"\n} else\n{\n    \"The uploaded audio file ID survives remote compaction and a cold resume in canonical message content.\"\n}, &requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+assertion_line: 244
+expression: "context_snapshot::format_request_history_snapshot(description, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Two measured clips and five unmeasured files fit in the retained budget. All seven audio file IDs survive compaction and cold resume.
 
@@ -9,11 +9,15 @@ Scenario: Two measured clips and five unmeasured files fit in the retained budge
 -- request 1 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+01:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -33,11 +37,15 @@ Scenario: Two measured clips and five unmeasured files fit in the retained budge
 -- request 3 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+01:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>

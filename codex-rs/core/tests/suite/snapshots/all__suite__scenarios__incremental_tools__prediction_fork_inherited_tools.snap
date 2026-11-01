@@ -27,8 +27,12 @@ Settings:
           - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
 04:message/user:
@@ -38,7 +42,12 @@ Settings:
     <mcp_tools>
     MCP tools are unavailable for this request.
     </mcp_tools>
-06:message/user:
+06:message/developer:
+    <agent_self>
+    This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+    {"agent_id":"<UUID 2>","self_ref":"1"}
+    </agent_self>
+07:message/user:
     Predict the next message.
 
 ## Window 2 (after request 2: input diverged at item 05)
@@ -54,8 +63,12 @@ Settings: same as window 1
           - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
 04:message/user:

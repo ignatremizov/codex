@@ -25,8 +25,12 @@ Scenario: Resolved local MXC selection preserves workspace-write permissions in 
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-01:message/developer[2]:
-    [01] <permissions instructions>
+01:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `workspace-write`: T...ries requires approval. Network access is restricted. [hash=99963de5837f6638]
         # Escalation Requests
 
@@ -43,7 +47,7 @@ Scenario: Resolved local MXC selection preserves workspace-write permissions in 
         - ["cargo", "test"]
          The writable root is `<WORKSPACE_ROOT 1>`.
         </permissions instructions>
-    [02] <tools>
+    [03] <tools>
         Deferred tool namespaces:
         - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>

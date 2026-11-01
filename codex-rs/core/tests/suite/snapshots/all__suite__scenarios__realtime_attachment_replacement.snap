@@ -1,14 +1,18 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 373
+assertion_line: 315
 expression: "context_snapshot::format_request_history_snapshot(\"A replacement fences an older pending connection and stale stops; only the selected call starts a Codex handoff.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: A replacement fences an older pending connection and stale stops; only the selected call starts a Codex handoff.
 
 ## Window 1
 -- request 1 (turn) --
-00:message/developer[3]:
-    [01] <realtime_conversation>
+00:message/developer[4]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <realtime_conversation>
         Realtime conversation started.
 
         You are operating as a backend executor behind an intermediary. The user does not talk to you directly. ...ediary and may be summarized before the user sees it. [hash=5114d16b52865327]
@@ -19,8 +23,8 @@ Scenario: A replacement fences an older pending connection and stale stops; only
 
         - Keep responses concise and action-oriented. Your updates should help the intermediary respond to the user.
         </realtime_conversation>
-    [02] <PERMISSIONS_INSTRUCTIONS>
-    [03] <tools>
+    [03] <PERMISSIONS_INSTRUCTIONS>
+    [04] <tools>
         Deferred tool namespaces:
         - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
