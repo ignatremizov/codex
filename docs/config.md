@@ -6,6 +6,10 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## HTTP response startup
+
+HTTP Responses requests allow up to two minutes to transmit the request and receive response headers, including requests used for compaction. A provider's shorter `stream_idle_timeout_ms` also shortens this startup deadline. Once headers arrive, the provider's normal stream idle timeout governs gaps between response events.
+
 ## Mouse selection and clipboard
 
 To keep mouse selection separate from explicit clipboard copies:
