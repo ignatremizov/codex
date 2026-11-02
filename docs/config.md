@@ -6,6 +6,12 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Saved Ultra reasoning
+
+Selecting Ultra with Enter in the model picker saves the model and `model_reasoning_effort = "ultra"` for `/new` and future TUI launches. An explicitly selected launch flag, profile setting, or managed default can still take precedence. The picker’s session-only action and inline `/model --reasoning=ultra` apply only to the current session.
+
+Ultra applies to both modes in the active conversation. A separate `plan_mode_reasoning_effort` setting continues to control Plan mode in future conversations.
+
 ## HTTP response startup
 
 HTTP Responses requests allow up to two minutes to transmit the request and receive response headers, including requests used for compaction. A provider's shorter `stream_idle_timeout_ms` also shortens this startup deadline. Once headers arrive, the provider's normal stream idle timeout governs gaps between response events.

@@ -1525,7 +1525,7 @@ pub(crate) enum AppEvent {
         model: ModelPreset,
     },
 
-    /// Apply an advanced reasoning effort to the active conversation without changing defaults.
+    /// Apply an advanced reasoning effort and save it as the default for new conversations.
     ApplyAdvancedReasoning {
         model: String,
         effort: ReasoningEffort,
