@@ -2501,8 +2501,7 @@ impl App {
                 }
                 let model_changed = self.chat_widget.current_model() != model
                     || self.chat_widget.current_collaboration_mode().model() != model;
-                let default_effort =
-                    self.on_apply_advanced_reasoning(model.as_str(), effort.clone());
+                self.on_apply_advanced_reasoning(model.as_str(), effort.clone());
                 if model_changed {
                     self.sync_active_thread_model_setting(
                         app_server,
@@ -2520,24 +2519,24 @@ impl App {
                 self.sync_active_thread_service_tier_to_cached_session()
                     .await;
 
-                if let Some(default_effort) = default_effort.as_ref()
-                    && let Err(err) = self.persist_model_defaults(
+                if let Err(err) = self
+                    .persist_model_defaults(
                         app_server.request_handle(),
                         crate::config_update::build_model_selection_edits(
                             model.as_str(),
-                            Some(default_effort),
+                            Some(&effort),
                         ),
                         "default model and reasoning effort",
                     )
                     .await
                 {
                     let error = format_config_error(&err);
-                    tracing::error!(error = %error, "failed to persist conversation model");
+                    tracing::error!(error = %error, "failed to persist advanced reasoning selection");
                     self.chat_widget
                         .add_error_message(format!("Failed to save default model: {error}"));
                 } else {
                     self.chat_widget.add_info_message(
-                        format!("Model changed to {model} {effort} for this conversation"),
+                        format!("Model changed to {model} {effort}"),
                         /*hint*/ None,
                     );
                 }
