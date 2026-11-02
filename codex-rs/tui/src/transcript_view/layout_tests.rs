@@ -1,8 +1,14 @@
 //! Cache reuse, bounded lifetime, and invalidation across frames.
 
 use super::*;
+use crate::diff_model::FileChange;
+use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::new_patch_event;
 use pretty_assertions::assert_eq;
 use ratatui::text::Line;
+use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -148,6 +154,175 @@ fn recent_entries_are_reused_and_old_entries_are_evicted() {
     assert_eq!(
         [99, 98, 0].map(|index| cells[index].renders.load(Ordering::Relaxed)),
         [1, 1, 2]
+    );
+}
+
+fn cached_full_layout(
+    cache: &mut LayoutCache,
+    cell: &Arc<dyn HistoryCell>,
+    renders: &AtomicUsize,
+) -> Arc<TextLayout> {
+    // Exercise the byte budget without generating a huge number of wrapped rows.
+    let width = u16::MAX;
+    cache.get(
+        cell,
+        width,
+        CellPresentation {
+            separated: false,
+            shares_prompt_background: false,
+            turn_tip_space: false,
+            expanded: false,
+            disclosure: false,
+            detailed: true,
+            review: false,
+            image_protocol: None,
+        },
+        || {
+            renders.fetch_add(/*val*/ 1, Ordering::Relaxed);
+            TextLayout::new(cell.transcript_hyperlink_lines(width), width)
+        },
+    )
+}
+
+#[test]
+fn oversized_deleted_patch_survives_neighbor_lookups_and_expires_through_lru() {
+    let mut content = format!("{}\n", "x".repeat(/*n*/ 1023)).repeat(/*n*/ 8192);
+    content.push_str("last deleted line\n");
+    let patch: Arc<dyn HistoryCell> = Arc::new(new_patch_event(
+        HashMap::from([(PathBuf::from("huge.txt"), FileChange::Delete { content })]),
+        Path::new("/project"),
+    ));
+    let following: Arc<dyn HistoryCell> =
+        Arc::new(PlainHistoryCell::new(vec!["Following message".into()]));
+    let patch_renders = AtomicUsize::new(0);
+    let following_renders = AtomicUsize::new(0);
+    let mut cache = LayoutCache::default();
+    cache.begin_frame();
+    let patch_layout = cached_full_layout(&mut cache, &patch, &patch_renders);
+    assert!(patch_layout.text().len() > MAX_CACHED_LAYOUT_BYTES);
+    assert_eq!(
+        (
+            patch_layout.row_count(),
+            patch_layout.text().lines().next(),
+            patch_layout.text().lines().last(),
+        ),
+        (
+            8194,
+            Some("• Deleted huge.txt (+0 -8193)"),
+            Some("-last deleted line"),
+        ),
+    );
+    let following_layout = cached_full_layout(&mut cache, &following, &following_renders);
+    for _ in 0..4 {
+        cache.begin_frame();
+        assert!(Arc::ptr_eq(
+            &patch_layout,
+            &cached_full_layout(&mut cache, &patch, &patch_renders),
+        ));
+        assert!(Arc::ptr_eq(
+            &following_layout,
+            &cached_full_layout(&mut cache, &following, &following_renders),
+        ));
+    }
+    assert_eq!(
+        (
+            patch_renders.load(Ordering::Relaxed),
+            following_renders.load(Ordering::Relaxed),
+        ),
+        (1, 1),
+    );
+
+    let area = Rect::new(
+        /*x*/ 0,
+        /*y*/ 0,
+        /*width*/ u16::MAX,
+        /*height*/ 2,
+    );
+    let mut buffer = Buffer::empty(area);
+    patch_layout.render(
+        Rect { height: 1, ..area },
+        &mut buffer,
+        patch_layout.row_count() - 1,
+    );
+    following_layout.render(
+        Rect {
+            y: 1,
+            height: 1,
+            ..area
+        },
+        &mut buffer,
+        /*start_row*/ 0,
+    );
+    insta::assert_snapshot!(
+        crate::transcript_view::tests::text(&buffer),
+        @"
+            8193 -last deleted line
+        Following message
+        "
+    );
+
+    let expired = Arc::downgrade(&patch_layout);
+    drop(patch_layout);
+    for _ in 0..MAX_CACHED_ENTRIES {
+        let cell = Arc::new(Cell::default()) as Arc<dyn HistoryCell>;
+        cached_full_layout(&mut cache, &cell, &following_renders);
+    }
+    assert!(expired.upgrade().is_none());
+}
+
+#[test]
+fn ordinary_layouts_still_share_the_original_byte_budget() {
+    let cells: Vec<Arc<dyn HistoryCell>> = (0..2)
+        .map(|_| -> Arc<dyn HistoryCell> {
+            Arc::new(PlainHistoryCell::new(vec![
+                "x".repeat(MAX_CACHED_LAYOUT_BYTES / 2 + 1).into(),
+            ]))
+        })
+        .collect();
+    let renders = AtomicUsize::new(0);
+    let mut cache = LayoutCache::default();
+    cache.begin_frame();
+    let first = cached_full_layout(&mut cache, &cells[0], &renders);
+    let expired = Arc::downgrade(&first);
+    drop(first);
+    cached_full_layout(&mut cache, &cells[1], &renders);
+    assert!(expired.upgrade().is_none());
+}
+
+#[test]
+fn upward_scrolling_does_not_materialize_the_offscreen_tail() {
+    let tracked: Vec<_> = (0..200).map(|_| Arc::new(Cell::default())).collect();
+    let cells: Vec<_> = tracked
+        .iter()
+        .map(|cell| Arc::clone(cell) as Arc<dyn HistoryCell>)
+        .collect();
+    let mut view = TranscriptView::default();
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 0, /*width*/ 40, /*height*/ 10,
+    );
+    let mut buffer = Buffer::empty(area);
+    view.render(area, &mut buffer, &cells);
+    view.jump_to_entry(&cells, /*index*/ 64);
+    view.render(area, &mut buffer, &cells);
+    // A cold cache must not turn a wheel step in older history into a tail render.
+    view.cache.clear();
+    for cell in &tracked {
+        cell.renders.store(/*val*/ 0, Ordering::Relaxed);
+    }
+
+    // The normalized anchor starts on content, after its leading separator.
+    view.scroll(&cells, /*rows*/ -2);
+
+    assert_eq!(
+        tracked
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cell)| {
+                let renders = cell.renders.load(Ordering::Relaxed);
+                (renders > 0).then_some((index, renders))
+            })
+            .collect::<Vec<_>>(),
+        vec![(63, 1), (64, 1)],
     );
 }
 
