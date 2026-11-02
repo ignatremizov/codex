@@ -52,6 +52,8 @@ Alternate-screen surfaces do not have standard terminal scrollback. They provide
 
 In the owned conversation viewport, rapid wheel input shares the normal frame scheduler instead of repainting for every wheel event. Clicks and drags still refresh selection geometry immediately. Interrupt and quit shortcuts do not require an eager repaint; transcript selection keeps its existing copy shortcuts.
 
+The conversation viewport and Ctrl+T pager reuse an oversized patch layout alongside nearby messages, so a large file deletion does not need to be laid out again on each scroll. Upward scrolling also avoids measuring the offscreen latest page. Full patch content remains available for inspection, search, and copy.
+
 Older transcript pages, including any additional turn metadata they need, load in the background so the input loop stays available. A page has a 30-second loading deadline and can be retried after failure. Late replies from a cancelled or replaced request cannot advance the current cursor or replace the current loading state.
 
 ## Terminal multiplexers

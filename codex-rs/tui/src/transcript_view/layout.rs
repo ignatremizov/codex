@@ -398,10 +398,22 @@ impl LayoutCache {
                     .map_or(0, |image| image.pixels.len())
         };
         let mut bytes = self.entries.iter().map(retained_bytes).sum::<usize>();
-        // Retain a single oversized entry rather than repeatedly laying it out while visible.
-        while self.entries.len() > 1
-            && (self.entries.len() > MAX_CACHED_ENTRIES || bytes > MAX_CACHED_LAYOUT_BYTES)
-        {
+        // An oversized layout needs room for ordinary neighboring cells and tail lookups,
+        // or they evict it and force the entire diff to be laid out on every scroll.
+        // Allow one oversized entry alongside the normal byte budget, subject to the same LRU.
+        while self.entries.len() > 1 {
+            let oversized_bytes = self
+                .entries
+                .iter()
+                .map(retained_bytes)
+                .filter(|bytes| *bytes > MAX_CACHED_LAYOUT_BYTES)
+                .max()
+                .unwrap_or(0);
+            if self.entries.len() <= MAX_CACHED_ENTRIES
+                && bytes - oversized_bytes <= MAX_CACHED_LAYOUT_BYTES
+            {
+                break;
+            }
             bytes -= retained_bytes(&self.entries.remove(/*index*/ 0));
         }
     }
