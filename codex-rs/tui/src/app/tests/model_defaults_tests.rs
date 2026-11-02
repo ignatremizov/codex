@@ -174,6 +174,7 @@ async fn cloud_model_selection_waits_for_native_admission() -> Result<()> {
         }),
     ] {
         let admitted = receipt.is_ok();
+        let steered = matches!(&receipt, Ok(CloudUserMessageReceipt::Steered(_)));
         let unconfirmed = receipt.as_ref().is_err_and(|error| error.code == -32000);
         let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
         let thread_id = ThreadId::new();
@@ -249,7 +250,7 @@ async fn cloud_model_selection_waits_for_native_admission() -> Result<()> {
         );
         let input = app.chat_widget.capture_thread_input_state();
         let held = input.is_some_and(|input| input.has_unconfirmed_messages());
-        assert_eq!(held, unconfirmed);
+        assert_eq!(held, unconfirmed || steered);
         let rejected = !admitted && !unconfirmed;
         let restored = if rejected { "continue" } else { "" };
         assert_eq!(app.chat_widget.composer_text_with_pending(), restored);
@@ -400,7 +401,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
                 toml::from_str::<toml::Value>(&persisted)?,
                 toml::Value::Table(toml::toml! {
                     model = "gpt-5.5"
-                    model_reasoning_effort = "medium"
+                    model_reasoning_effort = "ultra"
                     plan_mode_reasoning_effort = "high"
                     service_tier = "fast"
                 })

@@ -5,6 +5,108 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn ultra_picker_selection_persists_across_new_sessions_and_config_reload() -> Result<()> {
+    for mode in [ModeKind::Default, ModeKind::Plan] {
+        let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+        let cwd = tempdir()?;
+        app.config.cwd = cwd.path().abs();
+        app.launch_cwd = app.config.cwd.to_path_buf();
+        let model = "gpt-5.6-terra";
+        app.config.model = Some(model.into());
+        app.config.model_reasoning_effort = Some(ReasoningEffortConfig::Max);
+        app.config.plan_mode_reasoning_effort = Some(ReasoningEffortConfig::Low);
+        let config_path = app.config.codex_home.join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "model = '{model}'\nmodel_reasoning_effort = 'max'\nplan_mode_reasoning_effort = 'low'\n"
+            ),
+        )?;
+        let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+        let started = server.start_thread(&app.config).await?;
+        let thread_id = started.session.thread_id;
+        app.enqueue_primary_thread_session(started.session, started.turns)
+            .await?;
+        app.chat_widget
+            .set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+        if mode == ModeKind::Plan {
+            app.chat_widget.handle_key_event(KeyCode::BackTab.into());
+        }
+        while events.try_recv().is_ok() {}
+        let preset = app
+            .model_catalog
+            .try_list_models()?
+            .into_iter()
+            .find(|preset| preset.model == model)
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing model preset"))?;
+        app.chat_widget.open_advanced_reasoning_popup(preset);
+        app.chat_widget.handle_key_event(KeyCode::Down.into());
+        app.chat_widget.handle_key_event(KeyCode::Enter.into());
+        let selection = std::iter::from_fn(|| events.try_recv().ok())
+            .find(|event| matches!(event, AppEvent::ApplyAdvancedReasoning { .. }))
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing Ultra picker selection"))?;
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        Box::pin(app.handle_event(&mut tui, &mut server, selection)).await?;
+        let settings = next_thread_settings_updated(&mut server, thread_id).await;
+        assert_eq!(
+            (
+                settings.thread_settings.model.as_str(),
+                settings.thread_settings.effort.clone(),
+                app.chat_widget.current_reasoning_effort(),
+            ),
+            (
+                model,
+                Some(ReasoningEffortConfig::Ultra),
+                Some(ReasoningEffortConfig::Ultra),
+            )
+        );
+        assert_eq!(
+            toml::from_str::<toml::Value>(&std::fs::read_to_string(&config_path)?)?,
+            toml::Value::Table(toml::toml! {
+                model = "gpt-5.6-terra"
+                model_reasoning_effort = "ultra"
+                plan_mode_reasoning_effort = "low"
+            })
+        );
+
+        Box::pin(app.handle_event(&mut tui, &mut server, AppEvent::NewSession { name: None }))
+            .await?;
+        let new_session = app
+            .primary_session_configured
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing new session"))?;
+        assert_ne!(new_session.thread_id, thread_id);
+        assert_eq!(
+            (
+                new_session.model.as_str(),
+                new_session.reasoning_effort.clone()
+            ),
+            (model, Some(ReasoningEffortConfig::Ultra))
+        );
+        server.shutdown().await?;
+
+        let reloaded = ConfigBuilder::default()
+            .codex_home(app.config.codex_home.to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(app.config.cwd.to_path_buf()),
+                ..Default::default()
+            })
+            .loader_overrides(app.loader_overrides.clone())
+            .build()
+            .await?;
+        let mut restarted =
+            Box::pin(crate::start_embedded_app_server_for_picker(&reloaded)).await?;
+        let fresh = restarted.start_thread(&reloaded).await?;
+        assert_eq!(
+            (fresh.session.model.as_str(), fresh.session.reasoning_effort),
+            (model, Some(ReasoningEffortConfig::Ultra))
+        );
+        restarted.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn fork_current_session_preserves_conversation_ultra() -> Result<()> {
     let mut app = make_test_app().await;
     let codex_home = tempdir()?;
