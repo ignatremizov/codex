@@ -20,6 +20,16 @@ impl McpRequestProcessor {
             server_name,
         } = params;
         let (_, thread) = self.load_thread(&thread_id).await?;
+        Box::pin(crate::mcp_refresh::reload_thread_mcp_config(
+            &thread,
+            &self.config_manager,
+        ))
+        .await
+        .map_err(|error| {
+            internal_error(format!(
+                "failed to refresh MCP configuration for thread {thread_id}: {error:#}"
+            ))
+        })?;
         let (mcp_config, _) = thread.current_mcp_config_and_runtime_context().await;
         let configured_servers = codex_mcp::configured_mcp_servers(&mcp_config);
         let Some(server_config) = configured_servers.get(&server_name) else {

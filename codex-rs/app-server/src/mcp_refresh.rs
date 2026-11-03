@@ -35,6 +35,36 @@ pub(crate) async fn reload_mcp_config_best_effort(
     }
 }
 
+/// Reload only the requesting thread, preserving its retained session layers.
+pub(crate) async fn reload_thread_mcp_config(
+    thread: &CodexThread,
+    config_manager: &ConfigManager,
+) -> io::Result<()> {
+    for _ in 0..3 {
+        let current_config = thread.config().await;
+        let next_config = match load_refresh_config(&current_config, config_manager).await {
+            Ok(config) => config,
+            Err(error) => {
+                thread.disable_mcp_enterprise_auth().await;
+                return Err(error);
+            }
+        };
+        match thread.refresh_mcp_config(current_config, next_config).await {
+            ConfigRefreshOutcome::Published => return Ok(()),
+            ConfigRefreshOutcome::Stale => continue,
+            ConfigRefreshOutcome::Rejected => {
+                return Err(io::Error::other(
+                    "thread MCP configuration refresh was rejected; enterprise MCP remains disabled",
+                ));
+            }
+        }
+    }
+    thread.disable_mcp_enterprise_auth().await;
+    Err(io::Error::other(
+        "thread MCP configuration changed during refresh; retry activation",
+    ))
+}
+
 #[derive(Clone, Copy)]
 enum ReloadPolicy {
     Strict,

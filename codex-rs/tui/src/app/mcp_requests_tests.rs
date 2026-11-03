@@ -107,6 +107,81 @@ async fn activation_outcomes_distinguish_admission_existing_visibility_and_failu
 }
 
 #[tokio::test]
+async fn activation_failure_preserves_rpc_details_through_routing_and_replay() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let loader = LoaderOverrides::without_managed_config_for_tests();
+    let config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            cwd: Some(home.path().to_path_buf()),
+            ..Default::default()
+        })
+        .loader_overrides(loader.clone())
+        .build()
+        .await?;
+    let client = Box::pin(crate::start_embedded_app_server(
+        Default::default(),
+        config.clone(),
+        Vec::new(),
+        loader,
+        /*strict_config*/ false,
+        Default::default(),
+        codex_feedback::CodexFeedback::new(),
+        /*log_db*/ None,
+        /*state_db*/ None,
+        Arc::new(EnvironmentManager::default_for_tests()),
+        Default::default(),
+    ))
+    .await?;
+    let mut server = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
+        codex_app_server_client::AppServerClient::InProcess(client),
+        crate::app_server_session::ThreadParamsMode::Embedded,
+    );
+    let thread_id = server.start_thread(&config).await?.session.thread_id;
+    let mut app = make_test_app().await;
+    let (chat, sender, mut receiver, _ops) = make_chatwidget_manual_with_sender().await;
+    app.chat_widget = chat;
+    app.app_event_tx = sender;
+    app.active_thread_id = Some(thread_id);
+    assert!(
+        app.try_submit_active_thread_op_via_app_server(
+            &mut server,
+            thread_id,
+            &AppCommand::ActivateMcpServer {
+                server_name: "node_repl".to_string(),
+            },
+        )
+        .await?
+    );
+    let store = Arc::clone(&app.ensure_thread_channel(thread_id).store);
+    let event = store
+        .lock()
+        .await
+        .buffer
+        .front()
+        .cloned()
+        .ok_or_else(|| color_eyre::eyre::eyre!("activation result was not buffered"))?;
+    app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
+    let mut rendered = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            rendered.extend(
+                cell.display_lines(/*width*/ 220)
+                    .iter()
+                    .map(ToString::to_string),
+            );
+        }
+    }
+    insta::assert_snapshot!(
+        rendered.join("\n").replace(&thread_id.to_string(), "<thread>"),
+        @"■ Failed to use MCP server `node_repl`: thread/mcpServer/activate failed: thread/mcpServer/activate failed: unknown MCP server `node_repl` for thread <thread> (code -32600)"
+    );
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn inventory_results_drop_superseded_requests_before_buffering() {
     let mut app = make_test_app().await;
     let origin = ThreadId::new();
