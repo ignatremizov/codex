@@ -802,7 +802,7 @@ impl App {
                 let result = app_server
                     .thread_mcp_server_activate(thread_id, server_name.clone())
                     .await
-                    .map_err(|error| error.to_string());
+                    .map_err(|error| format!("{error:#}"));
                 self.enqueue_mcp_result(
                     Some(thread_id),
                     mcp_requests::McpThreadEvent::Activation {

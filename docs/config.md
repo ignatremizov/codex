@@ -264,7 +264,7 @@ command = "docs-server"
 allow_implicit_invocation = false
 ```
 
-Use `/mcp use docs` to add that server's complete current tool inventory, including schemas and metadata, to subsequent context in the selected thread. The command preserves the case of the configured server name and trims surrounding whitespace. Existing MCP server-name validation still applies.
+Use `/mcp use docs` to add that server's complete current tool inventory, including schemas and metadata, to subsequent context in the selected thread. Activation first reloads that thread's MCP configuration from the latest files while preserving its session overrides, managed restrictions, and environment bindings. A server added after the thread started can therefore be activated without restarting the TUI or refreshing every loaded thread. The command preserves the case of the configured server name and trims surrounding whitespace. Existing MCP server-name validation still applies. Configuration and RPC failures show their underlying cause in the TUI.
 
 Explicit use adds context forward without rewriting earlier messages or promoting tools into the frozen non-Apps direct tool contract. It never starts a model turn by itself. Before the first user turn, the request is queued; during an active turn, insertion waits for a safe input boundary. Each distinct accepted inventory block survives compaction in order. Inventories are deliberately complete and can be large, so invoke only the servers whose details you want in model context.
 

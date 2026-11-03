@@ -30,6 +30,9 @@ use tokio::time::timeout;
 const TIMEOUT: Duration = Duration::from_secs(30);
 const HIDDEN_SERVER: &str = "Hidden.Docs";
 
+#[path = "mcp_activation_refresh_tests.rs"]
+mod refresh_tests;
+
 #[derive(Clone, Copy)]
 enum ActivationMoment {
     BeforeFirstTurn,
