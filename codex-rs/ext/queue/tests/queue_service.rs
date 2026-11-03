@@ -82,6 +82,9 @@ impl TurnStartAdmission for TestAdmission {
 #[path = "queue_service/mailbox_inventory_tests.rs"]
 mod mailbox_inventory_tests;
 
+#[path = "queue_service/steering_tests.rs"]
+mod steering_tests;
+
 #[derive(Default)]
 struct RecordingEventSink {
     events: Mutex<Vec<Event>>,

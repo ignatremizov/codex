@@ -38,11 +38,19 @@ use tokio::sync::OwnedMutexGuard;
 use tokio::sync::broadcast::error::TryRecvError;
 use uuid::Uuid;
 
+use self::steering::QueueDelivery;
+use self::steering::decode_input;
+use self::steering::encode_input;
+
+#[path = "steering.rs"]
+mod steering;
+
 /// One user message waiting to start on its thread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueuedItem {
     pub id: String,
     pub input: TurnInput,
+    delivery: QueueDelivery,
 }
 
 #[derive(Debug, Error)]
@@ -221,30 +229,39 @@ impl QueuedItemService {
                             };
                             if matches!(
                                 thread.agent_status().await,
-                                AgentStatus::Running
-                                    | AgentStatus::Interrupted
+                                AgentStatus::Interrupted
                                     | AgentStatus::Shutdown
                                     | AgentStatus::NotFound
                             ) {
                                 return;
                             }
-                            match service
-                                .queue
-                                .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
-                                .await
-                            {
-                                Ok(items) if items.is_empty() => {
-                                    if reevaluate_loaded_idle {
+                            if matches!(thread.agent_status().await, AgentStatus::Running) {
+                                match service.dispatch_steers(thread.as_ref()).await {
+                                    Ok(false) => return,
+                                    Ok(true) => {}
+                                    Err(error) => {
+                                        tracing::warn!(%thread_id, %error, "failed to check queued steers");
+                                    }
+                                }
+                            } else {
+                                match service
+                                    .queue
+                                    .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
+                                    .await
+                                {
+                                    Ok(items) if items.is_empty() => {
+                                        if reevaluate_loaded_idle {
+                                            service.wake_if_loaded(thread_id).await;
+                                        }
+                                        return;
+                                    }
+                                    Ok(_) => {
+                                        reevaluate_loaded_idle = false;
                                         service.wake_if_loaded(thread_id).await;
                                     }
-                                    return;
-                                }
-                                Ok(_) => {
-                                    reevaluate_loaded_idle = false;
-                                    service.wake_if_loaded(thread_id).await;
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%thread_id, %error, "failed to check queued user input");
+                                    Err(error) => {
+                                        tracing::warn!(%thread_id, %error, "failed to check queued user input");
+                                    }
                                 }
                             }
                         }
@@ -279,8 +296,28 @@ impl QueuedItemService {
         thread_id: ThreadId,
         input: TurnInput,
     ) -> Result<QueuedItem, QueueServiceError> {
+        self.enqueue_with_delivery(thread_id, input, QueueDelivery::NextTurn)
+            .await
+    }
+
+    /// Durably accept input for the active turn, falling back to a new turn when idle.
+    pub async fn enqueue_steer(
+        &self,
+        thread_id: ThreadId,
+        input: TurnInput,
+    ) -> Result<QueuedItem, QueueServiceError> {
+        self.enqueue_with_delivery(thread_id, input, QueueDelivery::Steer)
+            .await
+    }
+
+    async fn enqueue_with_delivery(
+        &self,
+        thread_id: ThreadId,
+        input: TurnInput,
+        delivery: QueueDelivery,
+    ) -> Result<QueuedItem, QueueServiceError> {
         let input = prepare_queued_user_input(input).await?;
-        let payload = serde_json::to_string(&input)?;
+        let payload = encode_input(&input, delivery)?;
         let item = {
             let _dispatch_guard = self.dispatch_guard(thread_id).await;
             let item = queued_item_from_record(self.queue.enqueue(thread_id, payload).await?)?;
@@ -317,21 +354,25 @@ impl QueuedItemService {
         mut input: TurnInput,
     ) -> Result<Option<QueuedItem>, QueueServiceError> {
         let _dispatch_guard = self.dispatch_guard(thread_id).await;
+        let previous = self
+            .list(thread_id)
+            .await?
+            .into_iter()
+            .find(|item| item.id == queued_item_id);
+        let delivery = previous
+            .as_ref()
+            .map_or(QueueDelivery::NextTurn, |item| item.delivery);
         if let TurnInput::UserInput { client_id, .. } = &mut input {
-            *client_id = self
-                .list(thread_id)
-                .await?
-                .into_iter()
-                .find_map(|item| match item {
-                    QueuedItem {
-                        id,
-                        input: TurnInput::UserInput { client_id, .. },
-                    } if id == queued_item_id => client_id,
-                    _ => None,
-                });
+            *client_id = previous.and_then(|item| match item {
+                QueuedItem {
+                    input: TurnInput::UserInput { client_id, .. },
+                    ..
+                } => client_id,
+                _ => None,
+            });
         }
         let input = prepare_queued_user_input(input).await?;
-        let payload = serde_json::to_string(&input)?;
+        let payload = encode_input(&input, delivery)?;
         let item = self
             .queue
             .update(thread_id, queued_item_id, payload)
@@ -434,8 +475,8 @@ impl QueuedItemService {
             };
             let queued_item_id = record.id.clone();
 
-            let input = match serde_json::from_str::<TurnInput>(&record.payload) {
-                Ok(input) => input,
+            let input = match decode_input(&record.payload) {
+                Ok((input, _)) => input,
                 Err(error) => {
                     tracing::warn!(%queued_item_id, %error, "discarding invalid queued item");
                     self.delete_locked(thread_id, queued_item_id).await?;
@@ -522,6 +563,11 @@ impl QueuedItemService {
         if let Ok(thread) = manager.get_thread(thread_id).await
             && !matches!(thread.agent_status().await, AgentStatus::Interrupted)
         {
+            if matches!(thread.agent_status().await, AgentStatus::Running)
+                && let Err(error) = self.dispatch_steers(thread.as_ref()).await
+            {
+                tracing::warn!(%thread_id, %error, "failed to deliver queued steer");
+            }
             thread
                 .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
                 .await;
@@ -615,8 +661,10 @@ where
 fn queued_item_from_record(
     record: QueuedUserSubmissionRecord,
 ) -> Result<QueuedItem, QueueServiceError> {
+    let (input, delivery) = decode_input(&record.payload)?;
     Ok(QueuedItem {
         id: record.id,
-        input: serde_json::from_str::<TurnInput>(&record.payload)?,
+        input,
+        delivery,
     })
 }
