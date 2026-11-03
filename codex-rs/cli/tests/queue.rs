@@ -20,6 +20,9 @@ const THREAD_ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 enum QueueResponse {
     Success,
     ResumeRejected,
+    SteerResumeRejected,
+    Steer,
+    UnsupportedSteer,
     MethodNotFound,
     #[cfg(unix)]
     UnknownMethodVariant,
@@ -103,11 +106,27 @@ where
 
     let request = websocket.next().await.context("missing queue request")??;
     let request: Value = serde_json::from_str(request.to_text()?)?;
-    assert_eq!(request["method"], "thread/queue/add");
+    assert_eq!(
+        request["method"],
+        if matches!(
+            response,
+            QueueResponse::Steer
+                | QueueResponse::UnsupportedSteer
+                | QueueResponse::SteerResumeRejected
+        ) {
+            "thread/queue/steer"
+        } else {
+            "thread/queue/add"
+        }
+    );
+
     assert_eq!(request["params"]["threadId"], THREAD_ID);
 
     let result = match response {
-        QueueResponse::Success | QueueResponse::ResumeRejected => json!({
+        QueueResponse::Success
+        | QueueResponse::ResumeRejected
+        | QueueResponse::Steer
+        | QueueResponse::SteerResumeRejected => json!({
             "id": request["id"],
             "result": {
                 "queuedSubmission": {
@@ -117,7 +136,7 @@ where
                 },
             },
         }),
-        QueueResponse::MethodNotFound => json!({
+        QueueResponse::MethodNotFound | QueueResponse::UnsupportedSteer => json!({
             "id": request["id"],
             "error": { "code": -32601, "message": "Method not found" },
         }),
@@ -133,7 +152,10 @@ where
     websocket
         .send(Message::Text(result.to_string().into()))
         .await?;
-    if matches!(response, QueueResponse::ResumeRejected) {
+    if matches!(
+        response,
+        QueueResponse::ResumeRejected | QueueResponse::SteerResumeRejected
+    ) {
         for (method, mut reply) in [
             (
                 "thread/read",
@@ -192,6 +214,26 @@ async fn queue_succeeds_when_another_server_owns_the_thread() -> Result<()> {
 }
 
 #[tokio::test]
+async fn queue_steer_succeeds_when_resume_is_rejected() -> Result<()> {
+    let (output, _) = run_remote_queue_command(QueueResponse::SteerResumeRejected).await?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)?,
+        format!("Accepted steer message queued-submission-id for thread {THREAD_ID}.\n")
+    );
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains(&format!(
+        "Warning: message was queued, but could not resume thread {THREAD_ID}:"
+    )));
+    assert!(stderr.contains("thread already has an active writer"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn queue_does_not_fallback_from_unsupported_explicit_remote() -> Result<()> {
     let (output, _) = run_remote_queue_command(QueueResponse::MethodNotFound).await?;
 
@@ -199,6 +241,40 @@ async fn queue_does_not_fallback_from_unsupported_explicit_remote() -> Result<()
     assert!(
         String::from_utf8(output.stderr)?
             .contains("remote app server does not support thread/queue/add")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn queue_steer_uses_distinct_rpc_and_reports_acceptance() -> Result<()> {
+    let (output, request) = run_remote_queue_command(QueueResponse::Steer).await?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        json!({
+            "method": request["method"],
+            "thread": request["params"]["threadId"],
+            "text": request["params"]["input"][0]["text"],
+        }),
+        json!({"method": "thread/queue/steer", "thread": THREAD_ID, "text": "do the thing"})
+    );
+    insta::assert_snapshot!(
+        String::from_utf8(output.stdout)?,
+        @"Accepted steer message queued-submission-id for thread 123e4567-e89b-12d3-a456-426614174000."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn queue_steer_does_not_silently_fall_back_to_next_turn_delivery() -> Result<()> {
+    let (output, _) = run_remote_queue_command(QueueResponse::UnsupportedSteer).await?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)?
+            .contains("remote app server does not support thread/queue/steer")
     );
     Ok(())
 }
@@ -254,7 +330,14 @@ async fn run_remote_queue_command(response: QueueResponse) -> Result<(Output, Va
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
     let remote_first = matches!(response, QueueResponse::MethodNotFound);
-    let resume = matches!(response, QueueResponse::ResumeRejected);
+    let resume = matches!(
+        response,
+        QueueResponse::ResumeRejected | QueueResponse::SteerResumeRejected
+    );
+    let steer = matches!(
+        response,
+        QueueResponse::Steer | QueueResponse::UnsupportedSteer | QueueResponse::SteerResumeRejected
+    );
     let server_home = codex_home.path().to_path_buf();
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
@@ -278,14 +361,17 @@ async fn run_remote_queue_command(response: QueueResponse) -> Result<(Output, Va
             "CODEX_REMOTE_TOKEN",
         ]
     };
-    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    command
         .env("CODEX_HOME", codex_home.path())
         .env("CODEX_REMOTE_TOKEN", "test-token")
         .args(remote_args)
         .args(resume.then_some("--resume"))
-        .args(["--thread", THREAD_ID, "--message", "do the thing"])
-        .output()
-        .await?;
+        .args(["--thread", THREAD_ID, "--message", "do the thing"]);
+    if steer {
+        command.arg("--steer");
+    }
+    let output = command.output().await?;
     Ok((output, server.await??))
 }
 

@@ -1501,6 +1501,11 @@ impl MessageProcessor {
                 .add(params)
                 .await
                 .map(|response| Some(response.into())),
+            ClientRequest::ThreadQueueSteer { params, .. } => self
+                .thread_queue_processor
+                .steer(params)
+                .await
+                .map(|response| Some(ClientResponsePayload::ThreadQueueSteer(response))),
             ClientRequest::ThreadQueueList { params, .. } => self
                 .thread_queue_processor
                 .list(params)

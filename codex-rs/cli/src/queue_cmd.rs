@@ -31,6 +31,10 @@ pub(crate) struct QueueCommand {
     #[arg(long)]
     resume: bool,
 
+    /// Deliver into the active turn, waking waits, or start a turn when idle.
+    #[arg(long)]
+    steer: bool,
+
     #[clap(flatten)]
     remote: InteractiveRemoteOptions,
 
@@ -120,6 +124,7 @@ pub(crate) async fn run_queue_command(
         thread,
         message,
         resume,
+        steer,
         remote,
         config_overrides,
     } = command;
@@ -144,6 +149,11 @@ pub(crate) async fn run_queue_command(
         thread,
         message,
         resume,
+        if steer {
+            codex_tui::SessionQueueDelivery::Steer
+        } else {
+            codex_tui::SessionQueueDelivery::NextTurn
+        },
         codex_tui::SessionArchiveCommandOptions {
             cli,
             arg0_paths,

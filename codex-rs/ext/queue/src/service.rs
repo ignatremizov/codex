@@ -38,12 +38,20 @@ use tokio::sync::OwnedMutexGuard;
 use tokio::sync::broadcast::error::TryRecvError;
 use uuid::Uuid;
 
+use self::steering::QueueDelivery;
+use self::steering::decode_input;
+use self::steering::encode_input;
+
+#[path = "steering.rs"]
+mod steering;
+
 /// One user message waiting to start on its thread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueuedItem {
     pub id: String,
     pub input: TurnInput,
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
+    delivery: QueueDelivery,
 }
 
 #[derive(Debug, Error)]
@@ -222,30 +230,39 @@ impl QueuedItemService {
                             };
                             if matches!(
                                 thread.agent_status().await,
-                                AgentStatus::Running
-                                    | AgentStatus::Interrupted
+                                AgentStatus::Interrupted
                                     | AgentStatus::Shutdown
                                     | AgentStatus::NotFound
                             ) {
                                 return;
                             }
-                            match service
-                                .queue
-                                .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
-                                .await
-                            {
-                                Ok(items) if items.is_empty() => {
-                                    if reevaluate_loaded_idle {
+                            if matches!(thread.agent_status().await, AgentStatus::Running) {
+                                match service.dispatch_steers(thread.as_ref()).await {
+                                    Ok(false) => return,
+                                    Ok(true) => {}
+                                    Err(error) => {
+                                        tracing::warn!(%thread_id, %error, "failed to check queued steers");
+                                    }
+                                }
+                            } else {
+                                match service
+                                    .queue
+                                    .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
+                                    .await
+                                {
+                                    Ok(items) if items.is_empty() => {
+                                        if reevaluate_loaded_idle {
+                                            service.wake_if_loaded(thread_id).await;
+                                        }
+                                        return;
+                                    }
+                                    Ok(_) => {
+                                        reevaluate_loaded_idle = false;
                                         service.wake_if_loaded(thread_id).await;
                                     }
-                                    return;
-                                }
-                                Ok(_) => {
-                                    reevaluate_loaded_idle = false;
-                                    service.wake_if_loaded(thread_id).await;
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%thread_id, %error, "failed to check queued user input");
+                                    Err(error) => {
+                                        tracing::warn!(%thread_id, %error, "failed to check queued user input");
+                                    }
                                 }
                             }
                         }
@@ -290,8 +307,51 @@ impl QueuedItemService {
         input: TurnInput,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<QueuedItem, QueueServiceError> {
+        self.enqueue_with_delivery(
+            thread_id,
+            input,
+            QueueDelivery::NextTurn,
+            responsesapi_client_metadata,
+        )
+        .await
+    }
+
+    /// Durably accept active-turn input, falling back to a new turn when idle.
+    pub async fn enqueue_steer(
+        &self,
+        thread_id: ThreadId,
+        input: TurnInput,
+    ) -> Result<QueuedItem, QueueServiceError> {
+        self.enqueue_steer_with_metadata(
+            thread_id, input, /*responsesapi_client_metadata*/ None,
+        )
+        .await
+    }
+
+    pub async fn enqueue_steer_with_metadata(
+        &self,
+        thread_id: ThreadId,
+        input: TurnInput,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
+    ) -> Result<QueuedItem, QueueServiceError> {
+        self.enqueue_with_delivery(
+            thread_id,
+            input,
+            QueueDelivery::Steer,
+            responsesapi_client_metadata,
+        )
+        .await
+    }
+
+    async fn enqueue_with_delivery(
+        &self,
+        thread_id: ThreadId,
+        input: TurnInput,
+        delivery: QueueDelivery,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
+    ) -> Result<QueuedItem, QueueServiceError> {
         let input = prepare_queued_user_input(input).await?;
-        let payload = queued_input_payload(&input, responsesapi_client_metadata.as_ref())?;
+        let payload = encode_input(&input, delivery, responsesapi_client_metadata.as_ref())?;
         let item = {
             let _dispatch_guard = self.dispatch_guard(thread_id).await;
             let item = QueuedItem::try_from(self.queue.enqueue(thread_id, payload).await?)?;
@@ -352,6 +412,9 @@ impl QueuedItemService {
             .await?
             .into_iter()
             .find(|item| item.id == queued_item_id);
+        let delivery = previous
+            .as_ref()
+            .map_or(QueueDelivery::NextTurn, |item| item.delivery);
         if let TurnInput::UserInput { client_id, .. } = &mut input {
             *client_id = previous.as_ref().and_then(|item| match &item.input {
                 TurnInput::UserInput { client_id, .. } => client_id.clone(),
@@ -363,7 +426,7 @@ impl QueuedItemService {
                 previous.and_then(|item| item.responsesapi_client_metadata);
         }
         let input = prepare_queued_user_input(input).await?;
-        let payload = queued_input_payload(&input, responsesapi_client_metadata.as_ref())?;
+        let payload = encode_input(&input, delivery, responsesapi_client_metadata.as_ref())?;
         let item = self
             .queue
             .update(thread_id, queued_item_id, payload)
@@ -561,6 +624,11 @@ impl QueuedItemService {
         if let Ok(thread) = manager.get_thread(thread_id).await
             && !matches!(thread.agent_status().await, AgentStatus::Interrupted)
         {
+            if matches!(thread.agent_status().await, AgentStatus::Running)
+                && let Err(error) = self.dispatch_steers(thread.as_ref()).await
+            {
+                tracing::warn!(%thread_id, %error, "failed to deliver queued steer");
+            }
             thread
                 .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
                 .await;
@@ -651,19 +719,6 @@ where
     }
 }
 
-fn queued_input_payload(
-    input: &TurnInput,
-    metadata: Option<&HashMap<String, String>>,
-) -> Result<String, QueueServiceError> {
-    let Some(metadata) = metadata else {
-        return Ok(serde_json::to_string(input)?);
-    };
-    let mut payload = serde_json::to_value(input)?;
-    // Keep TurnInput's wire shape so older readers can still execute the input.
-    payload["UserInput"]["responsesapi_client_metadata"] = serde_json::to_value(metadata)?;
-    Ok(serde_json::to_string(&payload)?)
-}
-
 impl TryFrom<QueuedUserSubmissionRecord> for QueuedItem {
     type Error = QueueServiceError;
 
@@ -675,9 +730,11 @@ impl TryFrom<QueuedUserSubmissionRecord> for QueuedItem {
             .and_then(|input| input.remove("responsesapi_client_metadata"))
             .map(serde_json::from_value)
             .transpose()?;
+        let (input, delivery) = decode_input(payload)?;
         Ok(QueuedItem {
             id: record.id,
-            input: serde_json::from_value(payload)?,
+            input,
+            delivery,
             responsesapi_client_metadata,
         })
     }
