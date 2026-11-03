@@ -29,11 +29,19 @@ use uuid::Uuid;
 const JSONRPC_INVALID_REQUEST: i64 = -32600;
 const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
 const THREAD_QUEUE_ADD_METHOD: &str = "thread/queue/add";
+const THREAD_QUEUE_STEER_METHOD: &str = "thread/queue/steer";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionQueueDelivery {
+    NextTurn,
+    Steer,
+}
 
 pub async fn run_session_queue_command(
     target: String,
     message: String,
     resume: bool,
+    delivery: SessionQueueDelivery,
     options: SessionArchiveCommandOptions,
 ) -> Result<String> {
     if options.cli.no_daemon && options.explicit_remote_endpoint.is_none() {
@@ -65,6 +73,7 @@ pub async fn run_session_queue_command(
         &target,
         &message,
         &client_message_id,
+        delivery,
     )
     .await
     {
@@ -77,7 +86,11 @@ pub async fn run_session_queue_command(
                 "local app-server daemon"
             };
             return Err(error.wrap_err(format!(
-                "the {server} does not support thread/queue/add; update or restart the {server}"
+                "the {server} does not support {}; update or restart the {server}",
+                match delivery {
+                    SessionQueueDelivery::NextTurn => THREAD_QUEUE_ADD_METHOD,
+                    SessionQueueDelivery::Steer => THREAD_QUEUE_STEER_METHOD,
+                }
             )));
         }
         result => result?,
@@ -90,8 +103,13 @@ pub async fn run_session_queue_command(
     }
 
     Ok(format!(
-        "Queued message {} for thread {}.",
-        response.queued_submission.id, thread_id
+        "{} message {} for thread {}.",
+        match delivery {
+            SessionQueueDelivery::NextTurn => "Queued",
+            SessionQueueDelivery::Steer => "Accepted steer",
+        },
+        response.queued_submission.id,
+        thread_id
     ))
 }
 
@@ -101,6 +119,7 @@ pub(super) async fn run_session_queue_action_with_app_server(
     target: &str,
     message: &str,
     client_message_id: &str,
+    delivery: SessionQueueDelivery,
 ) -> Result<(ThreadId, ThreadQueueAddResponse)> {
     let thread_id = if let Ok(thread_id) = ThreadId::from_string(target) {
         thread_id
@@ -123,19 +142,21 @@ pub(super) async fn run_session_queue_action_with_app_server(
             .wrap_err_with(|| format!("app server returned invalid session id `{}`", thread.id))?
     };
     let request_id = app_server.next_request_id();
+    let params = ThreadQueueAddParams {
+        thread_id: thread_id.to_string(),
+        input: vec![UserInput::Text {
+            text: message.to_string(),
+            text_elements: Vec::new(),
+        }],
+        client_user_message_id: client_message_id.to_string(),
+    };
+    let request = match delivery {
+        SessionQueueDelivery::NextTurn => ClientRequest::ThreadQueueAdd { request_id, params },
+        SessionQueueDelivery::Steer => ClientRequest::ThreadQueueSteer { request_id, params },
+    };
     let response = app_server
         .request_handle()
-        .request_typed(ClientRequest::ThreadQueueAdd {
-            request_id,
-            params: ThreadQueueAddParams {
-                thread_id: thread_id.to_string(),
-                input: vec![UserInput::Text {
-                    text: message.to_string(),
-                    text_elements: Vec::new(),
-                }],
-                client_user_message_id: client_message_id.to_string(),
-            },
-        })
+        .request_typed(request)
         .await
         .wrap_err("failed to queue session message")?;
     Ok((thread_id, response))
@@ -189,12 +210,12 @@ fn is_unsupported_queue_error(error: &Report) -> bool {
     matches!(
         error.downcast_ref::<TypedRequestError>(),
         Some(TypedRequestError::Server { method, source })
-            if method == THREAD_QUEUE_ADD_METHOD
+            if (method == THREAD_QUEUE_ADD_METHOD || method == THREAD_QUEUE_STEER_METHOD)
                 && (source.code == JSONRPC_METHOD_NOT_FOUND
                     || (source.code == JSONRPC_INVALID_REQUEST
-                        && (source.message == experimental_required_message(THREAD_QUEUE_ADD_METHOD)
+                        && (source.message == experimental_required_message(method)
                             || source.message.starts_with(
-                                "Invalid request: unknown variant `thread/queue/add`",
+                                &format!("Invalid request: unknown variant `{method}`"),
                             ))))
     )
 }

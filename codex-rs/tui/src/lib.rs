@@ -82,6 +82,7 @@ pub use session_archive_commands::DeleteConfirmation;
 pub use session_archive_commands::SessionArchiveAction;
 pub use session_archive_commands::SessionArchiveCommandOptions;
 pub use session_archive_commands::run_session_archive_command;
+pub use session_queue_commands::SessionQueueDelivery;
 pub use session_queue_commands::run_session_queue_command;
 use std::fs::OpenOptions;
 use std::io::IsTerminal;

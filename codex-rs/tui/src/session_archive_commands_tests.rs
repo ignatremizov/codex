@@ -19,6 +19,7 @@ use crate::app_server_session::AppServerSession;
 use crate::app_server_session::ThreadParamsMode;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
+use crate::session_queue_commands::SessionQueueDelivery;
 use crate::session_queue_commands::run_session_queue_action_with_app_server;
 use crate::tests::start_test_embedded_app_server;
 
@@ -403,6 +404,7 @@ async fn trusts_sqlite_name_over_legacy_index_for_delete() -> color_eyre::Result
         "old-session",
         "do the thing",
         "stable-client-message-id",
+        SessionQueueDelivery::NextTurn,
     )
     .await
     .expect_err("stale legacy names must not select renamed threads");
@@ -471,6 +473,7 @@ async fn queues_non_interactive_and_custom_sessions_by_server_label() -> color_e
         "saved-session",
         "do the thing",
         "stable-client-message-id",
+        SessionQueueDelivery::NextTurn,
     )
     .await?;
     let queued = runtime
@@ -516,6 +519,7 @@ async fn queues_non_interactive_and_custom_sessions_by_server_label() -> color_e
         "atlas-session",
         "do the thing",
         "custom-client-message-id",
+        SessionQueueDelivery::NextTurn,
     )
     .await?;
     assert_eq!(resolved_custom_thread_id, custom_thread_id);
@@ -530,6 +534,7 @@ async fn queues_non_interactive_and_custom_sessions_by_server_label() -> color_e
         "saved-session",
         "do the thing",
         "duplicate-client-message-id",
+        SessionQueueDelivery::NextTurn,
     )
     .await
     .expect_err("different sources with the same label need a thread ID");

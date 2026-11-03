@@ -676,6 +676,13 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadQueueAddResponse,
     },
+    #[experimental("thread/queue/steer")]
+    ThreadQueueSteer => "thread/queue/steer" {
+        params: v2::ThreadQueueAddParams,
+        serialization: thread_id(params.thread_id),
+        manual_payload_conversion: manual,
+        response: v2::ThreadQueueAddResponse,
+    },
     #[experimental("thread/queue/list")]
     ThreadQueueList => "thread/queue/list" {
         params: v2::ThreadQueueListParams,
