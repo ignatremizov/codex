@@ -899,24 +899,22 @@ impl App {
                 } else {
                     false
                 };
-                let external_writer = self
-                    .thread_event_channels
-                    .get(&thread_id)
-                    .is_some_and(|channel| {
-                        channel.attachment() == ThreadEventAttachment::ExternalWriter
-                    });
-                let result = if input_blocked
-                    || external_writer
-                    || self.thread_unavailable(thread_id)
-                {
-                    Err("This conversation is read-only or unavailable; no activation was sent."
+                let external_writer =
+                    self.thread_event_channels
+                        .get(&thread_id)
+                        .is_some_and(|channel| {
+                            channel.attachment() == ThreadEventAttachment::ExternalWriter
+                        });
+                let result =
+                    if input_blocked || external_writer || self.thread_unavailable(thread_id) {
+                        Err("This conversation is read-only or unavailable; no activation was sent."
                         .to_string())
-                } else {
-                    app_server
-                        .thread_mcp_server_activate(thread_id, server_name.clone())
-                        .await
-                        .map_err(|error| error.to_string())
-                };
+                    } else {
+                        app_server
+                            .thread_mcp_server_activate(thread_id, server_name.clone())
+                            .await
+                            .map_err(|error| format!("{error:#}"))
+                    };
                 self.enqueue_mcp_result(
                     Some(thread_id),
                     mcp_requests::McpThreadEvent::Activation {
