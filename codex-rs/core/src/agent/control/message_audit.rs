@@ -9,38 +9,40 @@ use codex_protocol::protocol::agent_delivery_receipt_item;
 use codex_protocol::protocol::attributed_agent_message_transcript_parts;
 
 impl LocalAgentControl {
-    /// Acknowledgement of Main's output at a child is UI-only, not another child's response.
+    /// Confirmed response delivery at a non-root observer is a UI-only root receipt.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "live receipt placement must be atomic with root turn transitions"
     )]
     pub(crate) async fn mirror_agent_delivery_receipt(
         &self,
-        sender: ThreadId,
-        recipient: ThreadId,
-        phase: MessagePhase,
-        recipient_model_visibility: SubAgentCompletionModelVisibility,
-        delivery_id: &str,
+        delivery: &ResponseObservationDeliveryCommit,
         text: &str,
     ) -> CodexResult<()> {
+        let sender = delivery.child.thread_id;
+        let recipient = delivery.parent.thread_id;
+        let phase = match delivery.kind {
+            ResponseObservationDeliveryKind::Commentary => MessagePhase::Commentary,
+            ResponseObservationDeliveryKind::Final => MessagePhase::FinalAnswer,
+        };
         // Presentation-only delivery belongs to the recipient's durable transcript.
         // Do not add another root row acknowledging that hidden delivery.
-        if recipient_model_visibility == SubAgentCompletionModelVisibility::NotVisible {
+        if delivery.model_visibility == SubAgentCompletionModelVisibility::NotVisible {
             return Ok(());
         }
         let Some(root_id) = self.bound_session_id().map(ThreadId::from) else {
             return Ok(());
         };
-        if sender != root_id || recipient == root_id {
+        if recipient == root_id || (sender != root_id && phase != MessagePhase::FinalAnswer) {
             return Ok(());
         }
-        let Some(receipt) = agent_delivery_receipt_item(
+        let Some(mut receipt) = agent_delivery_receipt_item(
             sender,
             recipient,
             phase,
-            recipient_model_visibility,
-            delivery_id,
-            text,
+            delivery.model_visibility,
+            delivery.response_item_id.as_str(),
+            if sender == root_id { text } else { "" },
         ) else {
             return Ok(());
         };
@@ -54,6 +56,24 @@ impl LocalAgentControl {
                 .wait_agent_presentations,
             &self.runtime.wait_agent_presentations,
         ) {
+            return Ok(());
+        }
+        if root.multi_agent_version() == Some(MultiAgentVersion::V1) {
+            match self
+                .presentation_attribution(
+                    sender,
+                    recipient,
+                    &delivery.turn_id,
+                    /*batch_id*/ None,
+                )
+                .await
+            {
+                Ok((_, attribution)) => receipt.attribution = Some(attribution),
+                Err(error) => {
+                    tracing::warn!(%error, "failed to capture response receipt labels");
+                }
+            }
+        } else if sender != root_id {
             return Ok(());
         }
         let active_turn = root.session.active_turn.lock().await;

@@ -552,6 +552,8 @@ The `spawn` action accepts optional `model` and `reasoningEffort` overrides. Exp
 
 Agent-originated input is projected as `agentMessage` with optional `attribution` and structured `input`. Attribution captures sender and recipient identity snapshots, including canonical thread IDs, refs, nicknames, task paths, role, model, reasoning effort, and the sender turn ID. These fields are presentation metadata and do not authorize routing; older messages without them retain their existing rendering. Human-authored spawn, prompt, and queued input remains `userMessage` in the target thread.
 
+Trusted V1 completion presentations and live response-delivery receipts also carry `attribution`, with `input` absent. Clients must classify their reserved completion/receipt identity before rendering attributed input. Completion snapshots preserve full descendant labels across replay without a navigation lookup. A delivery receipt names a non-root recipient only after committed model delivery; it is a best-effort live root notice, never a subscriber inventory or durable delivery record. Child final receipts omit the answer body, and these notices create no model input or wake.
+
 `spawn` accepts an optional `task` label, and successful spawn/resume outcomes expose the committed `taskPath`. Resume adoption may also return `taskPathMapping`; these labels are nullable assignment metadata and never replace canonical UUID/ref identity or lifecycle edges.
 
 Final-response observation is directional too. The user command `/agent observe <target> [from <observer>] <passive|wake|presentation>` maps to `agent/control` with an optional `observer` selector:

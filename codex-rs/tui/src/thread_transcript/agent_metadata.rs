@@ -21,6 +21,18 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
     let mut metadata = HashMap::<ThreadId, AgentMetadata>::new();
     for item in items {
         match item {
+            ThreadItem::AgentMessage {
+                attribution: Some(attribution),
+                ..
+            } => {
+                for identity in [&attribution.sender, &attribution.recipient] {
+                    let Ok(thread_id) = ThreadId::from_string(&identity.thread_id) else {
+                        continue;
+                    };
+                    let entry = metadata.entry(thread_id).or_default();
+                    *entry = entry.clone().with_identity(identity);
+                }
+            }
             ThreadItem::CollabAgentToolCall {
                 receiver_agents,
                 receiver_thread_ids,

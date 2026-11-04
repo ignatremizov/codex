@@ -8,6 +8,7 @@ use super::UserInput;
 /// This is presentation only and must not be used as model input or an assistant final response.
 pub fn attributed_agent_input_text(item: &ThreadItem) -> Option<String> {
     let ThreadItem::AgentMessage {
+        id,
         attribution: Some(attribution),
         input,
         text,
@@ -16,6 +17,12 @@ pub fn attributed_agent_input_text(item: &ThreadItem) -> Option<String> {
     else {
         return None;
     };
+    // Response provenance shares the identity snapshot, but remains assistant output.
+    if codex_protocol::protocol::sub_agent_completion_status_from_response_item_id(id).is_some()
+        || codex_protocol::protocol::agent_delivery_receipt_from_response_item_id(id).is_some()
+    {
+        return None;
+    }
     let payload = match input {
         Some(input) => input
             .iter()

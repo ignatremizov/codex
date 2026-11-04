@@ -45,15 +45,25 @@ pub(super) struct CollabAgentTitle {
     pub(super) metadata: AgentMetadata,
     pub(super) recipient: Option<(ThreadId, AgentMetadata)>,
     pub(super) recipient_separator: &'static str,
+    pub(super) compact: bool,
     pub(super) suffix: Vec<Span<'static>>,
 }
 
 impl CollabAgentTitle {
     pub(super) fn render(&self) -> Line<'static> {
-        let mut title = agent_label_spans(agent_label(self.thread_id, &self.metadata));
+        let label_spans = |thread_id, metadata| {
+            let mut label = agent_label(thread_id, metadata);
+            if self.compact {
+                label.role = None;
+                label.task_path = None;
+                label.spawn_request = None;
+            }
+            agent_label_spans(label)
+        };
+        let mut title = label_spans(self.thread_id, &self.metadata);
         if let Some((recipient, metadata)) = &self.recipient {
             title.push(self.recipient_separator.bold());
-            title.extend(agent_label_spans(agent_label(*recipient, metadata)));
+            title.extend(label_spans(*recipient, metadata));
         }
         title.extend(self.suffix.clone());
         title_spans_line(title)
@@ -80,6 +90,7 @@ impl CollabAgentHistoryCell {
             metadata: metadata.clone(),
             recipient: None,
             recipient_separator: " sends to ",
+            compact: false,
             suffix,
         };
         Self {

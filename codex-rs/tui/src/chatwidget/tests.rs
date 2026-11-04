@@ -252,6 +252,8 @@ mod collaboration_catalog_tests;
 mod command_preview_tests;
 #[path = "tests/compaction_tests.rs"]
 mod compaction_tests;
+#[path = "tests/completion_identity_tests.rs"]
+mod completion_identity_tests;
 #[path = "tests/completion_styling_tests.rs"]
 mod completion_styling;
 mod composer_submission;

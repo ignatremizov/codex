@@ -66,12 +66,15 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
     )
     .await?
     .target_thread_id;
-    let target_id = diagnostic_stage(
+    let target_spawn = diagnostic_stage(
         "root audit target spawn",
-        test.codex.spawn_agent(UserAgentSpawnOptions::default()),
+        test.codex.spawn_agent(UserAgentSpawnOptions {
+            task: Some("audit-target".into()),
+            ..Default::default()
+        }),
     )
-    .await?
-    .target_thread_id;
+    .await?;
+    let target_id = target_spawn.target_thread_id;
     let sender = test.thread_manager.get_thread(sender_id).await?;
     let target = test.thread_manager.get_thread(target_id).await?;
     server
@@ -270,6 +273,35 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
     assert_eq!(
         sub_agent_completion_model_visibility_from_response_item_id(&completion.id),
         Some(expected_visibility),
+    );
+    let labels = completion
+        .attribution
+        .as_ref()
+        .context("completion labels")?;
+    let config = target.config_snapshot().await;
+    assert_eq!(
+        (
+            &labels.sender,
+            labels.recipient.thread_id,
+            &labels.sender_turn_id,
+            &completion.input
+        ),
+        (
+            &codex_protocol::AgentInputIdentity {
+                thread_id: target_id,
+                nickname: target_spawn.nickname,
+                agent_ref: target_spawn
+                    .agent_ref
+                    .map(|agent_ref| agent_ref.to_string()),
+                task_path: target_spawn.task_path,
+                role: config.session_source.get_agent_role(),
+                model: Some(config.model),
+                reasoning_effort: config.reasoning_effort,
+            },
+            test.session_configured.thread_id,
+            &target_turn_id,
+            &None,
+        ),
     );
     wait_for_terminal_status(target.as_ref()).await?;
     wait_for_terminal_status(sender.as_ref()).await?;

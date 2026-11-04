@@ -57,6 +57,10 @@ Canonical completion rows state their relationship to the observer's model conte
 
 The label is observer-relative. It does not claim that the response is hidden from the child thread, user, rollout, or another observer. When an explicit `wait_agent` owns the completion, its model-visible `Finished waiting` result owns presentation instead of emitting a duplicate completion row.
 
+Completion rows carry trusted sender identity snapshots, including nickname, ref, task path, role, model and reasoning effort when available. Grandchildren therefore retain full labels without a prior spawn event or a populated navigation cache. The first snapshot stays fixed for canonical publication and replay; older records retain their existing metadata fallback.
+
+After a final response is committed to a non-root observer's model context, Main can also show a brief live receipt such as `Archimedes (34) · final delivered to Averroes (31)`. Each line names an actual confirmed recipient, not a pending subscriber, and does not repeat the answer body. Hidden deliveries and copies already directed to Main produce no extra receipt. These notices are best-effort live presentation only: they add no model context, subscription or wake, and are not reconstructed on cold resume. An absent receipt therefore does not establish that nobody received the response.
+
 V1 accepts root-scoped refs, persisted nicknames, and full thread UUIDs as lifecycle targets. Observation and queue registration happen only after the shared resolver has produced a canonical UUID.
 
 Successful child final responses are intentionally delivered in full. They are product-authored agent context, like retained compaction content, and are not subject to the error-message truncation allowance. The explicitly requested first complete commentary response is likewise delivered in full; commentary is expected to be a short acknowledgement or clarification rather than bulk output. Error payloads may still use the existing bounded error rendering.

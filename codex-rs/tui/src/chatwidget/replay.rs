@@ -325,6 +325,22 @@ impl ChatWidget {
                 delivery,
                 questions,
             } => {
+                let cell = multi_agents::background_completion_history_cell_from_agent_message(
+                    &id,
+                    &text,
+                    phase.as_ref(),
+                    attribution.as_ref(),
+                    self.local_settings.tui.agent_response_preview_lines,
+                    |thread_id| self.collab_agent_metadata(thread_id),
+                );
+                if let Some(cell) = cell {
+                    if from_replay {
+                        self.on_collab_event(cell);
+                    } else {
+                        self.on_async_agent_notice(cell);
+                    }
+                    return;
+                }
                 if let Some(attribution) = attribution {
                     let cell = history_cell::AgentInputHistoryCell::new(
                         attribution,
@@ -343,31 +359,17 @@ impl ChatWidget {
                     }
                     return;
                 }
-                let cell = multi_agents::background_completion_history_cell_from_agent_message(
-                    &id,
-                    &text,
-                    phase.as_ref(),
-                    self.local_settings.tui.agent_response_preview_lines,
-                    |thread_id| self.collab_agent_metadata(thread_id),
-                )
-                .or_else(|| {
-                    if !from_replay {
-                        return None;
-                    }
-                    multi_agents::background_commentary_history_cell_from_agent_message(
-                        &id,
-                        &text,
-                        phase.as_ref(),
-                        self.local_settings.tui.agent_response_preview_lines,
-                        |thread_id| self.collab_agent_metadata(thread_id),
-                    )
-                });
-                if let Some(cell) = cell {
-                    if from_replay {
-                        self.on_collab_event(cell);
-                    } else {
-                        self.on_async_agent_notice(cell);
-                    }
+                if from_replay
+                    && let Some(cell) =
+                        multi_agents::background_commentary_history_cell_from_agent_message(
+                            &id,
+                            &text,
+                            phase.as_ref(),
+                            self.local_settings.tui.agent_response_preview_lines,
+                            |thread_id| self.collab_agent_metadata(thread_id),
+                        )
+                {
+                    self.on_collab_event(cell);
                     return;
                 }
                 if self.complete_realtime_delegated_agent_item(

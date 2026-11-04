@@ -46,3 +46,51 @@ fn payload_headers_do_not_establish_attribution() {
     .unwrap();
     assert_eq!(attributed_agent_input_text(&item), None);
 }
+
+#[test]
+fn response_provenance_is_not_presented_as_inbound_input() {
+    let sender = codex_protocol::ThreadId::new();
+    let recipient = codex_protocol::ThreadId::new();
+    let mut completion = codex_protocol::protocol::sub_agent_completion_item(
+        &sender.to_string(),
+        &codex_protocol::protocol::AgentStatus::Completed(Some("Finished.".into())),
+    )
+    .unwrap();
+    let receipt = codex_protocol::protocol::agent_delivery_receipt_item(
+        sender,
+        recipient,
+        codex_protocol::models::MessagePhase::FinalAnswer,
+        codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
+        codex_protocol::protocol::new_sub_agent_completion_context_response_item_id().as_str(),
+        "Finished.",
+    )
+    .unwrap();
+    completion.attribution = Some(codex_protocol::AgentInputAttribution {
+        sender: codex_protocol::AgentInputIdentity {
+            thread_id: sender,
+            nickname: Some("Worker".into()),
+            agent_ref: Some("2".into()),
+            task_path: None,
+            role: None,
+            model: None,
+            reasoning_effort: None,
+        },
+        recipient: codex_protocol::AgentInputIdentity {
+            thread_id: recipient,
+            nickname: None,
+            agent_ref: None,
+            task_path: None,
+            role: None,
+            model: None,
+            reasoning_effort: None,
+        },
+        sender_turn_id: "child-turn".into(),
+        batch_id: None,
+    });
+    let mut receipt = receipt;
+    receipt.attribution.clone_from(&completion.attribution);
+    for item in [completion, receipt] {
+        let item = ThreadItem::from(codex_protocol::items::TurnItem::AgentMessage(item));
+        assert_eq!(attributed_agent_input_text(&item), None);
+    }
+}

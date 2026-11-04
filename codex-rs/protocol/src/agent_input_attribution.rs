@@ -1,4 +1,7 @@
-//! Send-time identity snapshots for trusted agent input, independent of model presentation.
+//! Trusted communication identity snapshots, independent of model presentation.
+//!
+//! Completion and delivery-receipt presentations also use these snapshots. Their containing
+//! item retains its response identity and has no typed input; attribution grants no delivery.
 
 use crate::ThreadId;
 use crate::openai_models::ReasoningEffort;
