@@ -165,6 +165,12 @@ impl LocalAgentControl {
         let Some(accepted) = terminal.presentation.take_accepted_completion_delivery() else {
             return Ok(());
         };
+        // Resolve display metadata before acquiring mailbox and observation locks.
+        let attribution = terminal
+            .presentation
+            .capture_attribution(self)
+            .await
+            .clone();
         // The exact accepted capability already owns this obligation. Reacquiring a target
         // lifecycle gate here would deadlock mutually observing agents closing concurrently.
         let submission = self.runtime.registry.mailbox_submission(parent.thread_id);
@@ -186,16 +192,20 @@ impl LocalAgentControl {
             self.claim_completion_context_response_item_id(parent, &context_id);
             return Ok(());
         }
-        let presentation = if disposition == FinalResponseObservation::PresentationOnly {
+        let mut presentation = if disposition == FinalResponseObservation::PresentationOnly {
             terminal
                 .presentation
                 .hidden_observation_presentation(&self.observation_reference(child.thread_id))
                 .ok_or_else(|| {
                     CodexErr::Fatal("terminal has no completion presentation".to_string())
                 })?
+                .clone()
         } else {
-            terminal.presentation.completion_presentation()
+            terminal.presentation.completion_presentation().clone()
         };
+        if let TurnItem::AgentMessage(item) = &mut presentation.item {
+            item.attribution = attribution;
+        }
         let snapshots = self.response_observation_snapshots(parent, child);
         observer
             .session
@@ -252,7 +262,7 @@ impl LocalAgentControl {
                 FinalResponseObservation::PresentationOnly => {
                     observer
                         .session
-                        .persist_observed_presentation(presentation, commit, accepted)
+                        .persist_observed_presentation(&presentation, commit, accepted)
                         .await?;
                 }
                 FinalResponseObservation::Passive | FinalResponseObservation::Wake => {
@@ -283,7 +293,7 @@ impl LocalAgentControl {
                             .session
                             .persist_observed_terminal_response(
                                 communication,
-                                presentation,
+                                &presentation,
                                 commit,
                                 accepted,
                             )
@@ -292,7 +302,7 @@ impl LocalAgentControl {
                         let receipt = observer.session.register_terminal_communication_delivery(
                             commit,
                             accepted,
-                            presentation,
+                            &presentation,
                         )?;
                         observer
                             .session

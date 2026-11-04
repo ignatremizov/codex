@@ -318,8 +318,22 @@ fn item_to_cells(item: ThreadItemPayload, context: ItemProjectionContext<'_>) ->
             attribution: Some(attribution),
             input,
             text,
+            phase,
             ..
         } => {
+            if let Some(cell) =
+                crate::multi_agents::background_completion_history_cell_from_agent_message(
+                    &id,
+                    &text,
+                    phase.as_ref(),
+                    Some(&attribution),
+                    agent_preview_line_limits.response,
+                    |_| crate::multi_agents::AgentMetadata::default(),
+                )
+            {
+                cells.push(Arc::new(cell));
+                return cells;
+            }
             cells.push(Arc::new(
                 crate::history_cell::AgentInputHistoryCell::new(
                     attribution,
@@ -370,6 +384,7 @@ fn item_to_cells(item: ThreadItemPayload, context: ItemProjectionContext<'_>) ->
                 &id,
                 &text,
                 phase.as_ref(),
+                /*attribution*/ None,
                 agent_preview_line_limits.response,
                 |_| crate::multi_agents::AgentMetadata::default(),
             )

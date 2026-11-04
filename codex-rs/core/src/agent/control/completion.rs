@@ -222,9 +222,12 @@ impl LocalAgentControl {
                         .await;
                 }
                 if !terminal.wait_owns_presentation().await {
+                    let presentation = terminal
+                        .labeled_presentation(&control, terminal.completion_presentation())
+                        .await;
                     parent
                         .session
-                        .publish_completion_item(terminal.completion_presentation(), &reservation)
+                        .publish_completion_item(&presentation, &reservation)
                         .await?;
                 }
                 if trace.is_enabled() {

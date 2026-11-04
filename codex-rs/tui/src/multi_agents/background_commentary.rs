@@ -32,6 +32,7 @@ pub(crate) fn background_commentary_history_cell_from_agent_message(
             metadata: agent_metadata(sender),
             recipient: Some((recipient, agent_metadata(recipient))),
             recipient_separator: " sends to ",
+            compact: false,
             suffix: vec![" (".bold(), "○ not visible".cyan().bold(), "):".bold()],
         };
         return Some(CollabAgentHistoryCell {

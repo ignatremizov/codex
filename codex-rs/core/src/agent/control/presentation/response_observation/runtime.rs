@@ -185,6 +185,7 @@ impl LocalAgentControl {
                 history_only_turn_id: Uuid::now_v7().to_string(),
             },
             observation_presentation: OnceLock::new(),
+            attribution: tokio::sync::OnceCell::new(),
             accepted: Mutex::new(Some(accepted)),
             ownership: Mutex::new(Ownership {
                 waits: waits.clone(),

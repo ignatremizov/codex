@@ -296,7 +296,9 @@ async fn one_sender_turn_can_repeatedly_send_to_an_idle_same_root_peer(
                 return None;
             };
             match &event.item {
-                TurnItem::AgentMessage(item) if item.attribution.is_some() => Some(item),
+                TurnItem::AgentMessage(item) if item.is_attributed_agent_input_presentation() => {
+                    Some(item)
+                }
                 _ => None,
             }
         })

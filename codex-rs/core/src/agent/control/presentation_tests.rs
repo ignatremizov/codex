@@ -518,6 +518,7 @@ fn terminal(
             history_only_turn_id: Uuid::now_v7().to_string(),
         },
         observation_presentation: OnceLock::new(),
+        attribution: tokio::sync::OnceCell::new(),
         accepted: Mutex::new(None),
         ownership: Mutex::new(Ownership {
             waits: waits.clone(),
@@ -614,6 +615,56 @@ fn hidden_observation_freezes_a_trusted_row_without_replacing_the_native_receipt
         hidden.history_only_turn_id,
         presentation.completion_presentation().history_only_turn_id,
     );
+}
+
+#[tokio::test]
+async fn captured_completion_labels_survive_runtime_loss_and_hidden_projection() {
+    let state = WaitAgentPresentations::default();
+    let parent = identity();
+    let child = identity();
+    let presentation = terminal(&state, parent, child);
+    let attribution: codex_protocol::AgentInputAttribution =
+        serde_json::from_value(serde_json::json!({
+            "sender": {
+                "threadId": child.thread_id, "nickname": "Captured",
+                "agentRef": "7", "taskPath": "/root/scout",
+                "model": "captured-model", "reasoningEffort": "high",
+            },
+            "recipient": {"threadId": parent.thread_id},
+            "senderTurnId": presentation.inner.turn_id,
+        }))
+        .expect("captured labels");
+    presentation
+        .inner
+        .attribution
+        .set(Some(attribution.clone()))
+        .expect("capture before runtime removal");
+    let unbacked_control = LocalAgentControl::default();
+    for source in [
+        presentation.completion_presentation(),
+        presentation
+            .hidden_observation_presentation("/root/scout")
+            .expect("hidden projection"),
+    ] {
+        let labeled = presentation
+            .labeled_presentation(&unbacked_control, source)
+            .await;
+        let TurnItem::AgentMessage(item) = &labeled.item else {
+            panic!("completion presentation");
+        };
+        assert!(item.has_sub_agent_completion_identity());
+        assert_eq!(&item.attribution, &Some(attribution.clone()));
+        assert_eq!(
+            serde_json::to_value(&labeled.item).expect("first publication"),
+            serde_json::to_value(
+                presentation
+                    .labeled_presentation(&unbacked_control, source)
+                    .await
+                    .item,
+            )
+            .expect("retry publication"),
+        );
+    }
 }
 
 #[test]

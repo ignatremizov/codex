@@ -164,6 +164,8 @@ const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 
+#[path = "subagent_completion_recipients_tests.rs"]
+mod completion_recipients_tests;
 #[path = "subagent_peer_routes.rs"]
 mod peer_routes;
 #[path = "subagent_resume_delivery.rs"]
@@ -5821,7 +5823,9 @@ async fn child_can_reply_to_same_root_input_without_a_grant(
                 return None;
             };
             match &event.item {
-                TurnItem::AgentMessage(item) if item.attribution.is_some() => Some(item),
+                TurnItem::AgentMessage(item) if item.is_attributed_agent_input_presentation() => {
+                    Some(item)
+                }
                 _ => None,
             }
         })

@@ -21,6 +21,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 mod input_permission;
+mod labels;
 mod response_observation;
 mod root_completion_audit;
 pub(in crate::agent) use response_observation::ReplacedFinalResponseObservationBinding;
@@ -161,6 +162,7 @@ struct Terminal {
     error_info: Option<CodexErrorInfo>,
     presentation: CompletionPresentation,
     observation_presentation: OnceLock<Option<CompletionPresentation>>,
+    attribution: tokio::sync::OnceCell<Option<codex_protocol::AgentInputAttribution>>,
     accepted: Mutex<Option<AcceptedCompletionDelivery>>,
     ownership: Mutex<Ownership>,
     changed: Notify,
@@ -362,6 +364,7 @@ impl LocalAgentControl {
             error_info,
             presentation,
             observation_presentation: OnceLock::new(),
+            attribution: tokio::sync::OnceCell::new(),
             accepted: Mutex::new(Some(accepted)),
             ownership: Mutex::new(Ownership {
                 waits: waits.clone(),

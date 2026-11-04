@@ -1,3 +1,6 @@
+//! Trusted input and response presentation snapshots share the same identity fields.
+//! Response provenance does not turn a completion or delivery receipt into agent input.
+
 use codex_protocol::openai_models::ReasoningEffort;
 use serde::Deserialize;
 use serde::Serialize;

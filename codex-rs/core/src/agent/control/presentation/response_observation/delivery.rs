@@ -160,7 +160,15 @@ impl LocalAgentControl {
             .response_terminals
             .get(&(commit.parent, commit.child, commit.turn_id.clone()))
             .and_then(|terminal| match &terminal.status {
-                AgentStatus::Completed(text) => Some(text.clone().unwrap_or_default()),
+                AgentStatus::Completed(text) => Some(
+                    if self.bound_session_id().map(ThreadId::from) == Some(commit.child.thread_id) {
+                        text.clone().unwrap_or_default()
+                    } else {
+                        // Peer receipts name the confirmed recipient; the completion already
+                        // owns the response body in the root transcript.
+                        String::new()
+                    },
+                ),
                 _ => None,
             });
         let Some(relationship) = state
@@ -196,7 +204,6 @@ impl LocalAgentControl {
         {
             return;
         }
-        let receipt_visibility = commit.model_visibility;
         let receipt_text = match commit.kind {
             ResponseObservationDeliveryKind::Commentary => observation
                 .commentary_delivery
@@ -234,32 +241,15 @@ impl LocalAgentControl {
         drop(state);
         if let Some(text) = receipt_text
             && self.bound_session_id().is_some_and(|root| {
-                ThreadId::from(root) == commit.child.thread_id
-                    && commit.parent.thread_id != commit.child.thread_id
+                commit.parent.thread_id != ThreadId::from(root)
+                    && (ThreadId::from(root) == commit.child.thread_id
+                        || commit.kind == ResponseObservationDeliveryKind::Final)
             })
         {
             let control = self.clone();
             let commit = commit.clone();
             tokio::spawn(async move {
-                let phase = match commit.kind {
-                    ResponseObservationDeliveryKind::Commentary => {
-                        codex_protocol::models::MessagePhase::Commentary
-                    }
-                    ResponseObservationDeliveryKind::Final => {
-                        codex_protocol::models::MessagePhase::FinalAnswer
-                    }
-                };
-                if let Err(error) = control
-                    .mirror_agent_delivery_receipt(
-                        commit.child.thread_id,
-                        commit.parent.thread_id,
-                        phase,
-                        receipt_visibility,
-                        commit.response_item_id.as_str(),
-                        &text,
-                    )
-                    .await
-                {
+                if let Err(error) = control.mirror_agent_delivery_receipt(&commit, &text).await {
                     tracing::warn!(%error, "failed to present acknowledged response delivery");
                 }
             });

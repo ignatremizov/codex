@@ -186,6 +186,7 @@ impl LocalAgentControl {
                 history_only_turn_id: Uuid::now_v7().to_string(),
             },
             observation_presentation: OnceLock::new(),
+            attribution: tokio::sync::OnceCell::new(),
             accepted: Mutex::new(None),
             ownership: Mutex::new(Ownership {
                 waits: waits.clone(),
@@ -278,6 +279,7 @@ impl AgentTerminalPresentation {
             root: Arc::clone(&root),
             finished: false,
         };
+        let presentation = self.labeled_presentation(&control, presentation).await;
         let claim = RootCompletionAuditClaim {
             control: control.clone(),
             terminal: self.clone(),
@@ -286,7 +288,7 @@ impl AgentTerminalPresentation {
         // communication enqueue, observation snapshot or runtime grant is created.
         match root
             .session
-            .publish_root_completion_item(presentation, &accepted, &claim)
+            .publish_root_completion_item(&presentation, &accepted, &claim)
             .await
         {
             // Success commits the token before releasing the observer transaction.
