@@ -43,9 +43,10 @@ fn receipt_preserves_direction_preview_transcript_and_metadata_refresh() {
             &receipt.id,
             payload,
             receipt.phase.as_ref(),
+            /*attribution*/ None,
             /*agent_response_preview_lines*/ 1,
             |id| AgentMetadata {
-                agent_nickname: (id == recipient).then(|| "Newton".to_string()),
+                agent_nickname: Some(if id == sender { "Main" } else { "Newton" }.to_string()),
                 agent_role: Some("default".to_string()),
                 ..Default::default()
             },
@@ -113,6 +114,7 @@ fn receipt_preserves_direction_preview_transcript_and_metadata_refresh() {
                 &receipt.id,
                 payload,
                 Some(&MessagePhase::FinalAnswer),
+                /*attribution*/ None,
                 /*agent_response_preview_lines*/ 0,
                 |_| AgentMetadata::default(),
             )

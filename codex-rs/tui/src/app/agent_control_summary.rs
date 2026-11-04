@@ -93,11 +93,15 @@ impl AgentControlSummary {
         });
         let received_preview = thread_items_newest_first(store).find_map(|item| match item {
             ThreadItemPayload::AgentMessage {
+                id,
                 attribution: Some(attribution),
                 input,
                 text,
                 ..
-            } => {
+            } if sub_agent_completion_status_from_response_item_id(id).is_none()
+                && codex_protocol::protocol::agent_delivery_receipt_from_response_item_id(id)
+                    .is_none() =>
+            {
                 let recipient = ThreadId::from_string(&attribution.recipient.thread_id).ok()?;
                 if store
                     .session

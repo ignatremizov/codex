@@ -291,7 +291,9 @@ async fn model_dispatch_has_compact_attribution(
             return None;
         };
         match &event.item {
-            TurnItem::AgentMessage(item) if item.attribution.is_some() => Some(item.clone()),
+            TurnItem::AgentMessage(item) if item.is_attributed_agent_input_presentation() => {
+                Some(item.clone())
+            }
             _ => None,
         }
     })
@@ -527,7 +529,9 @@ async fn same_root_reverse_and_peer_messages_snapshot_the_real_sender(
             return None;
         };
         match &event.item {
-            TurnItem::AgentMessage(item) if item.attribution.is_some() => Some(item.clone()),
+            TurnItem::AgentMessage(item) if item.is_attributed_agent_input_presentation() => {
+                Some(item.clone())
+            }
             _ => None,
         }
     })

@@ -25,6 +25,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use std::collections::HashSet;
 
+mod attribution;
 mod background_commentary;
 mod background_completion;
 mod identity_header;

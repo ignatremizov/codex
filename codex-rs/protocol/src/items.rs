@@ -287,6 +287,7 @@ pub struct AgentMessageItem {
     pub id: String,
     pub content: Vec<AgentMessageContent>,
     /// Trusted agent-input identity; absent on ordinary assistant output and legacy items.
+    // Also carries display provenance on trusted completion and delivery-receipt identities.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub attribution: Option<crate::AgentInputAttribution>,

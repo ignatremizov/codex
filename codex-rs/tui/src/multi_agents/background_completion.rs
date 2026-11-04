@@ -1,5 +1,6 @@
 //! Render trusted background completions with the shared collaboration preview owner.
 
+use codex_app_server_protocol::AgentInputAttribution;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::models::MessagePhase;
@@ -26,12 +27,25 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
     id: &str,
     text: &str,
     phase: Option<&MessagePhase>,
+    attribution: Option<&AgentInputAttribution>,
     agent_response_preview_lines: usize,
     mut agent_metadata: impl FnMut(codex_protocol::ThreadId) -> AgentMetadata,
 ) -> Option<CollabAgentHistoryCell> {
     if phase != Some(&MessagePhase::Commentary) {
         return None;
     }
+    let mut agent_metadata = |thread_id| {
+        let metadata = agent_metadata(thread_id);
+        if let Some(identity) = attribution.and_then(|attribution| {
+            [&attribution.sender, &attribution.recipient]
+                .into_iter()
+                .find(|identity| parse_thread_id(&identity.thread_id) == Some(thread_id))
+        }) {
+            metadata.with_identity(identity)
+        } else {
+            metadata
+        }
+    };
     if let Some((sender, recipient, delivered_phase, recipient_model_visibility)) =
         agent_delivery_receipt_from_response_item_id(id)
     {
@@ -40,27 +54,42 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
             MessagePhase::FinalAnswer => " · final delivered (",
             MessagePhase::PartialAnswer => return None,
         };
-        let mut sender_metadata = agent_metadata(sender);
-        // These raw root copies are emitted only for acknowledged delivery of Main's output.
-        sender_metadata.agent_nickname = Some("Main".to_string());
+        let sender_metadata = agent_metadata(sender);
+        let compact = attribution.is_some()
+            && delivered_phase == MessagePhase::FinalAnswer
+            && recipient_model_visibility == SubAgentCompletionModelVisibility::Visible
+            && sender_metadata.agent_nickname.as_deref() != Some("Main");
         let agent_title = super::CollabAgentTitle {
             thread_id: sender,
             metadata: sender_metadata,
             recipient: Some((recipient, agent_metadata(recipient))),
-            recipient_separator: " → ",
-            suffix: vec![
-                label.dim(),
-                completion_visibility_span(recipient_model_visibility),
-                " to recipient):".dim(),
-            ],
+            recipient_separator: if compact {
+                " · final delivered to "
+            } else {
+                " → "
+            },
+            compact,
+            suffix: if compact {
+                Vec::new()
+            } else {
+                vec![
+                    label.dim(),
+                    completion_visibility_span(recipient_model_visibility),
+                    " to recipient):".dim(),
+                ]
+            },
         };
         return Some(CollabAgentHistoryCell {
             title: agent_title.render(),
             agent_title: Some(agent_title),
-            details: vec![CollabDetail::preview(
-                preview_source_lines(text),
-                agent_response_preview_lines,
-            )],
+            details: if compact {
+                Vec::new()
+            } else {
+                vec![CollabDetail::preview(
+                    preview_source_lines(text),
+                    agent_response_preview_lines,
+                )]
+            },
         });
     }
     let completion_status = sub_agent_completion_status_from_response_item_id(id)?;
@@ -78,7 +107,9 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
         SubAgentCompletionStatus::NotFound => (CollabAgentStatus::NotFound, None),
     };
     let agent_reference = agent_reference.trim();
-    let thread_id = parse_thread_id(agent_reference);
+    let thread_id = attribution
+        .and_then(|attribution| parse_thread_id(&attribution.sender.thread_id))
+        .or_else(|| parse_thread_id(agent_reference));
     let details = message
         .as_deref()
         .map(preview_source_lines)

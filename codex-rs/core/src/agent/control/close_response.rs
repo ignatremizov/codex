@@ -21,6 +21,7 @@ pub(crate) struct CloseAgentResponseContext {
     target_thread_id: ThreadId,
     context_id: codex_protocol::ResponseItemId,
     terminal: Option<(SessionPresentationId, String, AgentTerminalPresentation)>,
+    attribution: Option<codex_protocol::AgentInputAttribution>,
 }
 
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -82,10 +83,29 @@ impl LocalAgentControl {
             .session_source
             .get_agent_path()
             .unwrap_or_else(AgentPath::root);
+        let mut attribution = None;
         let terminal = match state.get_thread(target_thread_id).await {
             Ok(target) => {
                 let child = target.session.presentation_id();
                 let (snapshot, _) = target.session.subscribe_agent_responses();
+                if source_multi_agent_version == MultiAgentVersion::V1
+                    && let Some((turn_id, _)) = &snapshot.last_terminal
+                {
+                    match self
+                        .presentation_attribution(
+                            target_thread_id,
+                            source_session.thread_id(),
+                            turn_id,
+                            /*batch_id*/ None,
+                        )
+                        .await
+                    {
+                        Ok((_, labels)) => attribution = Some(labels),
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to capture close response labels");
+                        }
+                    }
+                }
                 snapshot.last_terminal.and_then(|(turn_id, _)| {
                     self.model_response_observation_terminal(
                         source_session.presentation_id(),
@@ -107,6 +127,7 @@ impl LocalAgentControl {
             target_thread_id,
             context_id: new_sub_agent_completion_context_response_item_id(),
             terminal,
+            attribution,
         })
     }
 }
@@ -152,9 +173,12 @@ impl CloseAgentResponseContext {
             } else {
                 SubAgentCompletionModelVisibility::Visible
             };
-            let item = sub_agent_completion_item_with_visibility(
+            let mut item = sub_agent_completion_item_with_visibility(
                 &self.target_thread_id.to_string(), &status, visibility,
             ).ok_or_else(|| CodexErr::InvalidRequest("completed agent has no presentation".into()))?;
+            item.attribution = self.attribution.filter(|attribution| {
+                closed.previous_turn_id.as_deref() == Some(attribution.sender_turn_id.as_str())
+            });
             let presentation = CompletionPresentation {
                 item: TurnItem::AgentMessage(item),
                 history_only_turn_id: Uuid::now_v7().to_string(),

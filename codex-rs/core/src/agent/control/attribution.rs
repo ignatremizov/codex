@@ -26,8 +26,9 @@ impl LocalAgentControl {
         if sender_thread.session.presentation_id() != sender {
             return Err(CodexErr::ThreadNotFound(sender.thread_id));
         }
-        let (sender_context, sender_identity) = self.agent_input_identity(sender.thread_id).await?;
-        let (_, recipient_identity) = self.agent_input_identity(recipient).await?;
+        let (sender_context, attribution) = self
+            .presentation_attribution(sender.thread_id, recipient, sender_turn_id, batch_id)
+            .await?;
         // The original typed items, including attachment metadata and text-element spans,
         // remain in the durable presentation. Only model-facing text is enveloped.
         let message = render_input_preview(&input);
@@ -46,14 +47,30 @@ impl LocalAgentControl {
         );
         Ok(AgentControlInput::AttributedAgentInput {
             content,
-            attribution: Box::new(AgentInputAttribution {
-                sender: sender_identity,
-                recipient: recipient_identity,
-                sender_turn_id: sender_turn_id.to_string(),
-                batch_id: batch_id.map(str::to_string),
-            }),
+            attribution: Box::new(attribution),
             presentation: input,
         })
+    }
+
+    /// Snapshot canonical V1 labels without granting input or response delivery permission.
+    pub(super) async fn presentation_attribution(
+        &self,
+        sender: ThreadId,
+        recipient: ThreadId,
+        sender_turn_id: &str,
+        batch_id: Option<&str>,
+    ) -> CodexResult<(AgentContextIdentity, AgentInputAttribution)> {
+        let (sender_context, sender) = self.agent_input_identity(sender).await?;
+        let (_, recipient) = self.agent_input_identity(recipient).await?;
+        Ok((
+            sender_context,
+            AgentInputAttribution {
+                sender,
+                recipient,
+                sender_turn_id: sender_turn_id.to_owned(),
+                batch_id: batch_id.map(str::to_owned),
+            },
+        ))
     }
 
     async fn agent_input_identity(
