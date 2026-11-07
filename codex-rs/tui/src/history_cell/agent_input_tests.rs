@@ -6,6 +6,9 @@ use pretty_assertions::assert_eq;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 
+#[path = "agent_input_context_tests.rs"]
+mod context;
+
 fn attribution() -> AgentInputAttribution {
     AgentInputAttribution {
         sender: AgentInputIdentity {
@@ -159,7 +162,7 @@ fn peer_mirror_snapshot_labels_the_actual_recipient() {
     " /root/frontend (4)": None, bold=false, dim=true, italic=false
     ":": None, bold=true, dim=false, italic=false
     "  └ ": None, bold=false, dim=true, italic=false
-    "Complete peer payload.": None, bold=false, dim=false, italic=false
+    "Complete peer payload.": None, bold=false, dim=true, italic=false
     "#);
     for line in cell.raw_lines() {
         assert_eq!(line.style, Style::default());

@@ -385,6 +385,17 @@ Ownership anchor: `fix(mcp): refresh thread configuration before explicit activa
 
 Coverage includes servers added after two threads have already advertised tools, both history modes, target-only catalog changes, forward inventory context with the initial declarations retained, later revocation, session overrides, malformed configuration, and real TUI routing/replay of an RPC failure with an inline snapshot. API shapes and dependencies are unchanged; remote Verify qualification is required.
 
+### Mute agent message bodies excluded from the viewed thread's context
+
+Ownership anchor: `fix(tui): mute agent messages outside the viewed context`.
+Peer-message copies, mailbox acceptance receipts, model-hidden completions and
+delivery receipts use dim body text in rich history and Ctrl+T. Identity headings,
+model-visible input and finals retain their existing styling. Transcript
+projection carries the viewed thread identity to preserve recipient-relative
+styling on replay; unknown identities retain the conservative existing display.
+Trusted metadata determines the tint, independently of payload wording, and raw
+source/export content remains unchanged.
+
 ### Remember allowances for TUI-owned MCP task tools
 
 Ownership anchor: `fix(tui,mcp): remember allowances for session-owned task tools`.
