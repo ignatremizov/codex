@@ -63,6 +63,10 @@ use preview::wait_complete_agent_lines;
 #[path = "multi_agents/preview_tests.rs"]
 mod preview_tests;
 
+#[cfg(test)]
+#[path = "multi_agents/context_tint_tests.rs"]
+mod context_tint_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
     /// Human-friendly nickname shown in picker rows and footer labels.

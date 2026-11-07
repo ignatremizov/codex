@@ -75,6 +75,7 @@ pub(crate) enum RawReasoningVisibility {
 /// Captured view settings shared by grouped and standalone item projection.
 #[derive(Clone)]
 struct ItemProjectionContext<'a> {
+    viewed_thread: Option<ThreadId>,
     cwd: &'a AbsolutePathBuf,
     raw_reasoning_visibility: RawReasoningVisibility,
     inline_visualization_context: Option<InlineVisualizationContext>,
@@ -200,6 +201,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
     });
     let show_compact_summary = config.is_none_or(|config| config.show_compact_summary);
     let projection = ItemProjectionContext {
+        viewed_thread: thread_id,
         cwd,
         raw_reasoning_visibility,
         inline_visualization_context,
@@ -289,6 +291,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
 /// Project one item without changing the active widget or its turn lifecycle.
 fn item_to_cells(item: ThreadItemPayload, context: ItemProjectionContext<'_>) -> TranscriptCells {
     let ItemProjectionContext {
+        viewed_thread,
         cwd,
         raw_reasoning_visibility,
         inline_visualization_context,
@@ -339,7 +342,7 @@ fn item_to_cells(item: ThreadItemPayload, context: ItemProjectionContext<'_>) ->
                     attribution,
                     input.unwrap_or_default(),
                     text,
-                    /*viewed_thread*/ None,
+                    viewed_thread,
                 )
                 .with_receipt_id(&id)
                 .with_response_preview_lines(agent_preview_line_limits.response),

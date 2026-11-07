@@ -18,6 +18,7 @@ pub(crate) struct AgentInputHistoryCell {
     title: Line<'static>,
     payload: Vec<String>,
     preview_rows: usize,
+    display_only: bool,
 }
 
 impl AgentInputHistoryCell {
@@ -28,7 +29,9 @@ impl AgentInputHistoryCell {
         viewed_thread: Option<ThreadId>,
     ) -> Self {
         let mut title = identity_label(&attribution.sender);
-        if viewed_thread.is_some_and(|id| id.to_string() != attribution.recipient.thread_id) {
+        let display_only =
+            viewed_thread.is_some_and(|id| id.to_string() != attribution.recipient.thread_id);
+        if display_only {
             title.spans.push(" sends to ".bold());
             title
                 .spans
@@ -60,6 +63,7 @@ impl AgentInputHistoryCell {
             title,
             payload,
             preview_rows: 0,
+            display_only,
         }
     }
 
@@ -70,6 +74,8 @@ impl AgentInputHistoryCell {
 
     pub(crate) fn with_receipt_id(mut self, id: &str) -> Self {
         if codex_protocol::is_mailbox_acceptance_receipt_id(id) {
+            // Acceptance shows the payload before the recipient consumes it.
+            self.display_only = true;
             self.title = identity_label(&self.attribution.sender);
             self.title.spans.push(" mails to ".bold());
             self.title
@@ -102,8 +108,10 @@ impl AgentInputHistoryCell {
             .flat_map(|text| text.split('\n'))
             .enumerate()
         {
+            let line = Line::from(text.to_string());
+            let line = if self.display_only { line.dim() } else { line };
             payload_lines.extend(word_wrap_lines(
-                [Line::from(text.to_string())],
+                [line],
                 RtOptions::new(width.max(1) as usize)
                     .initial_indent(if index == 0 {
                         "  └ ".dim().into()

@@ -57,6 +57,15 @@ Canonical completion rows state their relationship to the observer's model conte
 
 The label is observer-relative. It does not claim that the response is hidden from the child thread, user, rollout, or another observer. When an explicit `wait_agent` owns the completion, its model-visible `Finished waiting` result owns presentation instead of emitting a duplicate completion row.
 
+In the rich transcript and Ctrl+T, message bodies shown only for oversight use a
+muted tint. This includes copies of messages between other agents, mailbox
+acceptance receipts before consumption, completion bodies marked not visible,
+and delivery receipts about another recipient. Agent headings keep their usual
+colors. Input addressed to the viewed thread and finals added to its context
+keep normal brightness. The distinction follows trusted recipient and delivery
+metadata; it does not infer visibility from the message's wording. Plain raw
+output and exports retain their original text.
+
 Completion rows carry trusted sender identity snapshots, including nickname, ref, task path, role, model and reasoning effort when available. Grandchildren therefore retain full labels without a prior spawn event or a populated navigation cache. The first snapshot stays fixed for canonical publication and replay; older records retain their existing metadata fallback.
 
 After a final response is committed to a non-root observer's model context, Main can also show a brief live receipt such as `Archimedes (34) · final delivered to Averroes (31)`. Each line names an actual confirmed recipient, not a pending subscriber, and does not repeat the answer body. Hidden deliveries and copies already directed to Main produce no extra receipt. These notices are best-effort live presentation only: they add no model context, subscription or wake, and are not reconstructed on cold resume. An absent receipt therefore does not establish that nobody received the response.
