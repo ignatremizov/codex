@@ -78,6 +78,14 @@ Do not compile or run tests locally by default. Local compilation and test execu
 
 Run `just fix -p <project>` (in `codex-rs` directory) before finalizing a large change only when the user explicitly authorizes local compilation. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
 
+### CI installation and local artifact retention
+
+- Keep only the current debug and current release runtime packages, including their required helper binaries and resources. Do not retain previous packages for rollback; rebuild the desired Git revision in CI when needed.
+- Install a qualified CI build by atomically replacing the debug target. After user testing, promote that same verified build to release when requested; CI success alone does not authorize promotion.
+- Treat downloaded ZIPs, tarballs, extracted duplicates, `.manual-build-*` directories and other installation staging as temporary. Remove them after successful installation or promotion; retain only what an unfinished operation still needs.
+- Installing or promoting a build includes pruning superseded, unreferenced packages. Do not accumulate versioned `.ci-package-*` directories. Small source/run/checksum receipts may live outside download and staging directories.
+- Before deleting artifacts, verify the exact paths, active debug/release selectors and live process references. Temporarily preserve an older package if a running process still needs its binaries or resources, then prune it after that process exits or is explicitly migrated. Do not restart user sessions merely to clean up.
+
 ### Default static preflight
 
 Unless the user explicitly requests local compilation or tests, statically preflight the change and rely on remote CI for executable validation:
