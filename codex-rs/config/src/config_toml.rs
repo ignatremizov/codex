@@ -315,6 +315,11 @@ pub struct ConfigToml {
     #[schemars(schema_with = "crate::schema::mcp_servers_schema")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 
+    /// Remembered per-tool allowances for session-provided MCP servers, keyed by server and tool.
+    /// Only `auto` approval mode honors these choices; `prompt` and `writes` still require approval.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub mcp_tool_approvals: HashMap<String, HashMap<String, bool>>,
+
     /// Trusted enterprise IdP shared by EMA-enabled MCP servers and plugins.
     #[serde(default)]
     pub mcp_enterprise_managed_auth: Option<McpEnterpriseManagedAuthConfig>,

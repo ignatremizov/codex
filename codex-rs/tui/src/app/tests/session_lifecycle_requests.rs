@@ -3580,8 +3580,16 @@ async fn local_daemon_registers_approval_gated_mcp_tools_for_both_start_paths_sc
                 .is_some_and(|header| header.starts_with("Bearer "))
         );
         assert_eq!(server["default_tools_approval_mode"], "approve");
-        for tool in crate::dynamic_tools::DELEGATION_TOOLS {
-            assert_eq!(server["tools"][tool]["approval_mode"], "prompt");
+        for tool in tools.keys() {
+            let mode = server["tools"][tool]["approval_mode"]
+                .as_str()
+                .or_else(|| server["default_tools_approval_mode"].as_str());
+            let expected = if crate::dynamic_tools::DELEGATION_TOOLS.contains(&tool.as_str()) {
+                "auto"
+            } else {
+                "approve"
+            };
+            assert_eq!(mode, Some(expected), "{tool}");
         }
     }
 

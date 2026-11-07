@@ -1736,6 +1736,10 @@ fn wrap_footer_tips(width: u16, tips: Vec<Line<'static>>) -> Vec<Vec<Line<'stati
 }
 
 #[cfg(test)]
+#[path = "mcp_server_elicitation_tui_tools_tests.rs"]
+mod tui_tools_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app_event::AppEvent;

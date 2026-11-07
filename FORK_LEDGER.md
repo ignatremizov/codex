@@ -386,6 +386,25 @@ Ownership anchor: `fix(mcp): refresh thread configuration before explicit activa
 
 Coverage includes servers added after two threads have already advertised tools, both history modes, target-only catalog changes, forward inventory context with the initial declarations retained, later revocation, session overrides, malformed configuration, and real TUI routing/replay of an RPC failure with an inline snapshot. API shapes and dependencies are unchanged; remote Verify qualification is required.
 
+### Remember allowances for TUI-owned MCP task tools
+
+Ownership anchor: `fix(tui,mcp): remember allowances for session-owned task tools`.
+The `codex_tui` MCP bridge uses rememberable approval mode for `create_thread`,
+`send_message_to_thread`, and `fork_thread`; its other tools retain automatic
+approval. The existing permission picker offers session and persistent choices.
+Session-provided MCP servers save per-tool allowances under `mcp_tool_approvals`
+in the user configuration, retaining neither their temporary URL nor credentials.
+Configured servers and plugins keep their existing persistence owners. Saved
+allowances honor only `auto` mode, remain separate from plugin and connector
+approval identities, and do not bypass strict automatic review.
+
+Coverage exercises all three prompted tools through public app-server RPCs,
+restarts the server with a fresh MCP endpoint, checks saved permission scope and
+transport secrecy, and covers revocation and forced `prompt`/`writes` modes.
+The TUI snapshot covers the visible Always allow choice and its requesting-thread
+resolution. The schema fixture is updated statically; remote generation and
+executable qualification remain required.
+
 ## Integration boundaries and deferred work
 
 The final 0.164 source `d0619eceb33d732e589212d5c7182be3d3227078` passed full Manual Verify `40430315847` and Linux Build `40437323138`, attempt 2. Earlier Manual Verify `40262695479` and `40276512989`, and Linux Build `40297418378`, qualify their historical producers only. Qualification of the rebased 0.165 source requires remote generation and full unfiltered verification at its final commit SHA, including after fixups are folded; unchanged tree bytes do not relabel an older run as evidence for a new SHA. No 0.165 package build, installation, local compilation, or local tests are implied.

@@ -8261,6 +8261,16 @@
       "description": "Definition for MCP servers that Codex can reach out to for tool calls.",
       "type": "object"
     },
+    "mcp_tool_approvals": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "type": "boolean"
+        },
+        "type": "object"
+      },
+      "description": "Remembered per-tool allowances for session-provided MCP servers, keyed by server and tool. Only `auto` approval mode honors these choices; `prompt` and `writes` still require approval.",
+      "type": "object"
+    },
     "memories": {
       "allOf": [
         {

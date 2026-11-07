@@ -1315,7 +1315,10 @@ impl ServerHandler for ToolAppsMcpServer {
                     Cow::Borrowed("Echo a message."),
                     Arc::clone(&input_schema),
                 );
-                tool.annotations = Some(ToolAnnotations::new().read_only(true));
+                tool.annotations = Some(ToolAnnotations::new().read_only(!matches!(
+                    name,
+                    "create_thread" | "send_message_to_thread" | "fork_thread"
+                )));
                 tool
             })
             .collect();

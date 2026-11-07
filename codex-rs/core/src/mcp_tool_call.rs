@@ -1558,7 +1558,21 @@ async fn maybe_request_mcp_tool_approval(
     };
     if !strict_auto_review
         && let Some(key) = session_approval_key.as_ref()
-        && mcp_tool_approval_is_remembered(sess, key).await
+        && (mcp_tool_approval_is_remembered(sess, key).await
+            || (key.plugin_id.is_none()
+                && key.server != CODEX_APPS_MCP_SERVER_NAME
+                && config
+                    .config_layer_stack
+                    .layers_high_to_low()
+                    .find_map(|layer| {
+                        layer
+                            .config
+                            .get("mcp_tool_approvals")
+                            .and_then(|approvals| approvals.get(key.server.as_str()))
+                            .and_then(|tools| tools.get(key.tool_name.as_str()))
+                            .and_then(toml::Value::as_bool)
+                    })
+                    == Some(true)))
     {
         return Some(McpToolApproval {
             decision: ReviewDecision::Approved,
@@ -2457,7 +2471,23 @@ async fn persist_non_app_mcp_tool_approval(
             .await;
     }
 
-    anyhow::bail!("MCP server `{server}` is not configured in config.toml or an enabled plugin")
+    if config.mcp_servers.get().contains_key(server) {
+        // Session-provided servers have no durable transport owner. Remember only the
+        // permission: their URL and credentials can change on every client restart.
+        return ConfigEditsBuilder::for_config(config)
+            .with_edits([ConfigEdit::SetPath {
+                segments: vec![
+                    "mcp_tool_approvals".to_string(),
+                    server.to_string(),
+                    tool_name.to_string(),
+                ],
+                value: value(true),
+            }])
+            .apply()
+            .await;
+    }
+
+    anyhow::bail!("MCP server `{server}` is not configured for this session or an enabled plugin")
 }
 
 fn custom_mcp_tool_approval_config_builder(
