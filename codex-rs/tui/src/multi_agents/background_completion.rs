@@ -18,6 +18,7 @@ use super::CollabAgentHistoryCell;
 use super::CollabDetail;
 use super::collab_event;
 use super::parse_thread_id;
+use super::preview::presentation_only_source_lines;
 use super::preview_source_lines;
 use super::title_spans_line;
 
@@ -86,7 +87,7 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
                 Vec::new()
             } else {
                 vec![CollabDetail::preview(
-                    preview_source_lines(text),
+                    presentation_only_source_lines(text),
                     agent_response_preview_lines,
                 )]
             },
@@ -112,7 +113,12 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
         .or_else(|| parse_thread_id(agent_reference));
     let details = message
         .as_deref()
-        .map(preview_source_lines)
+        .map(|message| match model_visibility {
+            SubAgentCompletionModelVisibility::Visible => preview_source_lines(message),
+            SubAgentCompletionModelVisibility::NotVisible => {
+                presentation_only_source_lines(message)
+            }
+        })
         .filter(|lines| !lines.is_empty())
         .map(|lines| vec![CollabDetail::preview(lines, agent_response_preview_lines)])
         .unwrap_or_default();

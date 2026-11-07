@@ -432,3 +432,11 @@ pub(super) fn preview_source_lines(source: &str) -> Vec<Line<'static>> {
             .collect()
     }
 }
+
+/// Retains full source while softening bodies that never enter the viewed thread's context.
+pub(super) fn presentation_only_source_lines(source: &str) -> Vec<Line<'static>> {
+    preview_source_lines(source)
+        .into_iter()
+        .map(Line::dim)
+        .collect()
+}

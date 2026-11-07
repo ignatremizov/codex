@@ -11,6 +11,7 @@ use super::AgentMetadata;
 use super::CollabAgentHistoryCell;
 use super::CollabDetail;
 use super::parse_thread_id;
+use super::preview::presentation_only_source_lines;
 use super::preview_source_lines;
 
 /// Live callers must establish `inter_agent_source` provenance before parsing the text.
@@ -39,7 +40,7 @@ pub(crate) fn background_commentary_history_cell_from_agent_message(
             title: agent_title.render(),
             agent_title: Some(agent_title),
             details: vec![CollabDetail::preview(
-                preview_source_lines(message),
+                presentation_only_source_lines(message),
                 agent_response_preview_lines,
             )],
         });
