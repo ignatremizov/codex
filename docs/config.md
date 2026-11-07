@@ -292,6 +292,27 @@ default_tools_approval_mode = "approve"
 approval_mode = "prompt"
 ```
 
+The TUI's `codex_tui` server offers **Allow**, **Allow for this session**, **Always
+allow**, and **Cancel** for `create_thread`, `send_message_to_thread`, and
+`fork_thread`. Its remaining tools, including managed worktree tools when
+available, already run without a permission prompt. Each saved allowance applies
+to that tool across target tasks; it does not authorize the other prompted tools.
+
+Choosing **Always allow** for a session-provided server saves only the permission
+in the user configuration, so it survives TUI and app-server restarts without
+retaining a temporary server address or credentials:
+
+```toml
+[mcp_tool_approvals.codex_tui]
+send_message_to_thread = true
+```
+
+Remove an entry or set it to `false` to revoke the saved choice for new or
+resumed sessions. A permission already remembered in a running session lasts
+until that session ends. Explicit `prompt` and `writes` modes still require
+approval, and strict automatic review remains authoritative. Configured servers
+and plugins continue storing their allowances with their existing tool settings.
+
 ## Apps (Connectors)
 
 Use `$` in the composer to insert a ChatGPT connector; the popover lists accessible
