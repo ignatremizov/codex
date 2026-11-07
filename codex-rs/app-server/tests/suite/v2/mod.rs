@@ -103,6 +103,8 @@ mod mcp_resource_origin;
 mod mcp_server_elicitation;
 mod mcp_server_status;
 mod mcp_tool;
+#[path = "mcp_tool_approval_tests.rs"]
+mod mcp_tool_approvals;
 mod memory_read;
 mod memory_reset;
 mod misalignment_policy;

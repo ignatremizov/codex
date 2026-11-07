@@ -138,9 +138,9 @@ impl DynamicToolMcpServer {
             "http_headers": {"Authorization": authorization.as_str()},
             "default_tools_approval_mode": "approve",
             "tools": {
-                "create_thread": {"approval_mode": "prompt"},
-                "send_message_to_thread": {"approval_mode": "prompt"},
-                "fork_thread": {"approval_mode": "prompt"},
+                "create_thread": {"approval_mode": "auto"},
+                "send_message_to_thread": {"approval_mode": "auto"},
+                "fork_thread": {"approval_mode": "auto"},
                 "create_worktree": {"approval_mode": "approve"}
             }
         });
