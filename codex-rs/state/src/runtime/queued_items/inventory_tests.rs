@@ -555,10 +555,25 @@ async fn inventory_migration_preserves_existing_mail_claims_and_ordinary_queue()
     old_migrator.run(pool.as_ref()).await.unwrap();
     let queue = SqliteQueueStore::new(Arc::clone(&pool));
     let receiver = ThreadId::new();
-    let ordinary = queue
-        .enqueue(receiver, r#"{"ordinary":true}"#)
-        .await
-        .unwrap();
+    let ordinary = crate::QueuedUserSubmissionRecord {
+        id: "legacy-ordinary".to_string(),
+        thread_id: receiver,
+        payload: r#"{"ordinary":true}"#.to_string(),
+        schedule: None,
+        dispatch_error: None,
+    };
+    // Seed the legacy schema directly; current enqueue also writes schedule metadata.
+    sqlx::query(
+        "INSERT INTO queued_items
+         (id, thread_id, payload_json, queue_order, created_at_ms, updated_at_ms)
+         VALUES (?, ?, ?, 0, 0, 0)",
+    )
+    .bind(&ordinary.id)
+    .bind(receiver.to_string())
+    .bind(&ordinary.payload)
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
     let invocation = MailboxInvocation {
         receiver_thread_id: receiver,
         turn_id: "existing-turn".to_string(),

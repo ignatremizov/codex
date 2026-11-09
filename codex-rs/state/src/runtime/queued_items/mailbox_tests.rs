@@ -682,8 +682,28 @@ async fn mailbox_migration_preserves_existing_queue_payload_order_and_revisions(
     old_migrator.run(pool.as_ref()).await.unwrap();
     let queue = SqliteQueueStore::new(Arc::clone(&pool));
     let receiver = ThreadId::new();
-    let first = queue.enqueue(receiver, r#"{"first":true}"#).await.unwrap();
-    let second = queue.enqueue(receiver, r#"{"second":true}"#).await.unwrap();
+    let [first, second] = ["first", "second"].map(|id| crate::QueuedUserSubmissionRecord {
+        id: id.to_string(),
+        thread_id: receiver,
+        payload: format!(r#"{{"{id}":true}}"#),
+        schedule: None,
+        dispatch_error: None,
+    });
+    // Seed the pre-schedule columns directly; the legacy reorder contract remains unchanged.
+    for (order, item) in [&first, &second].into_iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO queued_items
+             (id, thread_id, payload_json, queue_order, created_at_ms, updated_at_ms)
+             VALUES (?, ?, ?, ?, 0, 0)",
+        )
+        .bind(&item.id)
+        .bind(receiver.to_string())
+        .bind(&item.payload)
+        .bind(i64::try_from(order).unwrap())
+        .execute(pool.as_ref())
+        .await
+        .unwrap();
+    }
     queue
         .reorder(receiver, &[second.id.clone(), first.id.clone()])
         .await

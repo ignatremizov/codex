@@ -21,6 +21,11 @@ pub(super) enum QueueDelivery {
     Steer,
 }
 
+enum Dispatch {
+    All,
+    Scheduled,
+}
+
 pub(super) fn encode_input(
     input: &TurnInput,
     delivery: QueueDelivery,
@@ -67,6 +72,24 @@ impl QueuedItemService {
         &self,
         thread: &CodexThread,
     ) -> Result<bool, QueueServiceError> {
+        self.dispatch_steers_inner(thread, Dispatch::All).await
+    }
+
+    /// A due explicit prompt can start an interrupted thread; ordinary queued
+    /// input retains its existing wait-for-resume behavior.
+    pub(super) async fn dispatch_scheduled(
+        &self,
+        thread: &CodexThread,
+    ) -> Result<bool, QueueServiceError> {
+        self.dispatch_steers_inner(thread, Dispatch::Scheduled)
+            .await
+    }
+
+    async fn dispatch_steers_inner(
+        &self,
+        thread: &CodexThread,
+        dispatch: Dispatch,
+    ) -> Result<bool, QueueServiceError> {
         let thread_id = thread.startup_metadata().thread_id;
         let _guard = self.dispatch_guard(thread_id).await;
         let mut pending = false;
@@ -76,6 +99,17 @@ impl QueuedItemService {
             .list_page(thread_id, /*offset*/ 0, MAX_QUEUE_ITEMS)
             .await?
         {
+            if matches!(dispatch, Dispatch::Scheduled) && record.schedule.is_none() {
+                continue;
+            }
+            if record
+                .schedule
+                .as_ref()
+                .is_some_and(|schedule| schedule.scheduled_at > super::unix_now())
+            {
+                continue;
+            }
+            let scheduled = record.schedule.is_some();
             let queued_item_id = record.id.clone();
             let item = match QueuedItem::try_from(record) {
                 Ok(item) => item,
@@ -88,9 +122,14 @@ impl QueuedItemService {
             if item.delivery != QueueDelivery::Steer {
                 continue;
             }
+            // Receipt-only Accepted is specific to inter-agent messages. Keep this
+            // user-queue boundary typed so those messages never enter this dispatch path.
+            let input @ TurnInput::UserInput { .. } = item.input else {
+                return Err(QueueServiceError::InvalidInput);
+            };
             match thread
                 .start_or_steer_turn(
-                    TurnInputRequest::new(item.input)
+                    TurnInputRequest::new(input)
                         .with_responses_metadata(item.responsesapi_client_metadata)
                         .on_start(TurnStartOptions {
                             turn_trigger: Some("queue".to_string()),
@@ -99,8 +138,31 @@ impl QueuedItemService {
                 )
                 .await
             {
-                Ok(TurnInputSubmission::Started { .. } | TurnInputSubmission::Steered { .. }) => {
-                    self.delete_locked(thread_id, queued_item_id).await?;
+                Ok(TurnInputSubmission::Started { turn_id, .. }) => {
+                    self.finish_dispatch(
+                        thread_id,
+                        queued_item_id,
+                        turn_id,
+                        scheduled,
+                        /*started*/ true,
+                    )
+                    .await?;
+                }
+                Ok(TurnInputSubmission::Steered { turn_id, .. }) => {
+                    self.finish_dispatch(
+                        thread_id,
+                        queued_item_id,
+                        turn_id,
+                        scheduled,
+                        /*started*/ false,
+                    )
+                    .await?;
+                }
+                Ok(TurnInputSubmission::Accepted) => {
+                    // Like Core's typed start-if-idle and steer-only APIs, this is an
+                    // internal contract violation, not a receiving-turn receipt to invent
+                    // or a rejection that can be safely resubmitted.
+                    unreachable!("queued user input must start, steer, or decline")
                 }
                 Ok(TurnInputSubmission::NotSubmitted { reason }) => {
                     tracing::debug!(%thread_id, ?reason, "queued steer deferred by core");

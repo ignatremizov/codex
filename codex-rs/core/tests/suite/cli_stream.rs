@@ -470,6 +470,12 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
     let resp_mock =
         responses::mount_sse_sequence(&server, vec![cli_sse_response(), cli_sse_response()]).await;
     let repo_root = repo_root();
+    // Shared resume uses the receiving thread's configuration, so retain the
+    // mock endpoint in its home rather than passing an invocation-only override.
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!("openai_base_url = \"{}/v1\"\n", server.uri()),
+    )?;
 
     // 4. Run the codex CLI and invoke `exec`, which is what records a session.
     let bin = codex_utils_cargo_bin::cargo_bin("codex").unwrap();
@@ -592,18 +598,19 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
     let mut cmd2 = Command::new(bin2);
     cmd2.arg("exec")
         .arg("--skip-git-repo-check")
-        .arg("-c")
-        .arg(format!("openai_base_url=\"{}/v1\"", server.uri()))
-        .arg("-C")
-        .arg(&repo_root)
         .arg(&prompt2)
         .arg("resume")
-        .arg("--last");
+        .arg("--last")
+        .current_dir(&repo_root);
     cmd2.env("CODEX_HOME", home.path())
         .env("OPENAI_API_KEY", "dummy");
 
     let output2 = run_cli_command(&mut cmd2).unwrap();
-    assert!(output2.status.success(), "resume codex-cli run failed");
+    assert!(
+        output2.status.success(),
+        "resume codex-cli run failed: {}",
+        String::from_utf8_lossy(&output2.stderr)
+    );
     assert_eq!(resp_mock.requests().len(), 2);
 
     // Find the new session file containing the resumed marker.

@@ -1,13 +1,25 @@
 use super::*;
 use codex_app_server_protocol::ItemCompletedNotification;
+use codex_app_server_protocol::ThreadQueueResultParams;
+use codex_app_server_protocol::ThreadQueueResultResponse;
+use codex_app_server_protocol::ThreadQueueScheduleParams;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
-#[test_case(ThreadHistoryMode::Legacy; "legacy")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[derive(Clone, Copy)]
+enum Delivery {
+    Steer,
+    Schedule,
+}
+
+#[test_case(ThreadHistoryMode::Legacy, Delivery::Steer; "legacy steer")]
+#[test_case(ThreadHistoryMode::Paginated, Delivery::Steer; "paginated steer")]
+#[test_case(ThreadHistoryMode::Legacy, Delivery::Schedule; "legacy schedule")]
+#[test_case(ThreadHistoryMode::Paginated, Delivery::Schedule; "paginated schedule")]
 #[tokio::test]
 async fn cross_profile_steer_wakes_sleep_using_the_hosting_threads_auth(
     history_mode: ThreadHistoryMode,
+    delivery: Delivery,
 ) -> Result<()> {
     let server = responses::start_mock_server().await;
     let model = responses::mount_sse_sequence(
@@ -78,14 +90,25 @@ async fn cross_profile_steer_wakes_sleep_using_the_hosting_threads_auth(
         }
     }
     let accepted: ThreadQueueAddResponse = sender
-        .request(|request_id| ClientRequest::ThreadQueueSteer {
-            request_id,
-            params: ThreadQueueAddParams {
-                responsesapi_client_metadata: Some(std::collections::HashMap::from([(
-                    "client_type".to_string(),
-                    "ios_app".to_string(),
-                )])),
-                ..submission(&thread.id, "cross-profile wake")
+        .request(|request_id| match delivery {
+            Delivery::Steer => ClientRequest::ThreadQueueSteer {
+                request_id,
+                params: ThreadQueueAddParams {
+                    responsesapi_client_metadata: Some(std::collections::HashMap::from([(
+                        "client_type".to_string(),
+                        "ios_app".to_string(),
+                    )])),
+                    ..submission(&thread.id, "cross-profile wake")
+                },
+            },
+            Delivery::Schedule => ClientRequest::ThreadQueueSchedule {
+                request_id,
+                params: ThreadQueueScheduleParams {
+                    thread_id: thread.id.clone(),
+                    input: vec![text("cross-profile wake")],
+                    client_user_message_id: "scheduled-wake".into(),
+                    scheduled_at: chrono::Utc::now().timestamp(),
+                },
             },
         })
         .await?;
@@ -112,14 +135,30 @@ async fn cross_profile_steer_wakes_sleep_using_the_hosting_threads_auth(
     let completed: TurnCompletedNotification =
         timeout(READ_TIMEOUT, host.read_notification("turn/completed")).await??;
     assert_eq!(started.turn.id, completed.turn.id);
+    if matches!(delivery, Delivery::Schedule) {
+        let result: ThreadQueueResultResponse = sender
+            .request(|request_id| ClientRequest::ThreadQueueResult {
+                request_id,
+                params: ThreadQueueResultParams {
+                    queued_submission_id: accepted.queued_submission.id,
+                },
+            })
+            .await?;
+        assert_eq!(
+            (result.turn_id, result.started),
+            (Some(started.turn.id.clone()), Some(false))
+        );
+    }
     let requests = model.requests();
-    let body = requests[1].body_json();
-    let metadata: serde_json::Value = serde_json::from_str(
-        body["client_metadata"]["x-codex-turn-metadata"]
-            .as_str()
-            .context("steer client metadata")?,
-    )?;
-    assert_eq!(metadata["client_type"], "ios_app");
+    if matches!(delivery, Delivery::Steer) {
+        let body = requests[1].body_json();
+        let metadata: serde_json::Value = serde_json::from_str(
+            body["client_metadata"]["x-codex-turn-metadata"]
+                .as_str()
+                .context("steer client metadata")?,
+        )?;
+        assert_eq!(metadata["client_type"], "ios_app");
+    }
     assert_eq!(
         vec![
             Some("Bearer host-token".to_string()),

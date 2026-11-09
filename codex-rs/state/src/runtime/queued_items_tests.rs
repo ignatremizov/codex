@@ -7,6 +7,9 @@ use pretty_assertions::assert_eq;
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 
+#[path = "queued_schedule_tests.rs"]
+mod scheduling;
+
 async fn runtime_with_thread() -> (Arc<StateRuntime>, ThreadId) {
     let home = unique_temp_dir();
     let runtime = StateRuntime::init(
@@ -65,6 +68,8 @@ async fn migrating_existing_queue_backfills_thread_revisions() {
         id: Uuid::now_v7().to_string(),
         thread_id,
         payload: r#"{"existing":true}"#.to_string(),
+        schedule: None,
+        dispatch_error: None,
     };
     sqlx::query(
         "INSERT INTO queued_items

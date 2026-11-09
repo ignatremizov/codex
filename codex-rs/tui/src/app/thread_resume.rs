@@ -165,6 +165,8 @@ impl App {
         {
             let input = self.chat_widget.capture_thread_input_state();
             self.chat_widget.handle_thread_session_quiet(session);
+            self.app_event_tx
+                .send(AppEvent::RefreshScheduledInput { thread_id });
             self.chat_widget.restore_thread_input_state(
                 input,
                 ThreadInputStateRestoreMode {

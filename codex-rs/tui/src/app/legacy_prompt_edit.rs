@@ -25,6 +25,11 @@ impl App {
         let target = match event {
             AppEvent::RevertSessionForPromptEdit { thread_id, .. }
             | AppEvent::SubmitThreadOp { thread_id, .. }
+            | AppEvent::ScheduleInput {
+                thread_id,
+                action: crate::scheduled_input::ScheduleAction::Create { .. },
+                ..
+            }
             | AppEvent::SetThreadGoalDraft { thread_id, .. }
             | AppEvent::SetThreadGoalStatus { thread_id, .. }
             | AppEvent::ClearThreadGoal { thread_id }

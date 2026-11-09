@@ -125,6 +125,9 @@ mod resume_shutdown_tests;
 mod safety_buffering;
 #[path = "tests/saved_chat_loading_tests.rs"]
 mod saved_chat_loading;
+
+#[path = "tests/scheduled_input_authority_tests.rs"]
+mod scheduled_input_authority_tests;
 #[path = "tests/session_lifecycle_requests.rs"]
 mod session_lifecycle_requests;
 #[path = "tests/side_chat_policy_tests.rs"]

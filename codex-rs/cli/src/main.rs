@@ -68,6 +68,7 @@ mod doctor;
 #[cfg(test)]
 #[path = "exec_args_tests.rs"]
 mod exec_args_tests;
+mod exec_resume_cmd;
 #[cfg(test)]
 #[path = "exec_server_args_tests.rs"]
 mod exec_server_args_tests;
@@ -82,6 +83,7 @@ mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod sandbox_uninstall;
+mod schedule_cmd;
 mod state_db_recovery;
 #[cfg(not(windows))]
 mod wsl_paths;
@@ -219,6 +221,8 @@ enum Subcommand {
 
     /// Queue a message for an existing session.
     Queue(QueueCommand),
+    /// Schedule ordinary input for an existing session, or inspect its result.
+    Schedule(schedule_cmd::ScheduleCommand),
 
     /// Archive a saved session by id or session name.
     Archive(SessionArchiveCommand),
@@ -1098,6 +1102,8 @@ fn main() -> anyhow::Result<()> {
     })
 }
 
+// Keep large command futures boxed: their construction temporaries otherwise consume
+// stack on every dispatcher poll, including while an interactive TUI is running.
 async fn dispatch_cli(
     arg0_paths: Arg0DispatchPaths,
     remote_control_disabled: bool,
@@ -1244,8 +1250,17 @@ async fn dispatch_cli(
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
             );
-            // Keep the exec future out of the shared dispatcher's stack frame.
-            Box::pin(codex_exec::run_main(exec_cli, arg0_paths.clone())).await?;
+            // Keep each exec future out of the shared dispatcher stack frame.
+            if exec_resume_cmd::applies(&exec_cli) {
+                Box::pin(exec_resume_cmd::run(
+                    exec_cli,
+                    interactive,
+                    arg0_paths.clone(),
+                ))
+                .await?;
+            } else {
+                Box::pin(codex_exec::run_main(exec_cli, arg0_paths.clone())).await?;
+            }
         }
         Some(Subcommand::Review(ReviewCommand {
             strict_config,
@@ -1280,7 +1295,7 @@ async fn dispatch_cli(
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
             let loader_overrides =
                 loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?;
-            mcp_cli.run(loader_overrides).await?;
+            Box::pin(mcp_cli.run(loader_overrides)).await?;
         }
         Some(Subcommand::Plugin(plugin_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -1344,13 +1359,13 @@ async fn dispatch_cli(
                     subcommand.is_none(),
                     "--print-startup-config cannot run a subcommand"
                 );
-                codex_app_server::print_startup_config(
+                Box::pin(codex_app_server::print_startup_config(
                     arg0_paths,
                     root_config_overrides,
                     LoaderOverrides::default(),
                     strict_config,
                     startup_config,
-                )
+                ))
                 .await?;
                 return Ok(None);
             }
@@ -1384,7 +1399,7 @@ async fn dispatch_cli(
                         },
                         ..Default::default()
                     };
-                    let exit = codex_app_server::run_main_with_transport_options(
+                    let exit = Box::pin(codex_app_server::run_main_with_transport_options(
                         arg0_paths.clone(),
                         root_config_overrides,
                         LoaderOverrides::default(),
@@ -1394,7 +1409,7 @@ async fn dispatch_cli(
                         codex_protocol::protocol::SessionSource::VSCode,
                         auth,
                         runtime_options,
-                    )
+                    ))
                     .await?;
                     if exit == codex_app_server::AppServerExit::Forced {
                         // Runtime teardown can wait forever for blocked rollout I/O.
@@ -1563,7 +1578,7 @@ async fn dispatch_cli(
             )));
         }
         Some(Subcommand::Archive(cmd)) => {
-            let output = run_session_archive_cli_command(
+            let output = Box::pin(run_session_archive_cli_command(
                 codex_tui::SessionArchiveAction::Archive,
                 cmd,
                 interactive,
@@ -1571,25 +1586,36 @@ async fn dispatch_cli(
                 root_remote.clone(),
                 root_remote_auth_token_env.clone(),
                 arg0_paths.clone(),
-            )
+            ))
             .await?;
             println!("{output}");
         }
         Some(Subcommand::Queue(cmd)) => {
-            let output = queue_cmd::run_queue_command(
+            let output = Box::pin(queue_cmd::run_queue_command(
                 cmd,
                 interactive,
                 root_config_overrides.clone(),
                 root_remote.clone(),
                 root_remote_auth_token_env.clone(),
                 arg0_paths.clone(),
-            )
+            ))
             .await?;
             println!("{output}");
         }
+        Some(Subcommand::Schedule(cmd)) => {
+            Box::pin(schedule_cmd::run_schedule_command(
+                cmd,
+                interactive,
+                root_config_overrides.clone(),
+                root_remote.clone(),
+                root_remote_auth_token_env.clone(),
+                arg0_paths.clone(),
+            ))
+            .await?;
+        }
         Some(Subcommand::Delete(DeleteCommand { session, force })) => {
             let action = delete_action(&session.target, force)?;
-            let output = run_session_archive_cli_command(
+            let output = Box::pin(run_session_archive_cli_command(
                 action,
                 session,
                 interactive,
@@ -1597,7 +1623,7 @@ async fn dispatch_cli(
                 root_remote.clone(),
                 root_remote_auth_token_env.clone(),
                 arg0_paths.clone(),
-            )
+            ))
             .await?;
             println!("{output}");
         }
@@ -1623,7 +1649,7 @@ async fn dispatch_cli(
             .await?;
         }
         Some(Subcommand::Unarchive(cmd)) => {
-            let output = run_session_archive_cli_command(
+            let output = Box::pin(run_session_archive_cli_command(
                 codex_tui::SessionArchiveAction::Unarchive,
                 cmd,
                 interactive,
@@ -1631,7 +1657,7 @@ async fn dispatch_cli(
                 root_remote.clone(),
                 root_remote_auth_token_env.clone(),
                 arg0_paths.clone(),
-            )
+            ))
             .await?;
             println!("{output}");
         }
@@ -1862,12 +1888,12 @@ async fn dispatch_cli(
                     root_remote_auth_token_env.as_deref(),
                     "debug prompt-input",
                 )?;
-                run_debug_prompt_input_command(
+                Box::pin(run_debug_prompt_input_command(
                     cmd,
                     root_config_overrides,
                     interactive,
                     arg0_paths.clone(),
-                )
+                ))
                 .await?;
             }
             DebugSubcommand::Rollout(cmd) => {
@@ -2015,6 +2041,7 @@ fn profile_v2_for_subcommand<'a>(
         | Subcommand::Review(_)
         | Subcommand::Resume(_)
         | Subcommand::Queue(_)
+        | Subcommand::Schedule(_)
         | Subcommand::Archive(_)
         | Subcommand::Delete(_)
         | Subcommand::Unarchive(_)
@@ -2026,7 +2053,7 @@ fn profile_v2_for_subcommand<'a>(
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands, `codex mcp`, and `codex migrate-nfs-db`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex migrate-nfs-db`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands, `codex mcp`, and `codex migrate-nfs-db`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex schedule`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex migrate-nfs-db`, `codex sandbox`, and `codex debug prompt-input`."
         ),
     }
 }
@@ -2345,6 +2372,7 @@ fn reject_unsupported_worktree_for_subcommand(
         }
         Some(Subcommand::Delete(command)) => command.session.config_overrides.shared.worktree,
         Some(Subcommand::Queue(command)) => command.config_overrides.shared.worktree,
+        Some(Subcommand::Schedule(command)) => command.config_overrides.shared.worktree,
         _ => false,
     };
 
@@ -2414,6 +2442,7 @@ fn unsupported_subcommand_name_for_strict_config(
         | Some(Subcommand::ExecServer(_))
         | Some(Subcommand::Resume(_))
         | Some(Subcommand::Queue(_))
+        | Some(Subcommand::Schedule(_))
         | Some(Subcommand::Archive(_))
         | Some(Subcommand::Delete(_))
         | Some(Subcommand::Unarchive(_))

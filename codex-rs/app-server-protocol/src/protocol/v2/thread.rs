@@ -980,6 +980,14 @@ pub struct QueuedSubmission {
     pub client_user_message_id: String,
     /// Metadata retained with this input, including across reconnect and restoration.
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
+
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub scheduled_at: Option<i64>,
+    #[serde(default)]
+    pub fallback_profile: Option<String>,
+    #[serde(default)]
+    pub dispatch_error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

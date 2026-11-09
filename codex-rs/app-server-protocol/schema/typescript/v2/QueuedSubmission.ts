@@ -7,4 +7,4 @@ export type QueuedSubmission = { id: string, input: Array<UserInput>, clientUser
 /**
  * Metadata retained with this input, including across reconnect and restoration.
  */
-responsesapiClientMetadata: { [key in string]?: string } | null, };
+responsesapiClientMetadata: { [key in string]?: string } | null, scheduledAt: number | null, fallbackProfile: string | null, dispatchError: string | null, };

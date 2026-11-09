@@ -3,6 +3,8 @@ use std::future::Future;
 
 use codex_protocol::ThreadId;
 use codex_rollout::StateDbHandle;
+use codex_state::QueuedSubmissionReceipt;
+use codex_state::QueuedSubmissionSchedule;
 use codex_state::QueuedUserSubmissionRecord;
 use codex_state::SqliteQueueStore;
 
@@ -27,6 +29,50 @@ pub trait QueueStore: Send + Sync {
         thread_id: ThreadId,
         payload: String,
     ) -> ThreadStoreFuture<'_, QueuedUserSubmissionRecord>;
+
+    /// Add timed input without exposing a partially configured ordinary entry.
+    fn enqueue_scheduled(
+        &self,
+        thread_id: ThreadId,
+        id: String,
+        payload: String,
+        schedule: QueuedSubmissionSchedule,
+    ) -> ThreadStoreFuture<'_, QueuedUserSubmissionRecord>;
+
+    /// Return bounded due targets eligible for cold loading by this profile.
+    fn scheduled_threads(
+        &self,
+        profile: String,
+        now: i64,
+        after: Option<String>,
+        limit: usize,
+    ) -> ThreadStoreFuture<'_, Vec<ThreadId>>;
+
+    /// Find due input for loaded owners even without a database revision change.
+    fn due_loaded_threads(
+        &self,
+        thread_ids: Vec<ThreadId>,
+        now: i64,
+    ) -> ThreadStoreFuture<'_, Vec<ThreadId>>;
+
+    /// Read pending input by its stable queue identity without loading a runtime.
+    fn get_submission(
+        &self,
+        id: String,
+    ) -> ThreadStoreFuture<'_, Option<QueuedUserSubmissionRecord>>;
+
+    /// Record an actionable dispatch error on the pending input.
+    fn set_dispatch_error(&self, id: String, error: String) -> ThreadStoreFuture<'_, ()>;
+
+    /// Save the receiving turn identity and retire its pending input together.
+    fn acknowledge_submission(&self, receipt: QueuedSubmissionReceipt)
+    -> ThreadStoreFuture<'_, ()>;
+
+    /// Read the receiving turn association for consumed input.
+    fn submission_receipt(
+        &self,
+        id: String,
+    ) -> ThreadStoreFuture<'_, Option<QueuedSubmissionReceipt>>;
 
     fn list_page(
         &self,
@@ -82,6 +128,77 @@ where
 }
 
 impl QueueStore for LocalQueueStore {
+    fn due_loaded_threads(
+        &self,
+        thread_ids: Vec<ThreadId>,
+        now: i64,
+    ) -> ThreadStoreFuture<'_, Vec<ThreadId>> {
+        queue_future(async move { self.queue().due_loaded_threads(&thread_ids, now).await })
+    }
+
+    fn enqueue_scheduled(
+        &self,
+        thread_id: ThreadId,
+        id: String,
+        payload: String,
+        schedule: QueuedSubmissionSchedule,
+    ) -> ThreadStoreFuture<'_, QueuedUserSubmissionRecord> {
+        Box::pin(async move {
+            self.queue()
+                .enqueue_with_schedule(thread_id, &id, &payload, Some(&schedule))
+                .await
+                .map_err(|error| match error.downcast_ref::<sqlx::Error>() {
+                    Some(sqlx::Error::RowNotFound) => ThreadStoreError::InvalidRequest {
+                        message: format!(
+                            "queue is full (limit {MAX_QUEUE_ITEMS}) or input {id} has already been admitted"
+                        ),
+                    },
+                    _ => ThreadStoreError::Internal {
+                        message: format!("queue storage failed: {error}"),
+                    },
+                })
+        })
+    }
+
+    fn scheduled_threads(
+        &self,
+        profile: String,
+        now: i64,
+        after: Option<String>,
+        limit: usize,
+    ) -> ThreadStoreFuture<'_, Vec<ThreadId>> {
+        queue_future(async move {
+            self.queue()
+                .scheduled_threads(&profile, now, after.as_deref(), limit)
+                .await
+        })
+    }
+
+    fn get_submission(
+        &self,
+        id: String,
+    ) -> ThreadStoreFuture<'_, Option<QueuedUserSubmissionRecord>> {
+        queue_future(async move { self.queue().get_submission(&id).await })
+    }
+
+    fn set_dispatch_error(&self, id: String, error: String) -> ThreadStoreFuture<'_, ()> {
+        queue_future(async move { self.queue().set_dispatch_error(&id, &error).await })
+    }
+
+    fn acknowledge_submission(
+        &self,
+        receipt: QueuedSubmissionReceipt,
+    ) -> ThreadStoreFuture<'_, ()> {
+        queue_future(async move { self.queue().acknowledge_submission(&receipt).await })
+    }
+
+    fn submission_receipt(
+        &self,
+        id: String,
+    ) -> ThreadStoreFuture<'_, Option<QueuedSubmissionReceipt>> {
+        queue_future(async move { self.queue().submission_receipt(&id).await })
+    }
+
     fn change_version(&self) -> ThreadStoreFuture<'_, i64> {
         queue_future(self.queue().change_version())
     }
