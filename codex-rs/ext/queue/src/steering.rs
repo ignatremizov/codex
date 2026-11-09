@@ -18,6 +18,11 @@ pub(super) enum QueueDelivery {
     Steer,
 }
 
+enum Dispatch {
+    All,
+    Scheduled,
+}
+
 pub(super) fn encode_input(
     input: &TurnInput,
     delivery: QueueDelivery,
@@ -54,6 +59,24 @@ impl QueuedItemService {
         &self,
         thread: &CodexThread,
     ) -> Result<bool, QueueServiceError> {
+        self.dispatch_steers_inner(thread, Dispatch::All).await
+    }
+
+    /// A due explicit prompt can start an interrupted thread; ordinary queued
+    /// input retains its existing wait-for-resume behavior.
+    pub(super) async fn dispatch_scheduled(
+        &self,
+        thread: &CodexThread,
+    ) -> Result<bool, QueueServiceError> {
+        self.dispatch_steers_inner(thread, Dispatch::Scheduled)
+            .await
+    }
+
+    async fn dispatch_steers_inner(
+        &self,
+        thread: &CodexThread,
+        dispatch: Dispatch,
+    ) -> Result<bool, QueueServiceError> {
         let thread_id = thread.startup_metadata().thread_id;
         let _guard = self.dispatch_guard(thread_id).await;
         let mut pending = false;
@@ -63,6 +86,16 @@ impl QueuedItemService {
             .list_page(thread_id, /*offset*/ 0, MAX_QUEUE_ITEMS)
             .await?
         {
+            if matches!(dispatch, Dispatch::Scheduled) && record.schedule.is_none() {
+                continue;
+            }
+            if record
+                .schedule
+                .as_ref()
+                .is_some_and(|schedule| schedule.scheduled_at > super::unix_now())
+            {
+                continue;
+            }
             let (input, delivery) = match decode_input(&record.payload) {
                 Ok(input) => input,
                 Err(error) => {
@@ -81,8 +114,25 @@ impl QueuedItemService {
                 }))
                 .await
             {
-                Ok(TurnInputSubmission::Started { .. } | TurnInputSubmission::Steered { .. }) => {
-                    self.delete_locked(thread_id, record.id).await?;
+                Ok(TurnInputSubmission::Started { turn_id, .. }) => {
+                    self.finish_dispatch(
+                        thread_id,
+                        record.id,
+                        turn_id,
+                        record.schedule.is_some(),
+                        /*started*/ true,
+                    )
+                    .await?;
+                }
+                Ok(TurnInputSubmission::Steered { turn_id, .. }) => {
+                    self.finish_dispatch(
+                        thread_id,
+                        record.id,
+                        turn_id,
+                        record.schedule.is_some(),
+                        /*started*/ false,
+                    )
+                    .await?;
                 }
                 Ok(TurnInputSubmission::NotSubmitted { reason }) => {
                     tracing::debug!(%thread_id, ?reason, "queued steer deferred by core");

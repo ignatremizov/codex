@@ -3444,6 +3444,12 @@ impl App {
             AppEvent::SubmitUserMailbox(submission) => {
                 self.submit_user_mailbox(app_server, submission).await;
             }
+            AppEvent::ScheduleInput { thread_id, backend_id, action } => {
+                Box::pin(self.schedule_input(app_server, thread_id, backend_id, action)).await;
+            }
+            AppEvent::RefreshScheduledInput { thread_id } => {
+                Box::pin(self.refresh_scheduled_input(app_server, thread_id)).await;
+            }
             AppEvent::AnswerAgentQuestion(answer) => {
                 self.answer_agent_question(app_server, answer).await;
             }

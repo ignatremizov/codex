@@ -123,6 +123,8 @@ mod recap_generation;
 #[path = "tests/resume_shutdown_tests.rs"]
 mod resume_shutdown_tests;
 mod safety_buffering;
+#[path = "tests/scheduled_input_authority_tests.rs"]
+mod scheduled_input_authority_tests;
 #[path = "tests/session_lifecycle_requests.rs"]
 mod session_lifecycle_requests;
 mod startup;

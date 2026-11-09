@@ -434,6 +434,15 @@ pub(crate) enum AppEvent {
 
     /// Accept typed user mail without admitting a payload-bearing turn.
     SubmitUserMailbox(crate::chatwidget::mailbox::MailboxSubmission),
+    /// Scheduling is bound to the displayed thread when the command is submitted.
+    ScheduleInput {
+        thread_id: ThreadId,
+        backend_id: Option<crate::backend_id::BackendId>,
+        action: crate::scheduled_input::ScheduleAction,
+    },
+    RefreshScheduledInput {
+        thread_id: ThreadId,
+    },
 
     /// Submit a genuine user-authored prompt to an agent without changing focus.
     SubmitAgentPrompt {

@@ -380,6 +380,33 @@ Ownership anchor: `feat(queue): steer active threads across account daemons`. `c
 
 Entrypoints are `cli/src/queue_cmd.rs`, `tui/src/session_queue_commands.rs`, `app-server/src/request_processors/thread_queue_processor.rs`, and `ext/queue/src/steering.rs`. Same-daemon delivery is immediate when admissible; cross-daemon delivery uses the existing 10-second SQLite watcher and the hosting thread's credentials. The distinct RPC rejects unsupported callers without silently downgrading delivery. All participating runtimes need the new implementation for active-turn wake behavior. Integration coverage includes both history modes, real sleep interruption and same-turn message consumption, cross-process/profile authentication, retained ordinary queued work, edited steer intent, idle fallback and failed admission. Generated contracts and remote Verify qualification are separate gates.
 
+### Scheduled input and shared exec resume
+
+Ownership anchor: `feat(queue): schedule ordinary input and observe shared thread execution`.
+The implementation extends the existing pending queue with due time and fallback
+auth, checks due time without requiring a DB revision, and cold-resumes eligible
+independent threads through the normal lifecycle and writer gates. A tiny
+input-to-turn receipt supports exact result observation without retaining a
+runtime or duplicating model output. CLI `schedule`, TUI `/schedule`, and
+prompt-bearing `exec resume` share queue admission; loaded owners retain their
+credentials. Future entries do not block ordinary input or pin sessions.
+
+Large CLI command futures and the consent config reload are boxed to reduce
+temporary stack usage while the TUI continues polling through startup wrappers.
+The real CLI folder-consent and production-stack navigation tests protect this
+path alongside schedule admission and output coverage.
+
+Entrypoints are `ext/queue/src/scheduling.rs`,
+`app-server/src/request_processors/thread_schedule.rs`,
+`app-server/src/request_processors/queued_input_history.rs`,
+`cli/src/schedule_cmd.rs`, `cli/src/exec_resume_cmd.rs`, and
+`tui/src/session_schedule_commands.rs`. Rebase seams include the queue migration
+and facade, active-turn admission receipts, resume/unload and agent ownership,
+history paging, v2 experimental schemas, slash dispatch, pending-input previews,
+and headless output. Auth and permissions remain those of normal thread execution.
+Cancellation after due dispatch begins is best effort. Generated contracts and
+remote Verify qualify the build; local formatting/static inspection alone do not.
+
 ### Refresh the requesting thread before explicit MCP activation
 
 Ownership anchor: `fix(mcp): refresh thread configuration before explicit activation`. `/mcp use` and `thread/mcpServer/activate` reconcile the selected thread with current files before validating or capturing inventory. `app-server/src/mcp_refresh.rs` reuses session-layer-aware loading and the existing MCP publication gate with bounded stale-owner retries and target-only failure handling. The global reload and other threads' runtime catalogs remain separate. `tui/src/app/thread_routing.rs` retains the RPC cause chain through buffering and replay, so failures identify the actual configuration or server problem.

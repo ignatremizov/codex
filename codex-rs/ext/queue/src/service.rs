@@ -30,6 +30,7 @@ use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::MAX_QUEUE_ITEMS;
 use codex_thread_store::QueueStore;
+use codex_thread_store::QueuedSubmissionSchedule;
 use codex_thread_store::QueuedUserSubmissionRecord;
 use codex_thread_store::ThreadStoreError;
 use thiserror::Error;
@@ -42,14 +43,19 @@ use self::steering::QueueDelivery;
 use self::steering::decode_input;
 use self::steering::encode_input;
 
+#[path = "scheduling.rs"]
+mod scheduling;
 #[path = "steering.rs"]
 mod steering;
+use scheduling::unix_now;
 
 /// One user message waiting to start on its thread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueuedItem {
     pub id: String,
     pub input: TurnInput,
+    pub schedule: Option<QueuedSubmissionSchedule>,
+    pub dispatch_error: Option<String>,
     delivery: QueueDelivery,
 }
 
@@ -151,11 +157,22 @@ impl QueuedItemService {
                 }
             };
             let version_changed = last_version != Some(version);
-            if !version_changed && newly_loaded_threads.is_empty() {
+            let thread_ids = manager.list_thread_ids().await;
+            let due_threads = match service
+                .queue
+                .due_loaded_threads(thread_ids.clone(), unix_now())
+                .await
+            {
+                Ok(ids) => ids,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to check due queued input");
+                    Vec::new()
+                }
+            };
+            if !version_changed && newly_loaded_threads.is_empty() && due_threads.is_empty() {
                 continue;
             }
 
-            let thread_ids = manager.list_thread_ids().await;
             let mut changes = Vec::new();
             let mut observed_revision = last_revision;
             if version_changed {
@@ -206,6 +223,7 @@ impl QueuedItemService {
                 }
             }
             changed_threads.extend(loaded_threads.iter().copied());
+            changed_threads.extend(due_threads);
             for thread_id in changed_threads {
                 if dispatches
                     .get(&thread_id)
@@ -227,12 +245,17 @@ impl QueuedItemService {
                             let Ok(thread) = manager.get_thread(thread_id).await else {
                                 return;
                             };
-                            if matches!(
-                                thread.agent_status().await,
-                                AgentStatus::Interrupted
-                                    | AgentStatus::Shutdown
-                                    | AgentStatus::NotFound
-                            ) {
+                            let agent_status = thread.agent_status().await;
+                            if matches!(agent_status, AgentStatus::Shutdown | AgentStatus::NotFound)
+                            {
+                                return;
+                            }
+                            if matches!(agent_status, AgentStatus::Interrupted) {
+                                if let Err(error) =
+                                    service.dispatch_scheduled(thread.as_ref()).await
+                                {
+                                    tracing::warn!(%thread_id, %error, "failed to resume scheduled input");
+                                }
                                 return;
                             }
                             if matches!(thread.agent_status().await, AgentStatus::Running) {
@@ -246,10 +269,16 @@ impl QueuedItemService {
                             } else {
                                 match service
                                     .queue
-                                    .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
+                                    .list_page(thread_id, /*offset*/ 0, MAX_QUEUE_ITEMS)
                                     .await
                                 {
-                                    Ok(items) if items.is_empty() => {
+                                    Ok(items)
+                                        if !items.iter().any(|item| {
+                                            item.schedule.as_ref().is_none_or(|schedule| {
+                                                schedule.scheduled_at <= unix_now()
+                                            })
+                                        }) =>
+                                    {
                                         if reevaluate_loaded_idle {
                                             service.wake_if_loaded(thread_id).await;
                                         }
@@ -362,6 +391,12 @@ impl QueuedItemService {
         let delivery = previous
             .as_ref()
             .map_or(QueueDelivery::NextTurn, |item| item.delivery);
+        if previous
+            .as_ref()
+            .is_some_and(|item| item.schedule.is_some())
+        {
+            scheduling::validate_scheduled_text(&input)?;
+        }
         if let TurnInput::UserInput { client_id, .. } = &mut input {
             *client_id = previous.and_then(|item| match item {
                 QueuedItem {
@@ -430,7 +465,16 @@ impl QueuedItemService {
             .list(thread_id)
             .await?
             .into_iter()
-            .find(|item| queued_item_id.as_ref().is_none_or(|id| item.id == *id))
+            .find(|item| {
+                queued_item_id.as_ref().map_or_else(
+                    || {
+                        item.schedule
+                            .as_ref()
+                            .is_none_or(|schedule| schedule.scheduled_at <= unix_now())
+                    },
+                    |id| item.id == *id,
+                )
+            })
             .ok_or_else(|| ThreadStoreError::InvalidRequest {
                 message: queued_item_id.as_ref().map_or_else(
                     || "queue is empty".to_string(),
@@ -438,6 +482,17 @@ impl QueuedItemService {
                 ),
             })?;
         let queued_item_id = item.id.clone();
+        if item
+            .schedule
+            .as_ref()
+            .is_some_and(|schedule| schedule.scheduled_at > unix_now())
+        {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: "queued input is not due yet".to_string(),
+            }
+            .into());
+        }
+        let scheduled = item.schedule.is_some();
         let input @ TurnInput::UserInput { .. } = item.input else {
             return Err(QueueServiceError::InvalidInput);
         };
@@ -449,8 +504,15 @@ impl QueuedItemService {
                 },
             ))
             .await?;
-        if matches!(submission, StartIfIdleSubmission::Started { .. }) {
-            self.delete_locked(thread_id, queued_item_id).await?;
+        if let StartIfIdleSubmission::Started { turn_id, .. } = &submission {
+            self.finish_dispatch(
+                thread_id,
+                queued_item_id,
+                turn_id.clone(),
+                scheduled,
+                /*started*/ true,
+            )
+            .await?;
         }
         Ok(submission)
     }
@@ -466,10 +528,15 @@ impl QueuedItemService {
         loop {
             let Some(record) = self
                 .queue
-                .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
+                .list_page(thread_id, /*offset*/ 0, MAX_QUEUE_ITEMS)
                 .await?
                 .into_iter()
-                .next()
+                .find(|record| {
+                    record
+                        .schedule
+                        .as_ref()
+                        .is_none_or(|schedule| schedule.scheduled_at <= unix_now())
+                })
             else {
                 return Ok(());
             };
@@ -496,8 +563,15 @@ impl QueuedItemService {
                 }))
                 .await
             {
-                Ok(StartIfIdleSubmission::Started { .. }) => {
-                    self.delete_locked(thread_id, queued_item_id).await?;
+                Ok(StartIfIdleSubmission::Started { turn_id, .. }) => {
+                    self.finish_dispatch(
+                        thread_id,
+                        queued_item_id,
+                        turn_id,
+                        record.schedule.is_some(),
+                        /*started*/ true,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 Ok(StartIfIdleSubmission::NotSubmitted { reason }) => {
@@ -528,11 +602,16 @@ impl QueuedItemService {
     ) -> Result<(), QueueServiceError> {
         loop {
             let guard = self.dispatch_guard(thread_id).await;
-            if !self
+            if self
                 .queue
-                .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
+                .list_page(thread_id, /*offset*/ 0, MAX_QUEUE_ITEMS)
                 .await?
-                .is_empty()
+                .iter()
+                .any(|item| {
+                    item.schedule
+                        .as_ref()
+                        .is_none_or(|schedule| schedule.scheduled_at <= unix_now())
+                })
             {
                 return Ok(());
             }
@@ -665,6 +744,8 @@ fn queued_item_from_record(
     Ok(QueuedItem {
         id: record.id,
         input,
+        schedule: record.schedule,
+        dispatch_error: record.dispatch_error,
         delivery,
     })
 }

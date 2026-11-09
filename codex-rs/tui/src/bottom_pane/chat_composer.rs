@@ -143,6 +143,8 @@
 //! running, `Tab` submits just like Enter so input is never dropped.
 //! Submit and queue bindings act only on fresh key presses; repeated events are consumed so a held
 //! key cannot dispatch a preserved draft after another input layer closes.
+//! `/mail` and `/schedule` dispatch immediately even through the queue binding;
+//! their own durable storage owns delivery, and schedule times resolve at submission.
 //! Vim Replace shares Insert's composer actions; only textarea editing differs.
 //! Literal completion/paste edits discard stale Replace recovery; subsequent typing records anew.
 //! Token markers added during Replace are removed when restoring overwritten characters.
@@ -3261,11 +3263,12 @@ impl ChatComposer {
         if self.dictation_element.is_some() {
             return (InputResult::None, false);
         }
-        // Mail is explicit receiver-selected input, never an ordinary queued turn.
-        let mailbox_submission = !self.draft.textarea.text().starts_with(' ')
-            && parse_slash_name(self.draft.textarea.text())
-                .is_some_and(|(name, _, _)| name == SlashCommand::Mail.command());
-        let should_queue = should_queue && !mailbox_submission;
+        // These commands own durable delivery rather than waiting in the local draft queue.
+        let durable_submission = !self.draft.textarea.text().starts_with(' ')
+            && parse_slash_name(self.draft.textarea.text()).is_some_and(|(name, _, _)| {
+                name == SlashCommand::Mail.command() || name == SlashCommand::Schedule.command()
+            });
+        let should_queue = should_queue && !durable_submission;
         if should_queue {
             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
                 self.apply_paste(pasted);
@@ -5256,6 +5259,9 @@ mod effort_tests;
 #[cfg(test)]
 #[path = "chat_composer_enter_tests.rs"]
 mod enter_tests;
+#[cfg(test)]
+#[path = "chat_composer_schedule_tests.rs"]
+mod schedule_tests;
 
 #[cfg(test)]
 #[path = "chat_composer/embedded_input_tests.rs"]

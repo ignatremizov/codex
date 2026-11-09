@@ -53,6 +53,7 @@ pub(crate) struct ThreadQueueRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     config_manager: ConfigManager,
     service: Option<Arc<QueuedItemService>>,
+    thread_processor: Arc<super::ThreadRequestProcessor>,
 }
 
 impl ThreadQueueRequestProcessor {
@@ -62,6 +63,7 @@ impl ThreadQueueRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         config_manager: ConfigManager,
         service: Option<Arc<QueuedItemService>>,
+        thread_processor: Arc<super::ThreadRequestProcessor>,
     ) -> Self {
         Self {
             thread_manager,
@@ -69,6 +71,7 @@ impl ThreadQueueRequestProcessor {
             outgoing,
             config_manager,
             service,
+            thread_processor,
         }
     }
 
@@ -180,7 +183,10 @@ impl ThreadQueueRequestProcessor {
         &self,
         params: ThreadQueueDeleteParams,
     ) -> Result<ThreadQueueDeleteResponse, JSONRPCErrorError> {
-        let (thread_id, _, _) = self.require_thread(&params.thread_id).await?;
+        // Cancellation only removes stored input. It must remain available after
+        // archive or runtime teardown without resuming or unarchiving the target.
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|error| invalid_request(format!("invalid thread id: {error}")))?;
         let deleted = self
             .service()?
             .delete(thread_id, params.queued_submission_id)
@@ -360,8 +366,17 @@ fn api_queued_submission(value: QueuedItem) -> Result<QueuedSubmission, JSONRPCE
     };
     Ok(QueuedSubmission {
         id: value.id,
+        scheduled_at: value
+            .schedule
+            .as_ref()
+            .map(|schedule| schedule.scheduled_at),
+        fallback_profile: value.schedule.map(|schedule| schedule.fallback_profile),
+        dispatch_error: value.dispatch_error,
         input: content.into_iter().map(Into::into).collect(),
         client_user_message_id: client_id
             .ok_or_else(|| internal_error("queued submission is missing its client message id"))?,
     })
 }
+
+#[path = "thread_queue_schedule.rs"]
+mod scheduling;

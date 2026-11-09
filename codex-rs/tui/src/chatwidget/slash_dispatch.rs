@@ -99,6 +99,9 @@ impl ChatWidget {
         args: String,
         text_elements: Vec<TextElement>,
     ) {
+        if cmd == SlashCommand::Schedule && self.reject_blocked_schedule_command(&args) {
+            return;
+        }
         if cmd == SlashCommand::Continue && self.reject_blocked_input() {
             return;
         }
@@ -439,6 +442,12 @@ impl ChatWidget {
             SlashCommand::Presets => {
                 self.open_quick_dial_menu();
             }
+            SlashCommand::Schedule => {
+                self.add_info_message(
+                    crate::scheduled_input::SCHEDULE_USAGE.into(),
+                    /*hint*/ None,
+                );
+            }
             SlashCommand::Plan => {
                 self.apply_plan_slash_command();
             }
@@ -725,6 +734,9 @@ impl ChatWidget {
         args: String,
         text_elements: Vec<TextElement>,
     ) {
+        if cmd == SlashCommand::Schedule && self.reject_blocked_schedule_command(&args) {
+            return;
+        }
         if cmd != SlashCommand::Copy {
             self.transcript.last_status_copy_targets = None;
         }
@@ -965,6 +977,17 @@ impl ChatWidget {
             },
             SlashCommand::Ide => {
                 self.handle_ide_command_args(trimmed);
+            }
+            SlashCommand::Schedule => {
+                let message = self.prepared_inline_user_message(
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                self.submit_schedule_command(message);
             }
             SlashCommand::Mcp => self.handle_mcp_args(trimmed),
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
@@ -1665,7 +1688,7 @@ impl ChatWidget {
         }
         match cmd {
             // Mailbox acceptance does not start a payload-bearing turn or block queued work.
-            SlashCommand::Mail => QueueDrain::Continue,
+            SlashCommand::Mail | SlashCommand::Schedule => QueueDrain::Continue,
             SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::Daemon

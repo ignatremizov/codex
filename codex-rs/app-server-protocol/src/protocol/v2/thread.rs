@@ -965,6 +965,13 @@ pub struct QueuedSubmission {
     pub id: String,
     pub input: Vec<UserInput>,
     pub client_user_message_id: String,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub scheduled_at: Option<i64>,
+    #[serde(default)]
+    pub fallback_profile: Option<String>,
+    #[serde(default)]
+    pub dispatch_error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

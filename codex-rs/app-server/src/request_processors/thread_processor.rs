@@ -49,6 +49,8 @@ use std::ops::ControlFlow;
 mod agent_alias;
 mod agent_control;
 mod agent_queue;
+#[path = "queued_input_history.rs"]
+mod queued_input_history;
 mod thread_listeners;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;

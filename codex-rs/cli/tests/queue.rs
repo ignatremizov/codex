@@ -17,11 +17,15 @@ use tokio_tungstenite::tungstenite::Message;
 
 const THREAD_ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
+#[path = "queue/schedule_tests.rs"]
+mod schedule_tests;
+
 enum QueueResponse {
     Success,
     ResumeRejected,
     SteerResumeRejected,
     Steer,
+    Schedule,
     UnsupportedSteer,
     MethodNotFound,
     #[cfg(unix)]
@@ -108,7 +112,9 @@ where
     let request: Value = serde_json::from_str(request.to_text()?)?;
     assert_eq!(
         request["method"],
-        if matches!(
+        if matches!(response, QueueResponse::Schedule) {
+            "thread/queue/schedule"
+        } else if matches!(
             response,
             QueueResponse::Steer
                 | QueueResponse::UnsupportedSteer
@@ -133,6 +139,19 @@ where
                     "id": "queued-submission-id",
                     "input": request["params"]["input"],
                     "clientUserMessageId": request["params"]["clientUserMessageId"],
+                },
+            },
+        }),
+        QueueResponse::Schedule => json!({
+            "id": request["id"],
+            "result": {
+                "queuedSubmission": {
+                    "id": request["params"]["clientUserMessageId"],
+                    "input": request["params"]["input"],
+                    "clientUserMessageId": request["params"]["clientUserMessageId"],
+                    "scheduledAt": request["params"]["scheduledAt"],
+                    "fallbackProfile": "test-profile",
+                    "dispatchError": null,
                 },
             },
         }),
@@ -175,6 +194,46 @@ where
                 .send(Message::Text(reply.to_string().into()))
                 .await?;
         }
+    }
+    if matches!(response, QueueResponse::Schedule) {
+        let lookup = websocket.next().await.context("missing result lookup")??;
+        let lookup: Value = serde_json::from_str(lookup.to_text()?)?;
+        assert_eq!(lookup["method"], "thread/queue/result");
+        assert_eq!(
+            lookup["params"]["queuedSubmissionId"],
+            request["params"]["clientUserMessageId"]
+        );
+        websocket
+            .send(Message::Text(
+                json!({
+                    "id": lookup["id"],
+                    "result": {
+                        "queuedSubmission": null,
+                        "threadId": THREAD_ID,
+                        "turnId": "actual-receiving-turn",
+                        "started": false,
+                        "turn": {
+                            "id": "actual-receiving-turn",
+                            "rootTurnId": null,
+                            "items": [{
+                                "type": "agentMessage",
+                                "id": "actual-final",
+                                "text": "exact receiving turn answer",
+                                "phase": "final_answer",
+                            }],
+                            "itemsView": "summary",
+                            "status": "completed",
+                            "error": null,
+                            "startedAt": null,
+                            "completedAt": null,
+                            "durationMs": null,
+                        },
+                    },
+                })
+                .to_string()
+                .into(),
+            ))
+            .await?;
     }
     Ok(request)
 }

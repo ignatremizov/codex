@@ -77,6 +77,8 @@ use wiremock::MockServer;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
 
+#[path = "thread_queue_schedule_tests.rs"]
+mod schedule_tests;
 #[path = "thread_queue_steer_tests.rs"]
 mod steering_tests;
 

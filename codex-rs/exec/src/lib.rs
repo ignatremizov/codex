@@ -11,7 +11,9 @@ mod event_processor;
 mod event_processor_with_human_output;
 pub(crate) mod event_processor_with_jsonl_output;
 pub(crate) mod exec_events;
+mod shared_resume;
 mod worktree;
+pub use shared_resume::write_shared_turn_result;
 
 pub use cli::Cli;
 pub use cli::Command;
@@ -2465,7 +2467,8 @@ fn prompt_with_stdin_context(prompt: &str, stdin_text: &str) -> String {
     combined
 }
 
-fn resolve_prompt(prompt_arg: Option<String>) -> String {
+/// Resolve a positional exec prompt, reading stdin for an absent prompt or `-`.
+pub fn resolve_prompt(prompt_arg: Option<String>) -> String {
     match prompt_arg {
         Some(p) if p != "-" => p,
         maybe_dash => {

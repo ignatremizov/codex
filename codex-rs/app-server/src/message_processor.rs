@@ -174,7 +174,7 @@ pub(crate) struct MessageProcessor {
     search_processor: SearchRequestProcessor,
     thread_goal_processor: ThreadGoalRequestProcessor,
     thread_queue_processor: ThreadQueueRequestProcessor,
-    thread_processor: ThreadRequestProcessor,
+    thread_processor: Arc<ThreadRequestProcessor>,
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
@@ -315,6 +315,9 @@ impl MessageProcessor {
         gateway_login_control.require_explicit_login();
         let thread_state_manager = ThreadStateManager::new();
         outgoing.watch_user_verification_auth(Arc::clone(&auth_manager));
+        // One-shot exec servers end with their primary command. They may consume
+        // input for their own loaded thread, but must not claim unrelated due work.
+        let schedules_unloaded_input = !matches!(&session_source, SessionSource::Exec);
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.
@@ -510,19 +513,12 @@ impl MessageProcessor {
             Arc::clone(&goal_service),
             config_manager.clone(),
         );
-        let thread_queue_processor = ThreadQueueRequestProcessor::new(
-            Arc::clone(&thread_manager),
-            Arc::clone(&thread_store),
-            outgoing.clone(),
-            config_manager.clone(),
-            queue_service,
-        );
         let project_processor = ProjectRequestProcessor::new(
             Arc::clone(&thread_store),
             outgoing.clone(),
             Arc::clone(&thread_list_state_permit),
         );
-        let thread_processor = ThreadRequestProcessor::new(
+        let thread_processor = Arc::new(ThreadRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -541,7 +537,22 @@ impl MessageProcessor {
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
             config_warnings.clone(),
             sample_responses,
+        ));
+        let thread_queue_processor = ThreadQueueRequestProcessor::new(
+            Arc::clone(&thread_manager),
+            Arc::clone(&thread_store),
+            outgoing.clone(),
+            config_manager.clone(),
+            queue_service.clone(),
+            Arc::clone(&thread_processor),
         );
+        if schedules_unloaded_input && let Some(service) = &queue_service {
+            super::request_processors::thread_schedule::spawn(
+                Arc::downgrade(&thread_processor),
+                Arc::downgrade(service),
+                turn_admission.clone(),
+            );
+        }
         let turn_processor = TurnRequestProcessor::new(
             auth_manager,
             Arc::clone(&thread_manager),
@@ -1467,6 +1478,16 @@ impl MessageProcessor {
             ClientRequest::ThreadQueueList { params, .. } => self
                 .thread_queue_processor
                 .list(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::ThreadQueueSchedule { params, .. } => self
+                .thread_queue_processor
+                .schedule(params)
+                .await
+                .map(|response| Some(ClientResponsePayload::ThreadQueueSchedule(response))),
+            ClientRequest::ThreadQueueResult { params, .. } => self
+                .thread_queue_processor
+                .result(params)
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ThreadQueueUpdate { params, .. } => self

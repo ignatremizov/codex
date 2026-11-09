@@ -93,6 +93,9 @@ impl ChatWidget {
         let connector_scope_changed = previous_thread_id != Some(session.thread_id)
             || self.config.cwd.as_path() != session.cwd.as_path();
         self.thread_id = Some(session.thread_id);
+        if previous_thread_id != self.thread_id {
+            self.bottom_pane.set_scheduled_input_preview(Vec::new());
+        }
         self.daybreak_enabled = self.config.features.enabled(Feature::CliDaybreak)
             && session.daybreak_enabled
             && !matches!(display, SessionConfiguredDisplay::SideConversation);

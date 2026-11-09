@@ -320,6 +320,8 @@ mod replay_render_tests;
 mod review_mode;
 #[path = "tests/review_picker_tests.rs"]
 mod review_picker_tests;
+#[path = "tests/scheduled_input_authority_tests.rs"]
+mod scheduled_input_authority_tests;
 #[path = "tests/session_model_selection_tests.rs"]
 mod session_model_selection_tests;
 mod side;

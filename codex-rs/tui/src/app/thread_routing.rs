@@ -1700,6 +1700,8 @@ impl App {
                 self.chat_widget.handle_thread_session(session);
             }
         }
+        self.app_event_tx
+            .send(AppEvent::RefreshScheduledInput { thread_id });
         let should_buffer_initial_replay = !turns.is_empty();
         let replayed_final_items = realtime_delivery::completed_agent_items_from_turns(&turns);
         let replayed_voice_texts = realtime_delivery::replayed_voice_texts_from_turns(&turns);
@@ -2022,6 +2024,7 @@ impl App {
             .as_ref()
             .is_some_and(|session| session.collaboration_mode.is_some());
         if let Some(session) = snapshot.session {
+            let thread_id = session.thread_id;
             if session.reasoning_effort != Some(ReasoningEffortConfig::Ultra) {
                 self.chat_widget
                     .set_plan_mode_reasoning_effort(self.config.plan_mode_reasoning_effort.clone());
@@ -2033,6 +2036,8 @@ impl App {
             } else {
                 self.chat_widget.handle_thread_session(session);
             }
+            self.app_event_tx
+                .send(AppEvent::RefreshScheduledInput { thread_id });
         }
         let retained_assistant_captions =
             self.prepare_realtime_transcript_replay(replayed_voice_texts);

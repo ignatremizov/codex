@@ -1828,6 +1828,12 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Replace the server-owned scheduled-input preview without changing local drafts.
+    pub(crate) fn set_scheduled_input_preview(&mut self, items: Vec<String>) {
+        self.pending_input_preview.scheduled_messages = items;
+        self.request_redraw();
+    }
+
     /// Update the inactive-thread approval list, returning whether its contents changed.
     pub(crate) fn set_pending_thread_approvals(&mut self, threads: Vec<String>) -> bool {
         let changed = self.pending_thread_approvals.set_threads(threads);
@@ -2570,6 +2576,7 @@ impl BottomPane {
                 .as_ref()
                 .is_some_and(|q| q.unanswered_count() > 0);
             let has_pending_input = has_questions
+                || !self.pending_input_preview.scheduled_messages.is_empty()
                 || !self.pending_input_preview.queued_messages.is_empty()
                 || !self.pending_input_preview.pending_steers.is_empty()
                 || !self.pending_input_preview.rejected_steers.is_empty();

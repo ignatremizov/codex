@@ -14,8 +14,10 @@ use crate::wrapping::adaptive_wrap_lines;
 /// Widget that displays pending steers plus follow-up inputs held while a turn is in progress.
 ///
 /// The widget renders pending steers first, then rejected steers that will be
-/// resubmitted at end of turn, then ordinary queued user messages. Pending
-/// steers explain that they will be submitted after the next tool/result
+/// resubmitted at end of turn, then scheduled prompts and ordinary queued messages.
+/// Scheduled prompts share this preview with their due time and cancellation
+/// command; the queued-draft edit binding does not edit server-owned schedules.
+/// Pending steers explain that they will be submitted after the next tool/result
 /// boundary unless the user invokes the interrupt binding to send them
 /// immediately. The edit hint at the bottom only appears when there are actual
 /// queued user inputs to pop back into the composer. The displayed binding is
@@ -24,6 +26,7 @@ pub(crate) struct PendingInputPreview {
     pub pending_steers: Vec<String>,
     pub rejected_steers: Vec<String>,
     pub queued_messages: Vec<String>,
+    pub scheduled_messages: Vec<String>,
     /// Key combination rendered in the hint line. Defaults to Shift+Left.
     pub(super) edit_binding: Option<key_hint::ShortcutHint>,
     /// Key combination rendered for immediately interrupting and sending steers.
@@ -43,6 +46,7 @@ impl PendingInputPreview {
             pending_steers: Vec::new(),
             rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
+            scheduled_messages: Vec::new(),
             edit_binding: Some(key_hint::shift(KeyCode::Left).into()),
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc).into()),
         }
@@ -87,6 +91,7 @@ impl PendingInputPreview {
         if (self.pending_steers.is_empty()
             && self.rejected_steers.is_empty()
             && self.queued_messages.is_empty()
+            && self.scheduled_messages.is_empty()
             && !has_questions)
             || width < 4
         {
@@ -131,6 +136,29 @@ impl PendingInputPreview {
             for steer in &self.rejected_steers {
                 let wrapped = wrap_preview_lines(
                     steer
+                        .lines()
+                        .take(PREVIEW_LINE_LIMIT + 1)
+                        .map(|line| Line::from(line.to_owned().dim())),
+                    RtOptions::new(width as usize)
+                        .initial_indent(Line::from("  ↳ ".dim()))
+                        .subsequent_indent(Line::from("    ")),
+                );
+                Self::push_truncated_preview_lines(&mut lines, wrapped, Line::from("    …".dim()));
+            }
+        }
+
+        if !self.scheduled_messages.is_empty() {
+            if !lines.is_empty() {
+                lines.push(HyperlinkLine::new(Line::from("")));
+            }
+            Self::push_section_header(
+                &mut lines,
+                width,
+                "Scheduled inputs · /schedule cancel <id>".into(),
+            );
+            for message in &self.scheduled_messages {
+                let wrapped = wrap_preview_lines(
+                    message
                         .lines()
                         .take(PREVIEW_LINE_LIMIT + 1)
                         .map(|line| Line::from(line.to_owned().dim())),
@@ -246,6 +274,10 @@ impl Renderable for PendingInputPreviewContent<'_> {
             .desired_height(width)
     }
 }
+
+#[cfg(test)]
+#[path = "pending_input_preview_schedule_tests.rs"]
+mod schedule_tests;
 
 #[cfg(test)]
 mod tests {

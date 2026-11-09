@@ -447,6 +447,14 @@ impl ChatWidget {
                     self.on_realtime_conversation_closed(notification.reason);
                 }
             }
+            ServerNotification::ThreadQueueChanged(notification) => {
+                if !from_replay
+                    && let Ok(thread_id) = ThreadId::from_string(&notification.thread_id)
+                {
+                    self.app_event_tx
+                        .send(AppEvent::RefreshScheduledInput { thread_id });
+                }
+            }
             ServerNotification::ServerRequestResolved(_)
             | ServerNotification::AccountUpdated(_)
             | ServerNotification::GatewayOAuthChanged(_)
@@ -456,7 +464,6 @@ impl ChatWidget {
             | ServerNotification::ThreadReadStateChanged(_)
             | ServerNotification::ThreadSectionChanged(_)
             | ServerNotification::ThreadReverted(_)
-            | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::ThreadPredictionUpdated(_)
             | ServerNotification::ThreadArchived(_)
             | ServerNotification::ThreadDeleted(_)

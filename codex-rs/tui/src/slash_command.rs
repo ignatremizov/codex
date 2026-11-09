@@ -87,6 +87,7 @@ pub enum SlashCommand {
     #[strum(serialize = "subagents")]
     MultiAgents,
     Mail,
+    Schedule,
     // Debugging commands.
     #[strum(serialize = "debug-m-drop")]
     MemoryDrop,
@@ -152,6 +153,9 @@ impl SlashCommand {
             SlashCommand::Mail => {
                 "leave input in this agent's mailbox for check_mail; does not steer or queue"
             }
+            SlashCommand::Schedule => {
+                "schedule a prompt, list pending input, cancel, or read a result"
+            }
             SlashCommand::Agent => "inspect, prompt, and control agents",
             SlashCommand::Agents => "open the agent command center",
             SlashCommand::MultiAgents => "switch between this session's subagents",
@@ -199,6 +203,7 @@ impl SlashCommand {
                 | SlashCommand::Voice
                 | SlashCommand::Mail
                 | SlashCommand::Ide
+                | SlashCommand::Schedule
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
                 | SlashCommand::Export
@@ -316,6 +321,7 @@ impl SlashCommand {
             | SlashCommand::Voice
             | SlashCommand::Mail
             | SlashCommand::Agent
+            | SlashCommand::Schedule
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins

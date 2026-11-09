@@ -294,7 +294,9 @@ impl App {
             *config = StartupDraftPump::run_with_optional_draft(
                 startup_draft.as_deref_mut(),
                 tui,
-                self.rebuild_config_for_cwd_from(config, config.cwd.to_path_buf()),
+                // This branch contributes to the consent future's size even
+                // before trust is accepted. Keep the config loader on the heap.
+                Box::pin(self.rebuild_config_for_cwd_from(config, config.cwd.to_path_buf())),
             )
             .await
             .map_err(|error| {

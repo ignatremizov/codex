@@ -294,6 +294,7 @@ mod right_click_paste;
 pub(crate) use right_click_paste::PasteEnvironment;
 mod safety_buffering;
 mod safety_recourse;
+mod scheduled_input;
 mod server_version_notice;
 mod session_lifecycle;
 mod session_picker;

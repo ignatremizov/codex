@@ -1,5 +1,7 @@
 use super::*;
 use crate::MAX_QUEUE_ITEMS;
+use crate::QueuedSubmissionReceipt;
+use crate::QueuedSubmissionSchedule;
 use crate::QueuedUserSubmissionRecord;
 use crate::sqlite::SqlitePoolWriteExt;
 use crate::sqlite::SqliteWriteQueryExt;
@@ -9,6 +11,8 @@ use uuid::Uuid;
 
 mod inventory;
 mod mailbox;
+#[path = "queued_items/scheduling.rs"]
+mod scheduling;
 
 pub use inventory::MailboxInventory;
 pub use inventory::MailboxInventoryNotification;
@@ -100,26 +104,46 @@ impl SqliteQueueStore {
         thread_id: ThreadId,
         payload_json: &str,
     ) -> anyhow::Result<QueuedUserSubmissionRecord> {
+        self.enqueue_with_schedule(
+            thread_id,
+            &Uuid::now_v7().to_string(),
+            payload_json,
+            /*schedule*/ None,
+        )
+        .await
+    }
+
+    pub async fn enqueue_with_schedule(
+        &self,
+        thread_id: ThreadId,
+        id: &str,
+        payload_json: &str,
+        schedule: Option<&QueuedSubmissionSchedule>,
+    ) -> anyhow::Result<QueuedUserSubmissionRecord> {
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let row = sqlx::query(
             "INSERT INTO queued_items (
                 id, thread_id, payload_json, queue_order,
-                created_at_ms, updated_at_ms
+                created_at_ms, updated_at_ms, scheduled_at, fallback_profile
              )
              SELECT ?, ?, ?,
                     COALESCE((SELECT MAX(queue_order) FROM queued_items WHERE thread_id = ?), -1) + 1,
-                    ?, ?
+                    ?, ?, ?, ?
              WHERE (SELECT COUNT(*) FROM queued_items WHERE thread_id = ?) < ?
-             RETURNING id, thread_id, payload_json",
+             AND NOT EXISTS (SELECT 1 FROM queued_input_receipts WHERE id = ?)
+             RETURNING id, thread_id, payload_json, scheduled_at, fallback_profile, dispatch_error",
         )
-        .bind(Uuid::now_v7().to_string())
+        .bind(id)
         .bind(thread_id.to_string())
         .bind(payload_json)
         .bind(thread_id.to_string())
         .bind(now_ms)
         .bind(now_ms)
+        .bind(schedule.map(|schedule| schedule.scheduled_at))
+        .bind(schedule.map(|schedule| schedule.fallback_profile.as_str()))
         .bind(thread_id.to_string())
         .bind(i64::try_from(MAX_QUEUE_ITEMS)?)
+        .bind(id)
         .fetch_one_write(self.pool.as_ref())
         .await?;
         QueuedUserSubmissionRecord::try_from_row(&row)
@@ -132,7 +156,7 @@ impl SqliteQueueStore {
         limit: usize,
     ) -> anyhow::Result<Vec<QueuedUserSubmissionRecord>> {
         let rows = sqlx::query(
-            "SELECT id, thread_id, payload_json
+            "SELECT id, thread_id, payload_json, scheduled_at, fallback_profile, dispatch_error
              FROM queued_items
              WHERE thread_id = ?
              ORDER BY queue_order LIMIT ? OFFSET ?",
@@ -157,7 +181,7 @@ impl SqliteQueueStore {
             "UPDATE queued_items
              SET payload_json = ?, updated_at_ms = ?
              WHERE thread_id = ? AND id = ?
-             RETURNING id, thread_id, payload_json",
+             RETURNING id, thread_id, payload_json, scheduled_at, fallback_profile, dispatch_error",
         )
         .bind(payload_json)
         .bind(datetime_to_epoch_millis(Utc::now()))
@@ -222,12 +246,19 @@ impl SqliteQueueStore {
     }
 
     pub(crate) async fn delete_thread_queue(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
-        Ok(sqlx::query("DELETE FROM queued_items WHERE thread_id = ?")
+        let mut transaction = self.pool.begin_immediate().await?;
+        sqlx::query("DELETE FROM queued_input_receipts WHERE thread_id = ?")
             .bind(thread_id.to_string())
-            .execute_with_busy_retry(self.pool.as_ref())
+            .execute(transaction.as_mut())
+            .await?;
+        let deleted = sqlx::query("DELETE FROM queued_items WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(transaction.as_mut())
             .await?
             .rows_affected()
-            > 0)
+            > 0;
+        transaction.commit().await?;
+        Ok(deleted)
     }
 }
 

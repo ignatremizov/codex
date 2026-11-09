@@ -683,6 +683,19 @@ client_request_definitions! {
         manual_payload_conversion: manual,
         response: v2::ThreadQueueAddResponse,
     },
+    #[experimental("thread/queue/schedule")]
+    ThreadQueueSchedule => "thread/queue/schedule" {
+        params: v2::ThreadQueueScheduleParams,
+        serialization: thread_id(params.thread_id),
+        manual_payload_conversion: manual,
+        response: v2::ThreadQueueAddResponse,
+    },
+    #[experimental("thread/queue/result")]
+    ThreadQueueResult => "thread/queue/result" {
+        params: v2::ThreadQueueResultParams,
+        serialization: None,
+        response: v2::ThreadQueueResultResponse,
+    },
     #[experimental("thread/queue/list")]
     ThreadQueueList => "thread/queue/list" {
         params: v2::ThreadQueueListParams,

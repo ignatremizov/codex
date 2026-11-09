@@ -299,6 +299,7 @@ mod inter_agent_transcript;
 mod interrupts;
 pub(crate) mod mailbox;
 mod questions;
+mod scheduled_input;
 mod startup_submission;
 use self::interrupts::InterruptManager;
 mod keymap_picker;

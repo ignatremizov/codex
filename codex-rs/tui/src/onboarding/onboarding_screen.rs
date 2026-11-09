@@ -609,12 +609,12 @@ async fn run_onboarding_screen(
     let previous_mouse_capture = tui.mouse_capture;
     let result = match tui.set_mouse_capture(MouseCapture::Disabled) {
         Ok(()) => {
-            run_onboarding_screen_inner(
+            Box::pin(run_onboarding_screen_inner(
                 onboarding_screen,
                 app_server_request_handle,
                 app_server,
                 tui,
-            )
+            ))
             .await
         }
         Err(error) => Err(error.into()),

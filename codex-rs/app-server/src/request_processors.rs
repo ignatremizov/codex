@@ -609,6 +609,7 @@ mod thread_queue_processor;
 mod thread_read_state;
 mod thread_resume_boundary;
 pub(crate) mod thread_rollback;
+pub(crate) mod thread_schedule;
 mod thread_sections;
 mod token_usage_replay;
 mod turn_processor;

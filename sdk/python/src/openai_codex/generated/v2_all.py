@@ -126,7 +126,7 @@ class ClosedAgentControlOutcome(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    target_thread_id: str
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
     type: Annotated[Literal["closed"], Field(title="ClosedAgentControlOutcomeType")]
 
 
@@ -7596,7 +7596,7 @@ class SpawnAgentControlAction(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    fork_mode: AgentForkMode
+    fork_mode: Annotated[AgentForkMode, Field(alias="forkMode")]
     input: Annotated[
         list[UserInput] | None,
         Field(description="Omitted creates a real idle child without starting its first turn."),
@@ -7610,12 +7610,15 @@ class SpawnAgentControlAction(BaseModel):
     reasoning_effort: Annotated[
         ReasoningEffort | None,
         Field(
-            description="Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default."
+            alias="reasoningEffort",
+            description="Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default.",
         ),
     ] = None
     response_handling: Annotated[
         AgentResponseHandling | None,
-        Field(description="Omitted uses passive final-response delivery."),
+        Field(
+            alias="responseHandling", description="Omitted uses passive final-response delivery."
+        ),
     ] = None
     role: Annotated[
         str | None, Field(description="Omitted selects the default child configuration.")
@@ -7636,7 +7639,9 @@ class PromptAgentControlAction(BaseModel):
     input: list[UserInput]
     response_handling: Annotated[
         AgentResponseHandling | None,
-        Field(description="Omitted uses passive final-response delivery."),
+        Field(
+            alias="responseHandling", description="Omitted uses passive final-response delivery."
+        ),
     ] = None
     target: Annotated[
         str, Field(description="Root-scoped ref or nickname, or a canonical thread UUID.")
@@ -7660,7 +7665,9 @@ class QueuedPromptAgentControlAction(BaseModel):
     input: list[UserInput]
     response_handling: Annotated[
         AgentResponseHandling | None,
-        Field(description="Omitted uses passive final-response delivery."),
+        Field(
+            alias="responseHandling", description="Omitted uses passive final-response delivery."
+        ),
     ] = None
     target: Annotated[
         str, Field(description="Root-scoped ref or nickname, or a canonical thread UUID.")
@@ -7674,7 +7681,10 @@ class ResumeAgentControlAction(BaseModel):
     )
     response_handling: Annotated[
         AgentResponseHandling | None,
-        Field(description="Omitted reserves passive delivery for the next admitted target turn."),
+        Field(
+            alias="responseHandling",
+            description="Omitted reserves passive delivery for the next admitted target turn.",
+        ),
     ] = None
     target: Annotated[
         str,
@@ -7697,7 +7707,8 @@ class InterruptAgentControlAction(BaseModel):
     )
     input: list[UserInput] | None = None
     response_handling: Annotated[
-        AgentResponseHandling | None, Field(description="Valid only when `input` is present.")
+        AgentResponseHandling | None,
+        Field(alias="responseHandling", description="Valid only when `input` is present."),
     ] = None
     target: str
     type: Annotated[Literal["interrupt"], Field(title="InterruptAgentControlActionType")]
@@ -7709,7 +7720,10 @@ class CloseAgentControlAction(BaseModel):
     )
     response_handling: Annotated[
         AgentResponseHandling | None,
-        Field(description="Controls replay of an undelivered completion after close."),
+        Field(
+            alias="responseHandling",
+            description="Controls replay of an undelivered completion after close.",
+        ),
     ] = None
     target: str
     type: Annotated[Literal["close"], Field(title="CloseAgentControlActionType")]
@@ -7722,14 +7736,15 @@ class ObserveAgentControlAction(BaseModel):
     authored_observer_selector: Annotated[
         str | None,
         Field(
-            description="Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint."
+            alias="authoredObserverSelector",
+            description="Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint.",
         ),
     ] = None
     observer: Annotated[
         str | None,
         Field(description="Existing subscription owner. Omitted means the issuing source thread."),
     ] = None
-    response_handling: AgentObservationMode
+    response_handling: Annotated[AgentObservationMode, Field(alias="responseHandling")]
     target: str
     type: Annotated[Literal["observe"], Field(title="ObserveAgentControlActionType")]
 
@@ -7789,17 +7804,18 @@ class SpawnedAgentControlOutcome(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    input_outcome: AgentInputOutcome | None = None
+    input_outcome: Annotated[AgentInputOutcome | None, Field(alias="inputOutcome")] = None
     nickname: str | None = None
     post_admission_warning: Annotated[
         str | None,
         Field(
-            description="Non-retryable degradation after child input admission or uncertain routing."
+            alias="postAdmissionWarning",
+            description="Non-retryable degradation after child input admission or uncertain routing.",
         ),
     ] = None
     ref: str | None = None
-    target_thread_id: str
-    task_path: str | None = None
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
+    task_path: Annotated[str | None, Field(alias="taskPath")] = None
     type: Annotated[Literal["spawned"], Field(title="SpawnedAgentControlOutcomeType")]
 
 
@@ -7807,15 +7823,16 @@ class PromptedAgentControlOutcome(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    input_outcome: AgentInputOutcome
+    input_outcome: Annotated[AgentInputOutcome, Field(alias="inputOutcome")]
     post_admission_warning: Annotated[
         str | None,
         Field(
-            description="Non-retryable degradation after target input admission or uncertain routing."
+            alias="postAdmissionWarning",
+            description="Non-retryable degradation after target input admission or uncertain routing.",
         ),
     ] = None
-    submission_id: str
-    target_thread_id: str
+    submission_id: Annotated[str, Field(alias="submissionId")]
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
     type: Annotated[Literal["prompted"], Field(title="PromptedAgentControlOutcomeType")]
 
 
@@ -7823,19 +7840,21 @@ class ReservedPromptedAgentControlOutcome(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    input_outcome: AgentInputOutcome
+    input_outcome: Annotated[AgentInputOutcome, Field(alias="inputOutcome")]
     post_admission_warning: Annotated[
         str | None,
         Field(
-            description="Non-retryable degradation after target input admission, including an indeterminate target turn after enqueue."
+            alias="postAdmissionWarning",
+            description="Non-retryable degradation after target input admission, including an indeterminate target turn after enqueue.",
         ),
     ] = None
-    submission_id: str
-    target_thread_id: str
+    submission_id: Annotated[str, Field(alias="submissionId")]
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
     turn_id: Annotated[
         str | None,
         Field(
-            description="The admitted target turn when routing can prove it; null means the input outcome is indeterminate after enqueue and must not be retried automatically."
+            alias="turnId",
+            description="The admitted target turn when routing can prove it; null means the input outcome is indeterminate after enqueue and must not be retried automatically.",
         ),
     ] = None
     type: Annotated[
@@ -7848,18 +7867,21 @@ class ResumedAgentControlOutcome(BaseModel):
         populate_by_name=True,
     )
     nickname: str | None = None
-    observation_binding: AgentObservationBinding | None = None
+    observation_binding: Annotated[
+        AgentObservationBinding | None, Field(alias="observationBinding")
+    ] = None
     post_commit_warning: Annotated[
         str | None,
         Field(
-            description="Degradation that occurred after an exclusive ownership transfer committed."
+            alias="postCommitWarning",
+            description="Degradation that occurred after an exclusive ownership transfer committed.",
         ),
     ] = None
     ref: str | None = None
-    target_thread_id: str
-    task_path: str | None = None
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
+    task_path: Annotated[str | None, Field(alias="taskPath")] = None
     task_path_mapping: Annotated[
-        list[AgentTaskPathMapping] | None, Field(validate_default=True)
+        list[AgentTaskPathMapping] | None, Field(alias="taskPathMapping", validate_default=True)
     ] = []
     type: Annotated[Literal["resumed"], Field(title="ResumedAgentControlOutcomeType")]
 
@@ -7868,15 +7890,16 @@ class InterruptedAgentControlOutcome(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    input_outcome: AgentInputOutcome | None = None
+    input_outcome: Annotated[AgentInputOutcome | None, Field(alias="inputOutcome")] = None
     post_admission_warning: Annotated[
         str | None,
         Field(
-            description="Non-retryable degradation after follow-up input admission or uncertain routing."
+            alias="postAdmissionWarning",
+            description="Non-retryable degradation after follow-up input admission or uncertain routing.",
         ),
     ] = None
-    submission_id: str | None = None
-    target_thread_id: str
+    submission_id: Annotated[str | None, Field(alias="submissionId")] = None
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
     type: Annotated[Literal["interrupted"], Field(title="InterruptedAgentControlOutcomeType")]
 
 
@@ -7885,10 +7908,12 @@ class ObservedAgentControlOutcome(BaseModel):
         populate_by_name=True,
     )
     binding: AgentObservationBinding
-    observer_thread_id: str
-    previous_response_handling: AgentFinalResponseHandling
-    response_handling: AgentFinalResponseHandling
-    target_thread_id: str
+    observer_thread_id: Annotated[str, Field(alias="observerThreadId")]
+    previous_response_handling: Annotated[
+        AgentFinalResponseHandling, Field(alias="previousResponseHandling")
+    ]
+    response_handling: Annotated[AgentFinalResponseHandling, Field(alias="responseHandling")]
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
     type: Annotated[Literal["observed"], Field(title="ObservedAgentControlOutcomeType")]
 
 
@@ -7897,9 +7922,9 @@ class ReplyRouteChangedAgentControlOutcome(BaseModel):
         populate_by_name=True,
     )
     mode: AgentReplyRouteMode
-    previous_mode: AgentReplyRouteMode | None = None
-    recipient_thread_id: str
-    target_thread_id: str
+    previous_mode: Annotated[AgentReplyRouteMode | None, Field(alias="previousMode")] = None
+    recipient_thread_id: Annotated[str, Field(alias="recipientThreadId")]
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
     type: Annotated[
         Literal["replyRouteChanged"], Field(title="ReplyRouteChangedAgentControlOutcomeType")
     ]
@@ -7910,8 +7935,8 @@ class SubtreeMessagingChangedAgentControlOutcome(BaseModel):
         populate_by_name=True,
     )
     mode: AgentReplyRouteMode
-    previous_mode: AgentReplyRouteMode | None = None
-    root_thread_id: str
+    previous_mode: Annotated[AgentReplyRouteMode | None, Field(alias="previousMode")] = None
+    root_thread_id: Annotated[str, Field(alias="rootThreadId")]
     type: Annotated[
         Literal["subtreeMessagingChanged"],
         Field(title="SubtreeMessagingChangedAgentControlOutcomeType"),
@@ -10422,8 +10447,11 @@ class QueuedSubmission(BaseModel):
         populate_by_name=True,
     )
     client_user_message_id: Annotated[str, Field(alias="clientUserMessageId")]
+    dispatch_error: Annotated[str | None, Field(alias="dispatchError")] = None
+    fallback_profile: Annotated[str | None, Field(alias="fallbackProfile")] = None
     id: str
     input: list[UserInput]
+    scheduled_at: Annotated[int | None, Field(alias="scheduledAt")] = None
 
 
 class RateLimitResetCredit(BaseModel):
@@ -13291,7 +13319,6 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Unix timestamp in milliseconds when the item completed, if recorded.",
         ),
     ] = None
-
     id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
     input_batch: Annotated[
         CollabAgentInputBatch | None,
@@ -13369,7 +13396,6 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Unix timestamp in milliseconds when the item started, if recorded.",
         ),
     ] = None
-
     status: Annotated[
         CollabAgentToolCallStatus, Field(description="Current status of the collab tool call.")
     ]

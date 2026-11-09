@@ -498,7 +498,7 @@
         {
           "description": "Spawn a default or configured-role child.",
           "properties": {
-            "fork_mode": {
+            "forkMode": {
               "$ref": "#/definitions/AgentForkMode"
             },
             "input": {
@@ -518,7 +518,7 @@
                 "null"
               ]
             },
-            "reasoning_effort": {
+            "reasoningEffort": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/ReasoningEffort"
@@ -529,7 +529,7 @@
               ],
               "description": "Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default."
             },
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -563,7 +563,7 @@
             }
           },
           "required": [
-            "fork_mode",
+            "forkMode",
             "type"
           ],
           "title": "SpawnAgentControlAction",
@@ -578,7 +578,7 @@
               },
               "type": "array"
             },
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -647,7 +647,7 @@
               },
               "type": "array"
             },
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -681,7 +681,7 @@
         {
           "description": "Reopen a controlled closed agent or explicitly adopt a stored agent by UUID.",
           "properties": {
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -730,7 +730,7 @@
                 "null"
               ]
             },
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -762,7 +762,7 @@
         {
           "description": "Close a controlled agent runtime.",
           "properties": {
-            "response_handling": {
+            "responseHandling": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentResponseHandling"
@@ -794,7 +794,7 @@
         {
           "description": "Authoritatively replace final-response handling for one target turn.",
           "properties": {
-            "authored_observer_selector": {
+            "authoredObserverSelector": {
               "description": "Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint.",
               "type": [
                 "string",
@@ -808,7 +808,7 @@
                 "null"
               ]
             },
-            "response_handling": {
+            "responseHandling": {
               "$ref": "#/definitions/AgentObservationMode"
             },
             "target": {
@@ -823,7 +823,7 @@
             }
           },
           "required": [
-            "response_handling",
+            "responseHandling",
             "target",
             "type"
           ],
@@ -890,7 +890,7 @@
       "oneOf": [
         {
           "properties": {
-            "input_outcome": {
+            "inputOutcome": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentInputOutcome"
@@ -906,7 +906,7 @@
                 "null"
               ]
             },
-            "post_admission_warning": {
+            "postAdmissionWarning": {
               "description": "Non-retryable degradation after child input admission or uncertain routing.",
               "type": [
                 "string",
@@ -919,10 +919,10 @@
                 "null"
               ]
             },
-            "target_thread_id": {
+            "targetThreadId": {
               "type": "string"
             },
-            "task_path": {
+            "taskPath": {
               "type": [
                 "string",
                 "null"
@@ -937,7 +937,7 @@
             }
           },
           "required": [
-            "target_thread_id",
+            "targetThreadId",
             "type"
           ],
           "title": "SpawnedAgentControlOutcome",
@@ -945,20 +945,20 @@
         },
         {
           "properties": {
-            "input_outcome": {
+            "inputOutcome": {
               "$ref": "#/definitions/AgentInputOutcome"
             },
-            "post_admission_warning": {
+            "postAdmissionWarning": {
               "description": "Non-retryable degradation after target input admission or uncertain routing.",
               "type": [
                 "string",
                 "null"
               ]
             },
-            "submission_id": {
+            "submissionId": {
               "type": "string"
             },
-            "target_thread_id": {
+            "targetThreadId": {
               "type": "string"
             },
             "type": {
@@ -970,9 +970,9 @@
             }
           },
           "required": [
-            "input_outcome",
-            "submission_id",
-            "target_thread_id",
+            "inputOutcome",
+            "submissionId",
+            "targetThreadId",
             "type"
           ],
           "title": "PromptedAgentControlOutcome",
@@ -980,23 +980,23 @@
         },
         {
           "properties": {
-            "input_outcome": {
+            "inputOutcome": {
               "$ref": "#/definitions/AgentInputOutcome"
             },
-            "post_admission_warning": {
+            "postAdmissionWarning": {
               "description": "Non-retryable degradation after target input admission, including an indeterminate target turn after enqueue.",
               "type": [
                 "string",
                 "null"
               ]
             },
-            "submission_id": {
+            "submissionId": {
               "type": "string"
             },
-            "target_thread_id": {
+            "targetThreadId": {
               "type": "string"
             },
-            "turn_id": {
+            "turnId": {
               "description": "The admitted target turn when routing can prove it; null means the input outcome is indeterminate after enqueue and must not be retried automatically.",
               "type": [
                 "string",
@@ -1012,9 +1012,9 @@
             }
           },
           "required": [
-            "input_outcome",
-            "submission_id",
-            "target_thread_id",
+            "inputOutcome",
+            "submissionId",
+            "targetThreadId",
             "type"
           ],
           "title": "ReservedPromptedAgentControlOutcome",
@@ -1028,7 +1028,7 @@
                 "null"
               ]
             },
-            "observation_binding": {
+            "observationBinding": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentObservationBinding"
@@ -1038,7 +1038,7 @@
                 }
               ]
             },
-            "post_commit_warning": {
+            "postCommitWarning": {
               "description": "Degradation that occurred after an exclusive ownership transfer committed.",
               "type": [
                 "string",
@@ -1051,16 +1051,16 @@
                 "null"
               ]
             },
-            "target_thread_id": {
+            "targetThreadId": {
               "type": "string"
             },
-            "task_path": {
+            "taskPath": {
               "type": [
                 "string",
                 "null"
               ]
             },
-            "task_path_mapping": {
+            "taskPathMapping": {
               "default": [],
               "items": {
                 "$ref": "#/definitions/AgentTaskPathMapping"
@@ -1076,7 +1076,7 @@
             }
           },
           "required": [
-            "target_thread_id",
+            "targetThreadId",
             "type"
           ],
           "title": "ResumedAgentControlOutcome",
@@ -1084,7 +1084,7 @@
         },
         {
           "properties": {
-            "input_outcome": {
+            "inputOutcome": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentInputOutcome"
@@ -1094,20 +1094,20 @@
                 }
               ]
             },
-            "post_admission_warning": {
+            "postAdmissionWarning": {
               "description": "Non-retryable degradation after follow-up input admission or uncertain routing.",
               "type": [
                 "string",
                 "null"
               ]
             },
-            "submission_id": {
+            "submissionId": {
               "type": [
                 "string",
                 "null"
               ]
             },
-            "target_thread_id": {
+            "targetThreadId": {
               "type": "string"
             },
             "type": {
@@ -1119,7 +1119,7 @@
             }
           },
           "required": [
-            "target_thread_id",
+            "targetThreadId",
             "type"
           ],
           "title": "InterruptedAgentControlOutcome",
@@ -1127,7 +1127,7 @@
         },
         {
           "properties": {
-            "target_thread_id": {
+            "targetThreadId": {
               "type": "string"
             },
             "type": {
@@ -1139,7 +1139,7 @@
             }
           },
           "required": [
-            "target_thread_id",
+            "targetThreadId",
             "type"
           ],
           "title": "ClosedAgentControlOutcome",
@@ -1150,16 +1150,16 @@
             "binding": {
               "$ref": "#/definitions/AgentObservationBinding"
             },
-            "observer_thread_id": {
+            "observerThreadId": {
               "type": "string"
             },
-            "previous_response_handling": {
+            "previousResponseHandling": {
               "$ref": "#/definitions/AgentFinalResponseHandling"
             },
-            "response_handling": {
+            "responseHandling": {
               "$ref": "#/definitions/AgentFinalResponseHandling"
             },
-            "target_thread_id": {
+            "targetThreadId": {
               "type": "string"
             },
             "type": {
@@ -1172,10 +1172,10 @@
           },
           "required": [
             "binding",
-            "observer_thread_id",
-            "previous_response_handling",
-            "response_handling",
-            "target_thread_id",
+            "observerThreadId",
+            "previousResponseHandling",
+            "responseHandling",
+            "targetThreadId",
             "type"
           ],
           "title": "ObservedAgentControlOutcome",
@@ -1186,7 +1186,7 @@
             "mode": {
               "$ref": "#/definitions/AgentReplyRouteMode"
             },
-            "previous_mode": {
+            "previousMode": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentReplyRouteMode"
@@ -1196,10 +1196,10 @@
                 }
               ]
             },
-            "recipient_thread_id": {
+            "recipientThreadId": {
               "type": "string"
             },
-            "target_thread_id": {
+            "targetThreadId": {
               "type": "string"
             },
             "type": {
@@ -1212,8 +1212,8 @@
           },
           "required": [
             "mode",
-            "recipient_thread_id",
-            "target_thread_id",
+            "recipientThreadId",
+            "targetThreadId",
             "type"
           ],
           "title": "ReplyRouteChangedAgentControlOutcome",
@@ -1224,7 +1224,7 @@
             "mode": {
               "$ref": "#/definitions/AgentReplyRouteMode"
             },
-            "previous_mode": {
+            "previousMode": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/AgentReplyRouteMode"
@@ -1234,7 +1234,7 @@
                 }
               ]
             },
-            "root_thread_id": {
+            "rootThreadId": {
               "type": "string"
             },
             "type": {
@@ -1247,7 +1247,7 @@
           },
           "required": [
             "mode",
-            "root_thread_id",
+            "rootThreadId",
             "type"
           ],
           "title": "SubtreeMessagingChangedAgentControlOutcome",
@@ -16233,6 +16233,20 @@
         "clientUserMessageId": {
           "type": "string"
         },
+        "dispatchError": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fallbackProfile": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "string"
         },
@@ -16241,6 +16255,14 @@
             "$ref": "#/definitions/UserInput"
           },
           "type": "array"
+        },
+        "scheduledAt": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
