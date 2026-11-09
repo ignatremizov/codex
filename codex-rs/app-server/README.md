@@ -579,8 +579,8 @@ the entire network configuration.
 
 Creating or cold-resuming a root thread subscribes the requesting client. Other connected clients
 remain independent until they explicitly open that thread. Newly loaded children inherit their
-parent's current subscribers. `thread/unload` can therefore unload a client's task while unrelated
-TUIs remain connected, and still rejects unloading a subtree viewed by another subscribed client.
+parent's current subscribers. Explicit `thread/unload` stops the owning task even when other
+clients subscribe to it, notifies them with `thread/closed`, and leaves unrelated tasks running.
 
 Resuming a loaded thread also sends the resuming connection
 `item/commandExecution/terminalInteraction` start notifications for waits that are still active,
@@ -826,14 +826,14 @@ endpoints with other schemes fail before client registration or URL return.
 
 # Durable thread unload
 
-`thread/unload` accepts a `threadId` identifying any member of an owning spawn subtree. The server resolves the owning root from spawn relationships, not ordinary fork ancestry, and fences runtime membership and new subscriptions before stopping anything. Another connection's subscription to the root or any captured member rejects the request without stopping work. Ordinary `thread/unsubscribe` remains a connection-level operation with its existing idle grace period.
+`thread/unload` accepts a `threadId` identifying any member of an owning spawn subtree. The server resolves the owning root from spawn relationships, not ordinary fork ancestry, and fences runtime membership and new subscriptions before stopping anything. This is an explicit interruption and unload for every client subscribed to the task; other subscriptions do not veto it. Ordinary `thread/unsubscribe` remains a connection-level operation with its existing idle grace period.
 
 ```json
 { "method": "thread/unload", "id": 21, "params": { "threadId": "thr_child" } }
 { "id": 21, "result": { "rootThreadId": "thr_root", "unloadedThreadIds": ["thr_root", "thr_child"] } }
 ```
 
-Success acknowledges final persistence, writer-lease release, and removal of the exact loaded runtime instances. It does not close durable agent aliases or delete history. The server emits `thread/closed` for removed runtimes, which can subsequently be resumed. A known already-unloaded subtree succeeds with an empty `unloadedThreadIds`; an unknown thread is an invalid request. The response lists runtimes unloaded by this attempt, not all historical subtree members.
+Success acknowledges final persistence, writer-lease release, and removal of the exact loaded runtime instances. It does not close durable agent aliases or delete history. The server removes subscriptions to those runtimes and emits `thread/closed`; unrelated tasks and client connections remain available. The thread can then be resumed under another account's server without waiting for the original clients to disconnect. A known already-unloaded subtree succeeds with an empty `unloadedThreadIds`; an unknown thread is an invalid request. The response lists runtimes unloaded by this attempt, not all historical subtree members.
 
 The accepted operation continues if the requesting connection disappears. A failed durable drain returns an error and retains all captured runtime entries, including actors already stopped by that attempt. The retained instances reject ordinary input, spawn, reopening, close, eviction, and removal; retry `thread/unload` to finish cleanup. Accepted completion delivery remains able to acquire lifecycle locks while shutdown drains. A cancelled, never-acknowledged spawn also retains any failed alias rollback until retry finishes it; ordinary unloaded aliases stay open. A client must not report successful shutdown or silently exit after such an error.
 

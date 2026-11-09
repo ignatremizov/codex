@@ -1,11 +1,13 @@
 use super::connection_handling_websocket::connect_websocket;
 use super::connection_handling_websocket::create_config_toml;
-use super::connection_handling_websocket::read_error_for_id;
 use super::connection_handling_websocket::read_jsonrpc_message;
+use super::connection_handling_websocket::read_notification_for_method;
+use super::connection_handling_websocket::read_response_and_notification_for_method;
 use super::connection_handling_websocket::read_response_for_id;
 use super::connection_handling_websocket::send_initialize_request;
 use super::connection_handling_websocket::send_request;
 use super::connection_handling_websocket::spawn_websocket_server;
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use app_test_support::create_fake_rollout_with_text_elements;
@@ -21,10 +23,10 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadUnloadParams;
 use codex_app_server_protocol::ThreadUnloadResponse;
-use codex_app_server_protocol::ThreadUnsubscribeParams;
-use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -139,9 +141,11 @@ async fn unrelated_connected_client_does_not_prevent_unload(method: &str) -> Res
 }
 
 #[tokio::test]
-async fn another_subscriber_prevents_unload_without_stopping_the_actor() -> Result<()> {
-    let responses = create_mock_responses_server_repeating_assistant("Still running").await;
+async fn unload_with_another_subscriber_releases_writer_for_another_server() -> Result<()> {
+    let responses =
+        create_mock_responses_server_repeating_assistant("Continued after handoff").await;
     let home = tempfile::tempdir()?;
+    let project = tempfile::tempdir()?;
     create_config_toml(home.path(), &responses.uri(), "never")?;
     let thread_id = create_fake_rollout_with_text_elements(
         home.path(),
@@ -153,6 +157,7 @@ async fn another_subscriber_prevents_unload_without_stopping_the_actor() -> Resu
         /*git_info*/ None,
     )?;
     let (mut process, address) = spawn_websocket_server(home.path()).await?;
+    let (mut next_process, next_address) = spawn_websocket_server(home.path()).await?;
     let result = async {
         let mut first = connect_websocket(address).await?;
         let mut second = connect_websocket(address).await?;
@@ -165,6 +170,7 @@ async fn another_subscriber_prevents_unload_without_stopping_the_actor() -> Resu
                 /*id*/ 10,
                 Some(serde_json::to_value(ThreadResumeParams {
                     thread_id: thread_id.clone(),
+                    cwd: Some(project.path().display().to_string()),
                     ..Default::default()
                 })?),
             )
@@ -181,58 +187,93 @@ async fn another_subscriber_prevents_unload_without_stopping_the_actor() -> Resu
             })?),
         )
         .await?;
-        let denied = read_error_for_id(&mut first, /*id*/ 11).await?;
-        assert_eq!(denied.error.code, -32600);
-        assert!(denied.error.message.contains("another subscribed client"));
+        let (response, first_closed) =
+            read_response_and_notification_for_method(&mut first, /*id*/ 11, "thread/closed")
+                .await?;
+        let unloaded: ThreadUnloadResponse = to_response(response)?;
+        assert_eq!(
+            unloaded,
+            ThreadUnloadResponse {
+                root_thread_id: thread_id.clone(),
+                unloaded_thread_ids: vec![thread_id.clone()],
+            }
+        );
+        let second_closed = read_notification_for_method(&mut second, "thread/closed").await?;
+        let expected_closed = Some(serde_json::json!({ "threadId": thread_id }));
+        assert_eq!(
+            (first_closed.params, second_closed.params),
+            (expected_closed.clone(), expected_closed)
+        );
 
-        // A rejected unload must not have closed ordinary actor admission.
         send_request(
-            &mut first,
-            "turn/start",
+            &mut second,
+            "thread/loaded/list",
             /*id*/ 12,
+            Some(serde_json::to_value(ThreadLoadedListParams::default())?),
+        )
+        .await?;
+        let loaded: ThreadLoadedListResponse =
+            to_response(read_response_for_id(&mut second, /*id*/ 12).await?)?;
+        assert_eq!(
+            loaded,
+            ThreadLoadedListResponse {
+                data: Vec::new(),
+                next_cursor: None,
+            }
+        );
+
+        // Keep both original clients and their server alive across the handoff. The new
+        // server must acquire the same rollout writer without waiting for them to exit.
+        let mut next = connect_websocket(next_address).await?;
+        send_initialize_request(&mut next, /*id*/ 1, "handoff-test").await?;
+        read_response_for_id(&mut next, /*id*/ 1).await?;
+        send_request(
+            &mut next,
+            "thread/resume",
+            /*id*/ 10,
+            Some(serde_json::to_value(ThreadResumeParams {
+                thread_id: thread_id.clone(),
+                cwd: Some(project.path().display().to_string()),
+                ..Default::default()
+            })?),
+        )
+        .await?;
+        let resumed: ThreadResumeResponse =
+            to_response(read_response_for_id(&mut next, /*id*/ 10).await?)?;
+        assert_eq!(resumed.thread.id, thread_id);
+
+        send_request(
+            &mut next,
+            "turn/start",
+            /*id*/ 11,
             Some(serde_json::to_value(TurnStartParams {
                 thread_id: thread_id.clone(),
                 input: vec![UserInput::Text {
-                    text: "Continue after the denied unload.".to_string(),
+                    text: "Continue under the new server.".to_string(),
                     text_elements: Vec::new(),
                 }],
                 ..Default::default()
             })?),
         )
         .await?;
-        let _: TurnStartResponse = to_response(read_response_for_id(&mut first, /*id*/ 12).await?)?;
-        send_request(
-            &mut second,
-            "thread/unsubscribe",
-            /*id*/ 13,
-            Some(serde_json::to_value(ThreadUnsubscribeParams {
-                thread_id: thread_id.clone(),
-            })?),
-        )
-        .await?;
-        let _: ThreadUnsubscribeResponse =
-            to_response(read_response_for_id(&mut second, /*id*/ 13).await?)?;
-        send_request(
-            &mut first,
-            "thread/unload",
-            /*id*/ 14,
-            Some(serde_json::to_value(ThreadUnloadParams {
-                thread_id: thread_id.clone(),
-            })?),
-        )
-        .await?;
-        let unloaded: ThreadUnloadResponse =
-            to_response(read_response_for_id(&mut first, /*id*/ 14).await?)?;
+        let (response, completed) =
+            read_response_and_notification_for_method(&mut next, /*id*/ 11, "turn/completed")
+                .await?;
+        let started: TurnStartResponse = to_response(response)?;
+        let completed: TurnCompletedNotification =
+            serde_json::from_value(completed.params.context("missing turn/completed params")?)?;
         assert_eq!(
-            unloaded,
-            ThreadUnloadResponse {
-                root_thread_id: thread_id.clone(),
-                unloaded_thread_ids: vec![thread_id],
-            }
+            (
+                completed.thread_id,
+                completed.turn.id,
+                completed.turn.status
+            ),
+            (thread_id, started.turn.id, TurnStatus::Completed)
         );
         Ok(())
     }
     .await;
     process.kill().await?;
+    next_process.kill().await?;
     result
 }
