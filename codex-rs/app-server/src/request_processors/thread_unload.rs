@@ -49,7 +49,7 @@ impl ThreadRequestProcessor {
         // Reuse the processor's existing background ownership, not a separate task registry.
         let processor = self.clone();
         self.background_tasks.spawn(async move {
-            let result = processor.unload_subtree(&request_id, thread_id).await;
+            let result = processor.unload_subtree(thread_id).await;
             if result.is_ok() {
                 crate::memory_reclamation::request();
             }
@@ -61,13 +61,8 @@ impl ThreadRequestProcessor {
         Ok(None)
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "exclusive subscriber preflight must share the listener subscription fence"
-    )]
     async fn unload_subtree(
         &self,
-        request_id: &ConnectionRequestId,
         thread_id: ThreadId,
     ) -> Result<ThreadUnloadResponse, JSONRPCErrorError> {
         // Match resume/start ordering: list-state permit before the subscription fence.
@@ -95,18 +90,9 @@ impl ThreadRequestProcessor {
                         "thread {id} is already unloading; retry after that operation completes"
                     )));
                 }
-                if self
-                    .thread_state_manager
-                    .subscribed_connection_ids(*id)
-                    .await
-                    .iter()
-                    .any(|connection| *connection != request_id.connection_id)
-                {
-                    return Err(invalid_request(format!(
-                        "thread {id} has another subscribed client; disconnect instead of unloading"
-                    )));
-                }
             }
+            // Explicit unload stops the owning task for every client. Existing subscribers
+            // receive thread/closed after shutdown; fence new subscriptions during the drain.
             pending.extend(fenced_ids.iter().map(|id| (*id, watch::channel(()).0)));
         }
         let mut fence = PendingUnloadFence {
