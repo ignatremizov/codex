@@ -14,7 +14,7 @@ Buffer {
         "› Hello                                                                         ",
         "  Please say hello.                                                             ",
         "                                                                                ",
-        "Full · ⌃t close · v detail · [ review prev · ] review next                      ",
+        "Full · ⌃t close · v detail · [ review prev · ] review next · p full paths       ",
         "                                                                                ",
         "                                                                                ",
         "                                                                                ",
@@ -39,6 +39,8 @@ Buffer {
         x: 30, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
         x: 45, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
         x: 46, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 58, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 61, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 62, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 73, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
     ]
 }

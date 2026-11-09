@@ -52,14 +52,14 @@ pub(crate) type TranscriptCells = Vec<Arc<dyn HistoryCell>>;
 
 enum PendingActivity {
     Computer(crate::history_cell::ComputerActivityCell),
-    Exploration(crate::exec_cell::ExecCell),
+    Exploration(Box<crate::exec_cell::ExecCell>),
 }
 
 impl PendingActivity {
     fn flush(pending: &mut Option<Self>, cells: &mut TranscriptCells) {
         let cell: Arc<dyn HistoryCell> = match pending.take() {
             Some(Self::Computer(group)) => Arc::new(group),
-            Some(Self::Exploration(group)) => Arc::new(group),
+            Some(Self::Exploration(group)) => Arc::<crate::exec_cell::ExecCell>::from(group),
             None => return,
         };
         cells.push(cell);
@@ -212,6 +212,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
     };
     let mut cells: TranscriptCells = Vec::new();
     let mut pending = None;
+    let mut previous_command_cwd = None;
     for item in items {
         if matches!(item, ThreadItemPayload::Reasoning { .. })
             && let Some(group) = &mut pending
@@ -224,9 +225,35 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
             }
             continue;
         }
+        let command_directory = match &item {
+            ThreadItemPayload::CommandExecution {
+                cwd: command_cwd,
+                source,
+                ..
+            } if *source
+                != codex_app_server_protocol::CommandExecutionSource::UnifiedExecInteraction
+                && !command_cwd.as_str().is_empty() =>
+            {
+                let directory = crate::exec_cell::CommandDirectory::new(
+                    command_cwd.clone(),
+                    codex_utils_path_uri::PathUri::from_abs_path(cwd),
+                    previous_command_cwd.as_ref(),
+                );
+                previous_command_cwd = Some(command_cwd.clone());
+                Some(directory)
+            }
+            _ => None,
+        };
         if let Some(cell) = tools::historical_tool_fallback(&item) {
             PendingActivity::flush(&mut pending, &mut cells);
-            cells.push(Arc::new(cell));
+            if let Some(directory) = command_directory {
+                cells.push(Arc::new(crate::exec_cell::CommandDirectoryHistoryCell {
+                    inner: cell,
+                    directory,
+                }));
+            } else {
+                cells.push(Arc::new(cell));
+            }
             continue;
         }
         match item {
@@ -258,14 +285,16 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
                     PendingActivity::flush(&mut pending, &mut cells);
                 }
                 if let Some(command) = tools::CommandHistory::from_item(item) {
-                    let newer = command.into_cell(output_preview_line_limits);
+                    let newer = command
+                        .into_cell(output_preview_line_limits)
+                        .with_command_directory(command_directory);
                     if let Some(PendingActivity::Exploration(group)) = &mut pending {
                         if let Err(newer) = group.append_completed(newer) {
                             PendingActivity::flush(&mut pending, &mut cells);
                             pending = Some(PendingActivity::Exploration(newer));
                         }
                     } else {
-                        pending = Some(PendingActivity::Exploration(newer));
+                        pending = Some(PendingActivity::Exploration(Box::new(newer)));
                     }
                     if let Some(PendingActivity::Exploration(group)) = &pending
                         && group.should_flush()

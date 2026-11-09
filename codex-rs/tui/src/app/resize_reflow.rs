@@ -591,12 +591,25 @@ impl App {
             .native_history
             .replayable_cells(&self.transcript_cells)
             .iter()
+            .enumerate()
             .rev()
-            .find_map(|cell| {
-                let lines = cell.display_hyperlink_lines_for_mode(
+            .find_map(|(index, cell)| {
+                let mut lines = cell.display_hyperlink_lines_for_mode(
                     width,
                     self.chat_widget.history_render_mode(),
                 );
+                if self.chat_widget.history_render_mode() == history_cell::HistoryRenderMode::Rich
+                    && let Some(directory) = cell.command_directory()
+                {
+                    lines = directory.replace_lines(
+                        width,
+                        crate::exec_cell::command_directory_display_after(
+                            cell.as_ref(),
+                            &self.transcript_cells[..index],
+                        ),
+                        lines,
+                    );
+                }
                 (!lines.is_empty()).then(|| super::history_ui::RenderedHistoryTail {
                     cell: Arc::downgrade(cell),
                     lines,
@@ -719,8 +732,20 @@ impl App {
         while start > 0 {
             start -= 1;
             let cell = self.transcript_cells[start].clone();
-            let lines = cell
+            let mut lines = cell
                 .display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
+            if self.chat_widget.history_render_mode() == history_cell::HistoryRenderMode::Rich
+                && let Some(directory) = cell.command_directory()
+            {
+                lines = directory.replace_lines(
+                    width,
+                    crate::exec_cell::command_directory_display_after(
+                        cell.as_ref(),
+                        &self.transcript_cells[..start],
+                    ),
+                    lines,
+                );
+            }
             rendered_rows += lines.len();
             cell_displays.push_front(ReflowCellDisplay {
                 lines,

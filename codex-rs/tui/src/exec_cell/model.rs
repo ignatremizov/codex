@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use super::live_output::LiveCommandOutput;
 use super::render_cache::RenderCache;
+use super::working_directory::CommandDirectory;
 use crate::history_cell::ActivityGroup;
 use crate::history_cell::HistoryCell;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
@@ -96,9 +97,26 @@ pub(crate) struct ExecCall {
     pub(crate) interaction_input: Option<String>,
 }
 
+impl From<ActiveExecCall> for ExecCall {
+    fn from(call: ActiveExecCall) -> Self {
+        Self {
+            call_id: call.call_id,
+            command: call.command,
+            parsed: call.parsed,
+            output: None,
+            source: call.source,
+            user_shell_response_handling: call.user_shell_response_handling,
+            start_time: Some(Instant::now()),
+            duration: None,
+            interaction_input: call.interaction_input,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ExecCell {
     pub(crate) group: ActivityGroup<ExecCall>,
+    pub(crate) command_directory: Option<CommandDirectory>,
     // Content/status mutations, including appended details, clear the layout cache.
     pub(super) render_cache: RenderCache,
     animations_enabled: bool,
@@ -125,6 +143,7 @@ impl ExecCell {
     pub(crate) fn new(call: ExecCall, animations_enabled: bool) -> Self {
         Self {
             group: ActivityGroup::new(vec![call]),
+            command_directory: None,
             render_cache: RenderCache::default(),
             animations_enabled,
             output_preview_lines: codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
@@ -145,24 +164,13 @@ impl ExecCell {
 
     pub(crate) fn add_call(
         &mut self,
-        call_id: String,
-        command: Vec<String>,
-        parsed: Vec<ParsedCommand>,
-        source: ExecCommandSource,
-        user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
-        interaction_input: Option<String>,
+        call: ActiveExecCall,
+        command_directory: Option<&CommandDirectory>,
     ) -> bool {
-        let call = ExecCall {
-            call_id,
-            command,
-            parsed,
-            output: None,
-            source,
-            user_shell_response_handling,
-            start_time: Some(Instant::now()),
-            duration: None,
-            interaction_input,
-        };
+        if !self.same_command_directory(command_directory) {
+            return false;
+        }
+        let call = ExecCall::from(call);
         if self.is_exploring_cell() && Self::is_exploring_call(&call) {
             self.render_cache = RenderCache::default();
             self.group.calls.push(call);
@@ -173,9 +181,13 @@ impl ExecCell {
     }
 
     /// Historical grouping uses the same compatibility and failure boundary as live calls.
-    pub(crate) fn append_completed(&mut self, mut newer: Self) -> Result<(), Self> {
-        if !self.is_exploring_cell() || self.should_flush() || !newer.is_exploring_cell() {
-            return Err(newer);
+    pub(crate) fn append_completed(&mut self, mut newer: Self) -> Result<(), Box<Self>> {
+        if !self.is_exploring_cell()
+            || self.should_flush()
+            || !newer.is_exploring_cell()
+            || !self.same_command_directory(newer.command_directory.as_ref())
+        {
+            return Err(Box::new(newer));
         }
         newer.group.details.prepend(
             std::mem::take(&mut self.group.details),
@@ -189,6 +201,7 @@ impl ExecCell {
 
     /// Preserve live clocks and pending output when a validated older page extends exploration.
     pub(crate) fn prepend(&mut self, older: Self) {
+        self.command_directory = older.command_directory;
         self.group.prepend(older.group);
         self.render_cache = RenderCache::default();
     }

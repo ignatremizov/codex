@@ -248,6 +248,8 @@ mod bedrock_catalog_tests;
 mod collab_preview_tests;
 #[path = "tests/collaboration_catalog_tests.rs"]
 mod collaboration_catalog_tests;
+#[path = "tests/command_paths_tests.rs"]
+mod command_paths_tests;
 #[path = "tests/command_preview_tests.rs"]
 mod command_preview_tests;
 #[path = "tests/compaction_tests.rs"]

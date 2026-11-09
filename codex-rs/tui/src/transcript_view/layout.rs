@@ -6,6 +6,7 @@
 use std::sync::Weak;
 
 use super::*;
+use crate::exec_cell::CommandDirectoryDisplay;
 use crate::history_cell::ActivityDisclosure;
 
 const MAX_CACHED_ENTRIES: usize = 64;
@@ -49,14 +50,25 @@ fn cell_content_layout(
     mode: HistoryRenderMode,
     presentation: CellPresentation,
 ) -> TextLayout {
-    let mut layout = if presentation.disclosure {
+    let command_paths = |lines| {
+        if mode == HistoryRenderMode::Rich
+            && let Some(directory) = cell.command_directory()
+        {
+            directory.replace_lines(width, presentation.command_directory, lines)
+        } else {
+            lines
+        }
+    };
+    let mut layout = if mode == HistoryRenderMode::Raw && cell.command_directory().is_some() {
+        TextLayout::new(cell.display_hyperlink_lines_for_mode(width, mode), width)
+    } else if presentation.disclosure {
         activity_layout(
             ActivityTranscriptLines {
-                activity: if presentation.expanded {
+                activity: command_paths(if presentation.expanded {
                     cell.expanded_hyperlink_lines(width)
                 } else {
                     cell.compact_hyperlink_lines(width)
-                },
+                }),
                 auxiliary: Vec::new(),
                 disclosure: cell.activity_disclosure(width),
             },
@@ -78,10 +90,15 @@ fn cell_content_layout(
         } else {
             cell.display_hyperlink_lines(width)
         };
-        TextLayout::new(lines, width)
+        TextLayout::new(command_paths(lines), width)
     } else {
         TextLayout::new(
-            crate::history_cell::fullscreen_session_lines(cell, width, presentation.detailed, mode),
+            command_paths(crate::history_cell::fullscreen_session_lines(
+                cell,
+                width,
+                presentation.detailed,
+                mode,
+            )),
             width,
         )
     };
@@ -126,6 +143,7 @@ struct CachedLayout {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct CellPresentation {
+    command_directory: CommandDirectoryDisplay,
     separated: bool,
     shares_prompt_background: bool,
     turn_tip_space: bool,
@@ -159,6 +177,7 @@ impl TranscriptView {
             self.disclosure.expanded.extend(ids);
         }
         CellPresentation {
+            command_directory: self.command_directory_presentation(cell, cells, index),
             separated: false,
             shares_prompt_background: false,
             turn_tip_space: false,

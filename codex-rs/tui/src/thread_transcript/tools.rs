@@ -138,6 +138,7 @@ fn replay_command_args(command: &str) -> Option<Vec<String>> {
 
 pub(crate) struct CommandHistory {
     pub(crate) id: String,
+    pub(crate) cwd: codex_utils_path_uri::LegacyAppPathString,
     pub(crate) command: Vec<String>,
     pub(crate) parsed: Vec<ParsedCommand>,
     pub(crate) source: CommandExecutionSource,
@@ -151,6 +152,7 @@ impl CommandHistory {
     pub(crate) fn from_item(item: ThreadItemPayload) -> Option<Self> {
         let ThreadItemPayload::CommandExecution {
             id,
+            cwd,
             command,
             source,
             status,
@@ -177,6 +179,7 @@ impl CommandHistory {
         };
         Some(Self {
             id,
+            cwd,
             command: replay_command_args(&command)?,
             parsed: command_actions
                 .into_iter()
@@ -191,6 +194,11 @@ impl CommandHistory {
     }
 
     pub(crate) fn into_cell(self, output_preview_line_limits: OutputPreviewLineLimits) -> ExecCell {
+        // Rebuilders have no predecessor here. The projection loop supplies transition context;
+        // page joins retain the older group's context while preserving this actual directory.
+        let directory = self.cwd.to_inferred_path_uri().map(|base| {
+            crate::exec_cell::CommandDirectory::new(self.cwd.clone(), base, /*previous*/ None)
+        });
         let output = CommandOutput::new(self.exit_code, self.aggregated_output);
         let mut cell = new_active_exec_command(
             crate::exec_cell::ActiveExecCall {
@@ -203,6 +211,7 @@ impl CommandHistory {
             },
             /*animations_enabled*/ false,
         )
+        .with_command_directory(directory)
         .with_output_preview_line_limits(output_preview_line_limits);
         let completed = cell.complete_call(&self.id, output, self.duration);
         debug_assert!(completed, "new exec cell should contain {}", self.id);

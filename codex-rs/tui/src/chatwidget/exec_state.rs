@@ -11,6 +11,7 @@ pub(super) struct RunningCommand {
     pub(super) parsed_cmd: Vec<ParsedCommand>,
     pub(super) source: ExecCommandSource,
     pub(super) user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
+    pub(super) command_directory: Option<crate::exec_cell::CommandDirectory>,
 }
 
 pub(super) struct UnifiedExecProcessSummary {

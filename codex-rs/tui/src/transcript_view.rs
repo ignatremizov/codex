@@ -7,6 +7,7 @@
 
 mod activity;
 mod bookmark;
+mod command_paths;
 mod composer_gap;
 mod copy_mode;
 mod disclosure;
@@ -118,6 +119,7 @@ pub(crate) struct TranscriptView {
     held_reading: Option<ViewSnapshot>,
     search: Search,
     detailed: bool,
+    full_command_paths: bool,
     review: Option<review::ReviewBrowser>,
     painted_highlight: Option<(EntryKey, Option<EntryKey>)>,
     mode: HistoryRenderMode,
@@ -161,6 +163,7 @@ impl Default for TranscriptView {
             held_reading: None,
             search: Search::default(),
             detailed: false,
+            full_command_paths: false,
             review: None,
             painted_highlight: None,
             mode: HistoryRenderMode::Rich,

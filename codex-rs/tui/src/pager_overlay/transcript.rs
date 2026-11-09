@@ -3,6 +3,10 @@
 //! Inline Ctrl+T and the resume preview own their cells here. The viewport exclusively owns
 //! scrolling, wrapped layouts, selection, search and the live tail.
 
+#[cfg(test)]
+#[path = "command_paths_tests.rs"]
+mod command_paths_tests;
+
 use super::*;
 use crate::history_cell::HistoryRenderMode;
 use crate::history_cell::is_session_history_prefix_cell;
@@ -62,6 +66,10 @@ impl TranscriptOverlay {
 
     pub(crate) fn is_detailed(&self) -> bool {
         self.view.is_detailed()
+    }
+
+    pub(crate) fn command_directory_display(&self) -> crate::exec_cell::CommandDirectoryDisplay {
+        self.view.command_directory_display()
     }
 
     pub(crate) fn new(cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
@@ -159,10 +167,15 @@ impl TranscriptOverlay {
             .map_or_else(String::new, |hint| {
                 format!("{} latest", hint.display_label())
             });
-        if let Some(mut footer) =
+        let review_footer = (!self.view.has_active_interaction()
+            && !self.view.is_loading_history()
+            && self.view.history != TranscriptHistoryState::Failed)
+            .then(|| self.review_footer(status.width))
+            .flatten();
+        if let Some(mut footer) = review_footer.or_else(|| {
             self.view
                 .footer_with_navigation(status.width, self.motion, &latest_navigation)
-        {
+        }) {
             self.cursor = footer
                 .cursor_column
                 .map(|column| (status.x + column, status.y));
@@ -317,7 +330,12 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn owns_interaction_key(&self, key: KeyEvent) -> bool {
-        self.pending_select_mode || self.view.owns_interaction_key(key)
+        self.pending_select_mode
+            || self.view.owns_interaction_key(key)
+            || key.kind != KeyEventKind::Release
+                && key.code == KeyCode::Char('p')
+                && key.modifiers.is_empty()
+                && !self.view.has_active_interaction()
     }
 
     pub(crate) fn has_active_interaction(&self) -> bool {
@@ -571,6 +589,10 @@ impl TranscriptOverlay {
             self.is_done = true;
             return Some(ViewAction::Changed);
         }
+        if key.code == KeyCode::Char('p') && key.modifiers.is_empty() {
+            self.view.toggle_command_paths();
+            return Some(ViewAction::Changed);
+        }
         if let Some(action) = self.view.handle_review_key(key, &self.cells) {
             return Some(action);
         }
@@ -659,19 +681,40 @@ impl TranscriptOverlay {
         }
     }
 
+    fn review_footer(&self, width: u16) -> Option<crate::bottom_pane::TranscriptFooter> {
+        let mut path_hint = Line::from(" · ".dim());
+        path_hint.spans.extend(key_hint::key_label_spans("p"));
+        path_hint.spans.push(
+            if self.command_directory_display() == crate::exec_cell::CommandDirectoryDisplay::Full {
+                " short paths".dim()
+            } else {
+                " full paths".dim()
+            },
+        );
+        let path_hint_width = u16::try_from(path_hint.width()).unwrap_or(u16::MAX);
+        let mut footer = self.view.review_footer(
+            width.saturating_sub(path_hint_width),
+            &self
+                .keymap
+                .primary_hint("close_transcript", &self.keymap.close_transcript)
+                .map(crate::key_hint::ShortcutHint::display_label)
+                .unwrap_or_default(),
+        )?;
+        if let Some(line) = footer.text.lines.first_mut() {
+            let mut paths = line.clone();
+            paths.spans.extend(path_hint.spans);
+            if paths.width() <= usize::from(width) {
+                *line = paths;
+            }
+        }
+        Some(footer)
+    }
+
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let first = Rect::new(area.x, area.y, area.width, /*height*/ 1).intersection(area);
         render_navigation_hints(first, buf, &self.keymap);
         let second = Rect::new(area.x, first.bottom(), area.width, /*height*/ 1).intersection(area);
-        if let Some(footer) = self.view.review_footer(
-            second.width,
-            &self
-                .keymap
-                .close
-                .first()
-                .map(crate::key_hint::KeyBinding::display_label)
-                .unwrap_or_default(),
-        ) {
+        if let Some(footer) = self.review_footer(second.width) {
             Paragraph::new(footer.text).render(second, buf);
             return;
         }
@@ -686,6 +729,14 @@ impl TranscriptOverlay {
             ));
         }
         pairs.push((vec![key_hint::plain(KeyCode::Esc).into()], "browse prompts"));
+        pairs.push((
+            vec![key_hint::plain(KeyCode::Char('p')).into()],
+            if self.command_directory_display() == crate::exec_cell::CommandDirectoryDisplay::Full {
+                "short paths"
+            } else {
+                "full paths"
+            },
+        ));
         if self.highlight_cell.is_some() {
             pairs.push((vec![key_hint::plain(KeyCode::Right).into()], "to edit next"));
             pairs.push((

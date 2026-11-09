@@ -13,7 +13,7 @@ before:
 
 ⌃space select
  ↑/↓ to scroll · pgup/pgdn to page · home/end to jump
- q close · f3 find · esc browse prompts
+ q close · f3 find · esc browse prompts · p full paths
 
 
 after:
@@ -27,4 +27,4 @@ after:
 
 ⌃space select
  ↑/↓ to scroll · pgup/pgdn to page · home/end to jump
- q close · f3 find · esc browse prompts
+ q close · f3 find · esc browse prompts · p full paths

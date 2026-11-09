@@ -190,6 +190,7 @@ async fn replayed_command_execution_is_visible_in_transcript() {
         .map(|lines| lines_to_single_string(&lines))
         .collect::<String>();
     insta::assert_snapshot!(rendered, @"
+      ↳ cwd /home/user/project
     $ sleep 20 (wake)
     ✓ • 20.00s
     ");
@@ -254,6 +255,7 @@ async fn resumed_history_keeps_command_without_restoring_background_terminal() {
             .replace(&rendered, " • <duration>");
         insta::allow_duplicates! {
             insta::assert_snapshot!(rendered, @r"
+      ↳ cwd /home/user/project
     $ sleep 20
     ✗ (1) • <duration>
 

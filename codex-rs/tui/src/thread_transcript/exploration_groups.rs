@@ -17,6 +17,7 @@ pub(crate) fn join_exploration_groups(
     let newer = newer.as_any().downcast_ref::<ExecCell>()?;
     let items = adjacent_items(older, newer, turns)?;
     let mut group = completed_group(items, newer.output_preview_line_limits())?;
+    group.command_directory = older.command_directory.clone();
     group.group.details = newer.group.details.clone();
     group
         .group
@@ -39,6 +40,7 @@ pub(crate) fn older_exploration_group(
         .cloned()
         .collect::<Vec<_>>();
     let mut group = completed_group(&older_items, newer.output_preview_line_limits())?;
+    group.command_directory = older.command_directory.clone();
     group.group.details = older.group.details.clone();
     Some(group)
 }
@@ -48,7 +50,11 @@ fn adjacent_items<'a>(
     newer: &ExecCell,
     turns: &'a [Turn],
 ) -> Option<&'a [codex_app_server_protocol::ThreadItem]> {
-    if !older.is_exploring_cell() || older.should_flush() || !newer.is_exploring_cell() {
+    if !older.is_exploring_cell()
+        || older.should_flush()
+        || !newer.is_exploring_cell()
+        || !older.same_command_directory(newer.command_directory.as_ref())
+    {
         return None;
     }
     let ids = older

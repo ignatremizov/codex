@@ -114,6 +114,7 @@ fn replayed_commands_keep_explicit_preview_limits_including_zero() {
                 user_shell: 4,
             },
             vec![
+                "  ↳ cwd /tmp/project",
                 "• Ran cargo check",
                 "  └ output line 1",
                 "    … +11 rows (⌃t to view transcript)",
@@ -127,15 +128,19 @@ fn replayed_commands_keep_explicit_preview_limits_including_zero() {
                 command: 0,
                 user_shell: 0,
             },
-            std::iter::once("• Ran cargo check".to_owned())
-                .chain((1..=12).map(|line| {
-                    if line == 1 {
-                        format!("  └ output line {line}")
-                    } else {
-                        format!("    output line {line}")
-                    }
-                }))
-                .collect::<Vec<_>>(),
+            [
+                "  ↳ cwd /tmp/project".to_owned(),
+                "• Ran cargo check".to_owned(),
+            ]
+            .into_iter()
+            .chain((1..=12).map(|line| {
+                if line == 1 {
+                    format!("  └ output line {line}")
+                } else {
+                    format!("    output line {line}")
+                }
+            }))
+            .collect::<Vec<_>>(),
         ),
     ] {
         let cells = thread_items_to_transcript_cells_with_preview_line_limits(
@@ -170,10 +175,14 @@ fn replayed_commands_keep_explicit_preview_limits_including_zero() {
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
-            std::iter::once("$ cargo check".to_owned())
-                .chain((1..=12).map(|line| format!("output line {line}")))
-                .chain(std::iter::once("✓ • 0ms".to_owned()))
-                .collect::<Vec<_>>(),
+            [
+                "  ↳ cwd /tmp/project".to_owned(),
+                "$ cargo check".to_owned()
+            ]
+            .into_iter()
+            .chain((1..=12).map(|line| format!("output line {line}")))
+            .chain(std::iter::once("✓ • 0ms".to_owned()))
+            .collect::<Vec<_>>(),
         );
     }
 }

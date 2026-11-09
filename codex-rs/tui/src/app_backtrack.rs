@@ -472,17 +472,22 @@ impl App {
                 .flatten();
             let chat_widget = &self.chat_widget;
             let detailed = t.is_detailed();
+            let directory_display = t.command_directory_display();
             let size = tui.prepare_draw_size()?;
             if t.tracks_active_thread() {
                 t.sync_search_live_tail(size.width.max(/*other*/ 1), active_key, |width| {
-                    chat_widget.active_cell_transcript_hyperlink_lines(width)
+                    chat_widget.active_cell_lines_with_command_paths(
+                        width,
+                        /*detailed*/ true,
+                        directory_display,
+                    )
                 });
                 t.sync_live_tail(size.width.max(/*other*/ 1), active_key, |width| {
-                    if detailed {
-                        chat_widget.active_cell_transcript_hyperlink_lines(width)
-                    } else {
-                        chat_widget.active_cell_review_hyperlink_lines(width)
-                    }
+                    chat_widget.active_cell_lines_with_command_paths(
+                        width,
+                        detailed,
+                        directory_display,
+                    )
                 });
             }
             // Refresh visible rows before selection captures this live revision.

@@ -3,6 +3,7 @@ source: tui/src/thread_transcript/tools_tests.rs
 assertion_line: 135
 expression: rendered
 ---
+  ↳ cwd /tmp/project
 $ cargo check
 In progress at last update
   output line 1

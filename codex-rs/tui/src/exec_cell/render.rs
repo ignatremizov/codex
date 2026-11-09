@@ -55,28 +55,7 @@ struct CommandDisplay {
 }
 
 pub(crate) fn new_active_exec_command(call: ActiveExecCall, animations_enabled: bool) -> ExecCell {
-    let ActiveExecCall {
-        call_id,
-        command,
-        parsed,
-        source,
-        user_shell_response_handling,
-        interaction_input,
-    } = call;
-    ExecCell::new(
-        ExecCall {
-            call_id,
-            command,
-            parsed,
-            output: None,
-            source,
-            user_shell_response_handling,
-            start_time: Some(Instant::now()),
-            duration: None,
-            interaction_input,
-        },
-        animations_enabled,
-    )
+    ExecCell::new(call.into(), animations_enabled)
 }
 
 fn format_unified_exec_interaction(command: &[String], input: Option<&str>) -> String {
@@ -229,6 +208,10 @@ fn activity_marker(start_time: Option<Instant>, animations_enabled: bool) -> Spa
 }
 
 impl HistoryCell for ExecCell {
+    fn command_directory(&self) -> Option<&super::working_directory::CommandDirectory> {
+        self.command_directory.as_ref()
+    }
+
     fn append_reasoning(&mut self, cell: Box<dyn HistoryCell>) -> Result<(), Box<dyn HistoryCell>> {
         if self.is_exploring_cell() {
             self.push_detail(std::sync::Arc::from(cell));
@@ -281,10 +264,11 @@ impl HistoryCell for ExecCell {
                     .line
                     .push_span(format!(" · {nonzero_exits} {exit_label}").bold());
             }
-            lines
+            let lines = lines
                 .into_iter()
                 .map(|line| crate::history_cell::activity_preview::clipped_line(line.line, width))
-                .collect()
+                .collect();
+            self.prepend_command_directory(width, lines)
         } else {
             self.display_hyperlink_lines(width)
         }
@@ -295,7 +279,7 @@ impl HistoryCell for ExecCell {
     }
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        self.render_cache.render(
+        let lines = self.render_cache.render(
             RenderMode::Review,
             width,
             syntax_theme_revision(),
@@ -307,7 +291,8 @@ impl HistoryCell for ExecCell {
                     self.command_display_lines(width)
                 }
             },
-        )
+        );
+        self.prepend_command_directory(width, lines)
     }
 
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -315,13 +300,14 @@ impl HistoryCell for ExecCell {
     }
 
     fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        self.render_cache.render(
+        let lines = self.render_cache.render(
             RenderMode::Full,
             width,
             syntax_theme_revision(),
             || self.is_active(),
             || self.detailed_hyperlink_lines(width, HistoryRenderMode::Rich),
-        )
+        );
+        self.prepend_command_directory(width, lines)
     }
 
     fn activity_ids(&self) -> Vec<String> {

@@ -275,6 +275,7 @@ impl ChatWidget {
         let ThreadItemPayload::CommandExecution {
             id,
             command,
+            cwd,
             source,
             command_actions,
             user_shell_response_handling,
@@ -294,6 +295,7 @@ impl ChatWidget {
             self.bottom_pane.ensure_status_indicator();
         }
         let parsed_cmd = self.annotate_skill_reads_in_parsed_cmd(parsed_cmd);
+        let command_directory = self.observe_command_directory(cwd, source);
         self.running_commands.insert(
             id.clone(),
             RunningCommand {
@@ -301,6 +303,7 @@ impl ChatWidget {
                 parsed_cmd: parsed_cmd.clone(),
                 source,
                 user_shell_response_handling,
+                command_directory: command_directory.clone(),
             },
         );
         let is_wait_interaction = matches!(source, ExecCommandSource::UnifiedExecInteraction);
@@ -325,12 +328,15 @@ impl ChatWidget {
             .as_mut()
             .and_then(|c| c.as_any_mut().downcast_mut::<ExecCell>())
             && cell.add_call(
-                id.clone(),
-                command.clone(),
-                parsed_cmd.clone(),
-                source,
-                user_shell_response_handling,
-                /*interaction_input*/ None,
+                crate::exec_cell::ActiveExecCall {
+                    call_id: id.clone(),
+                    command: command.clone(),
+                    parsed: parsed_cmd.clone(),
+                    source,
+                    user_shell_response_handling,
+                    interaction_input: None,
+                },
+                command_directory.as_ref(),
             )
         {
             self.bump_active_cell_revision();
@@ -349,6 +355,7 @@ impl ChatWidget {
                     },
                     self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 )
+                .with_command_directory(command_directory)
                 .with_output_preview_line_limits(OutputPreviewLineLimits {
                     command: self.local_settings.tui.command_output_preview_lines,
                     user_shell: self.local_settings.tui.user_shell_output_preview_lines,
@@ -382,6 +389,7 @@ impl ChatWidget {
         let ThreadItemPayload::CommandExecution {
             id,
             command,
+            cwd,
             process_id: _,
             source,
             user_shell_response_handling,
@@ -412,20 +420,23 @@ impl ChatWidget {
         if self.suppressed_exec_calls.remove(&id) {
             return;
         }
-        let (command, parsed, source, user_shell_response_handling) = match running {
-            Some(rc) => (
-                rc.command,
-                rc.parsed_cmd,
-                rc.source,
-                rc.user_shell_response_handling,
-            ),
-            None => (
-                event_command,
-                event_parsed,
-                source,
-                user_shell_response_handling,
-            ),
-        };
+        let (command, parsed, source, user_shell_response_handling, command_directory) =
+            match running {
+                Some(rc) => (
+                    rc.command,
+                    rc.parsed_cmd,
+                    rc.source,
+                    rc.user_shell_response_handling,
+                    rc.command_directory,
+                ),
+                None => (
+                    event_command,
+                    event_parsed,
+                    source,
+                    user_shell_response_handling,
+                    self.command_directory_for(cwd, source),
+                ),
+            };
         let parsed = self.annotate_skill_reads_in_parsed_cmd(parsed);
         let is_unified_exec_interaction =
             matches!(source, ExecCommandSource::UnifiedExecInteraction);
@@ -442,12 +453,15 @@ impl ChatWidget {
             && !cell.iter_calls().any(|call| call.call_id == id)
         {
             cell.add_call(
-                id.clone(),
-                command.clone(),
-                parsed.clone(),
-                source,
-                user_shell_response_handling,
-                /*interaction_input*/ None,
+                crate::exec_cell::ActiveExecCall {
+                    call_id: id.clone(),
+                    command: command.clone(),
+                    parsed: parsed.clone(),
+                    source,
+                    user_shell_response_handling,
+                    interaction_input: None,
+                },
+                command_directory.as_ref(),
             );
         }
         let end_target = match self.transcript.active_cell.as_ref() {
@@ -500,6 +514,24 @@ impl ChatWidget {
                 }
             }
             ExecEndTarget::OrphanHistoryWhileActiveExec => {
+                let mut command_directory = command_directory;
+                if let Some(directory) = &mut command_directory {
+                    // The orphan is inserted before the live tail. Label both sides of that
+                    // boundary without replacing the live command's directory context.
+                    directory.show_transition();
+                    if let Some(active) = self
+                        .transcript
+                        .active_cell
+                        .as_mut()
+                        .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+                        .and_then(|cell| cell.command_directory.as_mut())
+                    {
+                        active.show_transition();
+                    } else {
+                        self.transcript.last_command_cwd = Some(directory.cwd.clone());
+                    }
+                    self.bump_active_cell_revision();
+                }
                 let mut orphan = new_active_exec_command(
                     crate::exec_cell::ActiveExecCall {
                         call_id: id.clone(),
@@ -511,6 +543,7 @@ impl ChatWidget {
                     },
                     self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 )
+                .with_command_directory(command_directory)
                 .with_output_preview_line_limits(OutputPreviewLineLimits {
                     command: self.local_settings.tui.command_output_preview_lines,
                     user_shell: self.local_settings.tui.user_shell_output_preview_lines,
@@ -522,6 +555,8 @@ impl ChatWidget {
                 self.request_redraw();
             }
             ExecEndTarget::NewCell => {
+                let command_directory = command_directory
+                    .and_then(|directory| self.observe_command_directory(directory.cwd, source));
                 let mut cell = new_active_exec_command(
                     crate::exec_cell::ActiveExecCall {
                         call_id: id.clone(),
@@ -533,6 +568,7 @@ impl ChatWidget {
                     },
                     self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 )
+                .with_command_directory(command_directory)
                 .with_output_preview_line_limits(OutputPreviewLineLimits {
                     command: self.local_settings.tui.command_output_preview_lines,
                     user_shell: self.local_settings.tui.user_shell_output_preview_lines,
@@ -548,7 +584,7 @@ impl ChatWidget {
                     // Replayed commands have completion events without matching starts.
                     // Use the group's owner so cached rows and detail positions stay current.
                     Some(active) if !active.is_active() => active.append_completed(cell),
-                    _ => Err(cell),
+                    _ => Err(Box::new(cell)),
                 };
                 match remaining {
                     Ok(()) => {
@@ -558,9 +594,9 @@ impl ChatWidget {
                     Err(cell) => {
                         self.flush_active_cell();
                         if cell.should_flush() {
-                            self.add_to_history(cell);
+                            self.add_to_history(*cell);
                         } else {
-                            self.transcript.active_cell = Some(Box::new(cell));
+                            self.transcript.active_cell = Some(cell);
                             self.bump_active_cell_revision();
                             self.request_redraw();
                         }
