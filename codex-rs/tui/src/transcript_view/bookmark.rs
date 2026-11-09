@@ -8,6 +8,7 @@ pub(crate) struct TranscriptBookmark {
     saved_position: Option<Position>,
     suppressed_prompt_header: Option<prompt_header::SuppressedHeader>,
     detailed: bool,
+    full_command_paths: bool,
     review: Option<review::ReviewBrowser>,
     mode: HistoryRenderMode,
     snapshot: Option<ViewSnapshot>,
@@ -22,6 +23,7 @@ impl TranscriptView {
             saved_position: self.saved_position,
             suppressed_prompt_header: self.suppressed_prompt_header,
             detailed: self.detailed,
+            full_command_paths: self.full_command_paths,
             review: self.review,
             mode: self.mode,
             snapshot: (!self.is_following()).then(|| self.capture_snapshot(cells)),
@@ -33,7 +35,8 @@ impl TranscriptView {
     pub(crate) fn restore_bookmark(&mut self, bookmark: TranscriptBookmark) {
         self.jump_to_latest();
         self.review = bookmark.review;
-        self.set_presentation(bookmark.detailed, bookmark.mode);
+        self.full_command_paths = bookmark.full_command_paths;
+        self.set_review_presentation(bookmark.detailed, bookmark.mode);
         self.position = bookmark.position;
         self.saved_position = bookmark.saved_position;
         self.suppressed_prompt_header = bookmark.suppressed_prompt_header;

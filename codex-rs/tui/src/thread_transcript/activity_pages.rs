@@ -63,6 +63,11 @@ pub(crate) fn fold_trailing_activity_details(
             .downcast_ref::<ExecCell>()?
             .output_preview_line_limits();
         let mut group = super::exploration_groups::completed_group(items, limits)?;
+        group.command_directory = older
+            .as_any()
+            .downcast_ref::<ExecCell>()?
+            .command_directory
+            .clone();
         group.group.details = retained;
         Some(Arc::new(group))
     }

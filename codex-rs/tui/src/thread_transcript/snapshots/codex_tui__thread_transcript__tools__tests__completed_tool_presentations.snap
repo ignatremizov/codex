@@ -3,6 +3,7 @@ source: tui/src/thread_transcript/tools_tests.rs
 expression: rendered
 ---
 Command: compact
+  ↳ cwd /tmp/project
 • Ran cargo check
   └ output line 1
     output line 2
@@ -18,6 +19,7 @@ Command: compact
     output line 12
 
 Command: detailed
+  ↳ cwd /tmp/project
 $ cargo check
 output line 1
 output line 2

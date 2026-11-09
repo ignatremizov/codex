@@ -34,6 +34,9 @@ pub(super) struct StatusCopySource {
 #[derive(Default)]
 pub(super) struct TranscriptState {
     pub(super) active_cell: Option<Box<dyn HistoryCell>>,
+    /// Directory of the preceding displayed command. An orphan inserted before a live command
+    /// does not take that live command's context.
+    pub(super) last_command_cwd: Option<codex_utils_path_uri::LegacyAppPathString>,
     /// Shared retained rows for concurrently running dynamic tools, removed on completion.
     pub(super) dynamic_calls:
         std::collections::HashMap<String, crate::history_cell::DynamicToolCallCell>,

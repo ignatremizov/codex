@@ -206,15 +206,18 @@ fn extending_a_settled_group_and_failing_it_invalidates_cached_layouts() {
     let settled = cached.display_lines(/*width*/ 80);
     let full = cached.transcript_lines(/*width*/ 80);
     assert!(cached.add_call(
-        "second".into(),
-        vec!["ls".into()],
-        vec![ParsedCommand::ListFiles {
-            cmd: "ls".into(),
-            path: None,
-        }],
-        ExecCommandSource::Agent,
-        /*user_shell_response_handling*/ None,
-        /*interaction_input*/ None,
+        ActiveExecCall {
+            call_id: "second".into(),
+            command: vec!["ls".into()],
+            parsed: vec![ParsedCommand::ListFiles {
+                cmd: "ls".into(),
+                path: None,
+            }],
+            source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
+            interaction_input: None,
+        },
+        /*command_directory*/ None,
     ));
     assert_ne!(cached.display_lines(/*width*/ 80), settled);
     assert_ne!(cached.transcript_lines(/*width*/ 80), full);

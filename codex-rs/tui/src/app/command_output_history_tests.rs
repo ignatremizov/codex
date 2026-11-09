@@ -142,12 +142,14 @@ async fn owned_viewport_uses_local_tool_and_user_shell_preview_limits() -> Resul
         }
     }
     insta::assert_snapshot!(snapshots.join("\n\n"), @r"
+      ↳ cwd /workspace
     • Ran printf output
       └ line 1
         … +6 rows (⌃t to view transcript)
         line 8
         + Show details
 
+      ↳ cwd /workspace
     • You ran printf output
       └ line 1
         line 2

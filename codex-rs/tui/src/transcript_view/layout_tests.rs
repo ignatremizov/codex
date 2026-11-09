@@ -53,6 +53,7 @@ fn layouts_refresh_for_width_animation_and_mutable_frames() {
                 width,
                 CellPresentation {
                     summarized: false,
+                    command_directory: CommandDirectoryDisplay::Changes,
                     separated: false,
                     shares_prompt_background: false,
                     turn_tip_space: false,
@@ -113,6 +114,7 @@ fn recent_entries_are_reused_and_old_entries_are_evicted() {
             /*width*/ 20,
             CellPresentation {
                 summarized: false,
+                command_directory: CommandDirectoryDisplay::Changes,
                 separated: false,
                 shares_prompt_background: false,
                 turn_tip_space: false,
@@ -137,6 +139,7 @@ fn recent_entries_are_reused_and_old_entries_are_evicted() {
             /*width*/ 20,
             CellPresentation {
                 summarized: false,
+                command_directory: CommandDirectoryDisplay::Changes,
                 separated: false,
                 shares_prompt_background: false,
                 turn_tip_space: false,
@@ -171,6 +174,7 @@ fn cached_full_layout(
         cell,
         width,
         CellPresentation {
+            command_directory: CommandDirectoryDisplay::Changes,
             separated: false,
             shares_prompt_background: false,
             turn_tip_space: false,

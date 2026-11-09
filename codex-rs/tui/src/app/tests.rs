@@ -1,5 +1,8 @@
 //! App-level orchestration tests for the TUI.
 
+#[path = "command_paths_tests.rs"]
+mod command_paths_tests;
+
 #[path = "tests/terminal_size_telemetry_tests.rs"]
 mod terminal_size_telemetry_tests;
 

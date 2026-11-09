@@ -43,7 +43,7 @@ impl TranscriptView {
     }
 
     /// Presentation changes invalidate retained layouts, but not removed cells' source identity.
-    fn set_review_presentation(&mut self, detailed: bool, mode: HistoryRenderMode) {
+    pub(super) fn set_review_presentation(&mut self, detailed: bool, mode: HistoryRenderMode) {
         self.selection = None;
         self.select_mode = None;
         self.copy_mode = None;

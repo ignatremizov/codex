@@ -50,6 +50,8 @@ When switching threads or agents in inline mode, the TUI reconstructs only a rec
 
 Alternate-screen surfaces do not have standard terminal scrollback. They provide their own navigation over the content they render; for example, the transcript pager opened with Ctrl+T navigates Codex's retained transcript.
 
+Command history shows a `↳ cwd` label when the working directory changes. Paths within the thread's working directory are relative to that directory; `.` marks a return to it. The label applies to following commands until another change, and commands in different directories form separate exploration groups. In the Ctrl+T transcript, press `p` to toggle full working-directory paths on every command group. This works in Review and Full views and preserves command copying; while editing a Find query, `p` is query text.
+
 In the owned conversation viewport, rapid wheel input shares the normal frame scheduler instead of repainting for every wheel event. Clicks and drags still refresh selection geometry immediately. Interrupt and quit shortcuts do not require an eager repaint; transcript selection keeps its existing copy shortcuts.
 
 The conversation viewport and Ctrl+T pager reuse an oversized patch layout alongside nearby messages, so a large file deletion does not need to be laid out again on each scroll. Upward scrolling also avoids measuring the offscreen latest page. Full patch content remains available for inspection, search, and copy.

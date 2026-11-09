@@ -259,6 +259,7 @@ mod activity_groups;
 mod activity_presentation;
 mod collab_metadata;
 mod command_lifecycle;
+mod command_paths;
 mod config_panel;
 mod connector_mentions;
 mod connectors;

@@ -5,6 +5,7 @@ mod preview;
 mod render;
 mod render_cache;
 mod transcript;
+mod working_directory;
 
 pub(crate) use live_output::LiveCommandOutput;
 pub(crate) use model::ActiveExecCall;
@@ -18,3 +19,7 @@ pub(crate) use render::OutputLinesParams;
 pub(crate) use render::TOOL_CALL_MAX_LINES;
 pub(crate) use render::new_active_exec_command;
 pub(crate) use render::output_lines;
+pub(crate) use working_directory::CommandDirectory;
+pub(crate) use working_directory::CommandDirectoryDisplay;
+pub(crate) use working_directory::CommandDirectoryHistoryCell;
+pub(crate) use working_directory::command_directory_display_after;

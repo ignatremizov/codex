@@ -1680,11 +1680,15 @@ fn live_search_group_keeps_its_summary_in_the_parked_pane() {
     let first = parked_screen(&mut view, &[], Some(&command));
     view.scroll(&[], /*rows*/ 0); // Pin the visible live row.
     assert!(command.add_call(
-        "second".into(),
-        second_call.clone(),
-        parse_command(&second_call),
-        CommandExecutionSource::Agent,
-        /*interaction_input*/ None
+        crate::exec_cell::ActiveExecCall {
+            call_id: "second".into(),
+            command: second_call.clone(),
+            parsed: parse_command(&second_call),
+            source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
+            interaction_input: None,
+        },
+        /*command_directory*/ None
     ));
     let (summary, expanded) =
         view.sync_live_tool_summary(&[], /*enabled*/ true, Some(&command));
