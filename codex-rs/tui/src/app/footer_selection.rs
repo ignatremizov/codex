@@ -1,4 +1,5 @@
 //! Route registered read-only selections before copy, interrupt, clicks, and paste shortcuts.
+//! Completion menus remain open while their painted rows are selected and copied.
 //! A stationary click is replayed to the existing widget handler after selection releases it.
 
 use super::*;
@@ -17,9 +18,7 @@ impl App {
         let warning_active = self.chat_widget.keymap_contexts().is_warnings();
         if !tui.is_owned_screen()
             || self.overlay.is_some()
-            || (!warning_active
-                && (!self.chat_widget.no_modal_or_popup_active()
-                    || self.chat_widget.is_external_writer_view()))
+            || (!warning_active && !self.chat_widget.can_select_rendered_text())
         {
             *self.chat_widget.rendered_selection.borrow_mut() = RenderedSelection::default();
             return Ok(false);
@@ -82,3 +81,7 @@ impl App {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+#[path = "completion_selection_tests.rs"]
+mod tests;

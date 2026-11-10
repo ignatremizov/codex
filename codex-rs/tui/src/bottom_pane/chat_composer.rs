@@ -8,6 +8,8 @@
 //! bursts, especially on Windows. Paste timing uses Tokio's clock so asynchronous flush deadlines
 //! and input classification share a clock, including in paused-time tests. Copy shortcuts and right
 //! clicks preserve selected draft text.
+//! Owned-screen completion rows register as read-only text so users can select and copy agent UUIDs
+//! and other suggestions without completing the command or changing the draft.
 //! Local recall retains full draft metadata for composer submissions and accepted command-line
 //! initial prompts; transcript replay seeds earlier prompts separately.
 //! When enabled, fullscreen right-click paste requires an editable composer without a selection,
@@ -4809,6 +4811,11 @@ impl ChatComposer {
                 ActivePopup::None => {
                     unreachable!("only suggestion menus use above-composer placement")
                 }
+            }
+            if let Some(selection) = options.rendered_selection {
+                selection
+                    .borrow_mut()
+                    .register(popup_rect.intersection(buf.area), /*invalidate*/ false);
             }
         }
         let transcript_hint_area = inset_footer_hint_area(footer_rect);

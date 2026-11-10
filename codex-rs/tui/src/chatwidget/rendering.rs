@@ -283,7 +283,9 @@ impl ChatWidget {
             } else {
                 self.ambient_pet_wrap_reserved_cols()
             };
-            options.rendered_selection = Some(&self.rendered_selection);
+            options.rendered_selection = self
+                .can_select_rendered_text()
+                .then_some(&self.rendered_selection);
             options.image_previews = self.composer_images.as_ref();
             options.warning_count = self.warning_display_state.count;
             options.textarea_right_reserve = right_reserve;

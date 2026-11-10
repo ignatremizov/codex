@@ -2010,9 +2010,12 @@ impl BottomPane {
 
     /// Return true when no popups or modal views are active, regardless of task state.
     pub(crate) fn can_launch_external_editor(&self) -> bool {
-        !self.has_active_view()
-            && !self.composer.popup_active()
-            && !self.questions.as_ref().is_some_and(|q| q.expanded)
+        self.can_select_rendered_text() && !self.composer.popup_active()
+    }
+
+    /// Completion rows are passive text; modal views and question editors own their input.
+    pub(crate) fn can_select_rendered_text(&self) -> bool {
+        !self.has_active_view() && !self.questions.as_ref().is_some_and(|q| q.expanded)
     }
 
     /// Returns true when the bottom pane has no active modal view and no active composer popup.

@@ -455,6 +455,10 @@ impl ChatWidget {
         !self.direct_input_is_blocked() && self.bottom_pane.can_launch_external_editor()
     }
 
+    pub(crate) fn can_select_rendered_text(&self) -> bool {
+        !self.external_writer_view && self.bottom_pane.can_select_rendered_text()
+    }
+
     pub(crate) fn can_run_ctrl_l_clear_now(&mut self) -> bool {
         // Ctrl+L is not a slash command, but it follows /clear's current rule:
         // block while a task is running.
