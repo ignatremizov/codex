@@ -2043,6 +2043,11 @@ impl BottomPane {
             && !self.questions.as_ref().is_some_and(|q| q.expanded)
     }
 
+    /// Completion rows can be copied without activating them. Queries and modal editors keep input.
+    pub(crate) fn can_select_rendered_text(&self) -> bool {
+        self.completion_can_yield_focus()
+    }
+
     /// Returns true when the bottom pane has no active modal view and no active composer popup.
     ///
     /// This is the UI-level definition of "no modal/popup is active" for key routing decisions.
