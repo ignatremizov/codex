@@ -110,7 +110,7 @@ impl SlashCommand {
             SlashCommand::Rename => "name or rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Archive => "archive this session",
-            SlashCommand::Delete => "permanently delete this session",
+            SlashCommand::Delete => "permanently delete this session and its saved side chats",
             SlashCommand::Clear => "clear the terminal and start a new chat",
             SlashCommand::Fork => "fork the current chat",
             SlashCommand::Worktree => "start or continue a conversation in a new worktree",

@@ -5089,9 +5089,11 @@ async fn reopen_saved_side_chat(during: DuringOpen) -> Result<()> {
         })
         .collect::<Vec<_>>();
     assert!(
-        errors
-            .iter()
-            .any(|message| message.contains("an attachment outside the TUI sidebar")),
+        errors.iter().any(|message| {
+            let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+            message.contains("Cannot verify the complete saved-side-chat cascade")
+                && message.contains("No unrelated attachment will be deleted.")
+        }),
         "{errors:?}"
     );
     let ids = [parent, incomplete, children[0], children[1]];

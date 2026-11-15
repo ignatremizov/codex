@@ -1080,13 +1080,18 @@ async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashb
             (Some(primary), Some(primary))
         );
         assert_eq!(app.agents_overview.visible_thread_ids, vec![id]);
+        let mut expected_threads = std::collections::HashSet::from([id, primary]);
+        if action == AgentsOverviewAction::Delete {
+            // These are ordinary spawned descendants. Delete cascades only to saved side chats.
+            expected_threads.extend([child, grandchild]);
+        }
         assert_eq!(
             app.agents_overview
                 .threads
                 .keys()
                 .copied()
                 .collect::<std::collections::HashSet<_>>(),
-            std::collections::HashSet::from([id, primary])
+            expected_threads
         );
         Box::pin(app.run_agents_overview_action(
             &mut tui,

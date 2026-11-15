@@ -23,6 +23,7 @@ mod realtime;
 mod rollback;
 mod rollout_history;
 pub(crate) use read_state::unread_revision;
+mod side_chat_delete;
 mod side_chat_history;
 use side_chat_history::side_context_checkpoint;
 mod startup_launch;

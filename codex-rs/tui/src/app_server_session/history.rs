@@ -121,7 +121,7 @@ impl HistoryLoadBudget {
     }
 }
 
-fn thread_items_page_params(
+pub(super) fn thread_items_page_params(
     thread_id: ThreadId,
     turn_id: Option<&str>,
     cursor: Option<String>,

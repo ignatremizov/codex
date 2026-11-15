@@ -715,6 +715,10 @@ Passive and wake results are canonically recorded and installed in model context
 
 Shutdown drains accepted shell output producers before closing canonical history publication. An unrelated model turn completing or failing neither stops the shell nor turns its live output into a failed model-tool row. Live rendering retains a matching admitted command without pretending that the model is busy.
 
+## Saved-side-chat deletion
+
+The TUI preflights and explicitly deletes verified saved side chats before their parent, including archived and nested saved side chats. `thread/delete` itself remains a single-thread operation with existing writer, attachment, and shared-reference guards. The client reports confirmed partial progress and never retries an uncertain deletion automatically. See [the cascade contract](../../docs/saved-side-chat-deletion.md).
+
 ## Stored thread attachments
 
 - `thread/attachment/add` — add a durable resource reference to a stored thread without loading it. Repeated writes with the same attachment type and identity key return the existing attachment.

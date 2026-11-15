@@ -4263,7 +4263,7 @@ async fn delete_current_thread_navigates_only_after_success() -> Result<()> {
         assert_eq!(app.active_thread_id, Some(thread_id));
         assert!(app.side_threads.contains_key(&side_id));
         assert!(!app.chat_widget.has_active_view());
-        assert_eq!(recorded_params(&requests, "thread/delete").len(), 1);
+        assert!(recorded_params(&requests, "thread/delete").is_empty());
         let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
         app.app_event_tx = AppEventSender::new(tx);
         let control =
@@ -4306,10 +4306,7 @@ async fn delete_current_thread_navigates_only_after_success() -> Result<()> {
         assert!(app.chat_widget.has_active_view());
         assert_eq!(
             recorded_params(&requests, "thread/delete"),
-            vec![
-                serde_json::json!({"threadId": missing_id.to_string()}),
-                serde_json::json!({"threadId": thread_id.to_string()}),
-            ]
+            vec![serde_json::json!({"threadId": thread_id.to_string()})]
         );
         server.shutdown().await?;
         proxy.await??;

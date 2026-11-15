@@ -1,5 +1,6 @@
 //! Discovers local side chats from their own rollouts and reads titles and prompts from child history.
 
+use super::history::thread_items_page_params;
 use super::*;
 use crate::chatwidget::ChatWidget;
 use codex_app_server_protocol::SortDirection;
@@ -11,7 +12,6 @@ use codex_context_fragments::SideConversationPolicy;
 use codex_protocol::models::ContentItem;
 use codex_rollout::ResponseItemEnvelope;
 use codex_rollout::RolloutItem;
-use codex_rollout::read_session_meta_line;
 use futures::StreamExt;
 use itertools::Itertools;
 use std::io;
@@ -126,7 +126,7 @@ impl AppServerSession {
         let query = ThreadListParams {
             attached_to_thread_id: Some(parent.to_string()),
             include_attached_threads: false,
-            current_account_only: true,
+            current_account_only: false,
             archived: Some(false),
             model_providers: Some(Vec::new()),
             sort_direction: Some(SortDirection::Asc),
@@ -175,7 +175,10 @@ impl AppServerSession {
             return Ok(Vec::new());
         };
         let mut chats = Vec::new();
-        let threads = self.list_attached_threads(query).await?;
+        let threads = match self.list_attached_threads(query).await {
+            Err(err) if is_attached_thread_store_unsupported(&err) => return Ok(Vec::new()),
+            result => result?,
+        };
         let named_ids = threads
             .iter()
             .filter(|thread| thread.name.is_some())
@@ -226,62 +229,16 @@ impl AppServerSession {
         Ok(chats)
     }
 
-    /// Delete the parent's TUI side chats before deleting the parent itself.
-    pub(crate) async fn delete_thread_with_saved_side_chats(
+    pub(super) async fn list_attached_threads(
         &mut self,
-        parent: ThreadId,
-    ) -> Result<()> {
-        if self.can_list_saved_side_chats(parent)
-            && let Some(mut query) = self.attached_side_chat_query(parent).await?
-        {
-            // Resolve the complete list before deleting anything. Archived and partially
-            // initialized side chats also block the app-server's parent delete.
-            let mut attached = self.list_attached_threads(query.clone()).await?;
-            query.archived = Some(true);
-            attached.extend(self.list_attached_threads(query).await?);
-            let mut children = HashSet::new();
-            for thread in attached {
-                let child = ThreadId::from_string(&thread.id)?;
-                let path = thread.path.as_deref().ok_or_else(|| {
-                    color_eyre::eyre::eyre!("No rollout found for attached thread {child}")
-                })?;
-                // The thread list omits fork origins. Verify the child's own metadata
-                // before passing its ID to the delete API.
-                let meta = read_session_meta_line(path)
-                    .await
-                    .wrap_err_with(|| format!("failed to verify attached thread {child}"))?
-                    .meta;
-                color_eyre::eyre::ensure!(
-                    meta.id == child
-                        && meta.attached_thread
-                        && meta.forked_from_id == Some(parent)
-                        && matches!(
-                            meta.thread_source.as_ref(),
-                            Some(codex_protocol::protocol::ThreadSource::Feature(source))
-                                if source == ATTACHED_SIDE_CHAT_SOURCE
-                        ),
-                    "The conversation has an attachment outside the TUI sidebar. Remove it before deleting the conversation."
-                );
-                children.insert(child);
-            }
-            for child in children {
-                self.thread_delete(child)
-                    .await
-                    .wrap_err_with(|| format!("failed to delete saved side chat {child}"))?;
-            }
-        }
-        self.thread_delete(parent).await
-    }
-
-    async fn list_attached_threads(&mut self, mut query: ThreadListParams) -> Result<Vec<Thread>> {
+        mut query: ThreadListParams,
+    ) -> Result<Vec<Thread>> {
         let mut threads = Vec::new();
         let mut seen = HashSet::new();
         let mut cursors = HashSet::new();
         loop {
-            let page = match self.thread_list(query.clone()).await {
-                Err(err) if is_attached_thread_store_unsupported(&err) => return Ok(Vec::new()),
-                result => result?,
-            };
+            // Destructive callers must not confuse unsupported discovery with no children.
+            let page = self.thread_list(query.clone()).await?;
             threads.extend(
                 page.data
                     .into_iter()
