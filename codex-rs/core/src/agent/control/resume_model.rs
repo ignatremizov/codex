@@ -19,7 +19,7 @@ impl LocalAgentControl {
             model,
             reasoning_effort,
         } = request;
-        let target = self.resolve_target(caller, &target)?;
+        let target = self.resolve_target(caller, &target).await?;
         if target == caller || target == ThreadId::from(self.session_id()) {
             return Err(CodexErr::UnsupportedOperation(
                 "resume_agent must target another non-root agent".into(),

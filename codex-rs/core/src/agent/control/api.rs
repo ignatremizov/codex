@@ -50,9 +50,12 @@ impl AgentControl for LocalAgentControl {
             if let Ok(thread_id) = ThreadId::from_string(target) {
                 return Ok(thread_id);
             }
-            self.runtime
-                .resolve_agent_reference(caller, source, target)
-                .await
+            self.resolve_controller_reference(
+                caller,
+                &source.get_agent_path().unwrap_or_else(AgentPath::root),
+                target,
+            )
+            .await
         })
     }
 
@@ -107,7 +110,7 @@ impl AgentControl for LocalAgentControl {
                 input,
                 mut start_options,
             } = request;
-            let target = self.resolve_target(caller, &target)?;
+            let target = self.resolve_target(caller, &target).await?;
             let (metadata, submission_id) = match input {
                 AgentInput::UserInput(input) => {
                     let receiver = self.get_agent_metadata(target);
@@ -225,7 +228,7 @@ impl AgentControl for LocalAgentControl {
         version: MultiAgentVersion,
     ) -> BoxFuture<'_, Result<AgentInfo>> {
         Box::pin(async move {
-            let target = self.resolve_target(caller, &target)?;
+            let target = self.resolve_target(caller, &target).await?;
             match version {
                 MultiAgentVersion::Disabled | MultiAgentVersion::V1 => {
                     let snapshot = self.inspect_agent(target).await?;

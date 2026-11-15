@@ -1012,6 +1012,37 @@ async fn collaboration_tools_dispatch_to_the_host_controller() -> anyhow::Result
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InternalSessionSource;
 
+#[tokio::test]
+async fn compact_agent_selectors_remain_owned_by_the_host_resolver() -> anyhow::Result<()> {
+    let server = responses::start_mock_server().await;
+    let (test, controller) = test_with_host_control(&server, &[]).await?;
+    let host_target = ThreadId::new();
+    controller
+        .agents
+        .lock()
+        .expect("host agents")
+        .insert("ref:2".to_string(), host_target);
+    assert_eq!(
+        test.codex.resolve_agent_reference("ref:2").await?,
+        host_target
+    );
+    controller
+        .agents
+        .lock()
+        .expect("host agents")
+        .remove("ref:2");
+    assert!(test.codex.resolve_agent_reference("ref:2").await.is_err());
+    // A host that does not publish Main must not be bypassed by native root lookup.
+    assert!(
+        test.codex
+            .resolve_agent_reference("nick:Main")
+            .await
+            .is_err()
+    );
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_mailbox_notifies_waiting_agent_and_delivers_once() -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;

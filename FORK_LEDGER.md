@@ -518,3 +518,11 @@ Before declaring the final ledger current:
 ## Verified saved-side-chat cascade
 
 Selected 0.169 integration owner: `feat(tui): validate saved-side-chat deletion cascades`. The client cascade does not widen single-thread storage deletion authority or bypass writer, attachment, lineage, or shared-evidence checks. See [behavior and failure boundaries](docs/saved-side-chat-deletion.md). Its protocol-driven tests exercise complete preflight, nested/archived discovery, cross-profile queries, repeated cursors, unsupported discovery, changed relationships, and partial failures. Executable qualification remains tied to the final CI candidate.
+
+## 0.169 integration: native V2 compact selectors
+
+Ownership anchor: `feat(agents): share explicit compact selectors with native V2 controllers`.
+
+Native controller reference resolution and typed send/resume/interrupt targets accept explicit `ref:`, `nick:`, `id:`, and `task:` selectors through the same durable root-scoped owner as V1/user controls. Unknown or denied explicit aliases never fall back to another path or backend. Unprefixed V2 paths retain their original semantics; host controllers retain full ownership of their own selector interpretation. Resolution alone does not load or transfer an agent.
+
+This is a partial V02 port with actual native V1/V2 and host integration coverage authored under `core/tests/suite/agent_compact_selectors.rs` and `agent_control_tests.rs`. No executable parity result is claimed before remote qualification. V1 stays available, the V2 public messaging tools are not yet consolidated, and envelope-size budgets remain unproved. See `docs/multi-agent-v2-fork-parity.md` for the explicit remaining obligations.

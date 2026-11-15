@@ -42,6 +42,7 @@ mod abort_tasks;
 #[path = "actor_access_program_tests.rs"]
 mod actor_access_program;
 mod additional_context;
+mod agent_compact_selectors;
 #[path = "agent_control_tests.rs"]
 mod agent_control;
 #[path = "agent_detach_tool_tests.rs"]

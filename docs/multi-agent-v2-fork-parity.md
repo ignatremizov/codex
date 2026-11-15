@@ -12,6 +12,16 @@ The preservation baseline is `4ec3c37b36b68480c915e744be578840d33ff25b`, contain
 
 The V1 handler and its single/batch admission adapters now use these shared definitions. This extraction changes no runtime defaults, public V1 fields, delivery behavior, or host capability. It is a prerequisite for the compact V2 adapter, not evidence that the V2 public tool surface or admission semantics have already migrated. Semantic ownership: `refactor(agents): share input policy and compact receipts across tool versions`.
 
+## Explicit compact selectors through native V2
+
+The native controller's public reference-resolution path and typed send/resume/interrupt target path now share the existing durable alias owner for explicit `ref:N`, `nick:Name`, `id:UUID`, and `task:path` selectors. The issuing root determines alias identity; selecting an alias does not load a closed runtime, adopt another root's agent, or grant permission to send, interrupt, resume, or detach. Each operation still applies its own lifecycle and authorization checks after resolution.
+
+Unprefixed V2 names retain their existing runtime-relative path interpretation. Explicit selectors never fall back on a missing or denied lookup. V2 runtime paths retain their existing lowercase-letter/digit/underscore grammar, including rejection of dot traversal; selector prefixes do not overlap valid runtime path segments. Bare decimal refs and unprefixed nicknames are **not** newly reinterpreted as aliases in V2. Host-owned controllers continue to receive the original selector through their own `resolve` implementation; Core does not consult its local alias store around a host rejection.
+
+This is an implemented part of V02, not full addressing parity. Source-authored integration cases cover native V1/V2 root scoping, closed-agent nonloading, unchanged V2 relative paths, two roots with the same compact ref, exact-ID ownership rejection, hosted resolution/revocation with no native fallback, and an encrypted/audited V2 message sent by compact ref. These cases require remote execution. Spawn/roster compact-reference presentation, complete unified `send_input` exposure, and measured full-envelope budgets remain separate work.
+
+Semantic owner: `feat(agents): share explicit compact selectors with native V2 controllers`.
+
 ## Parity inventory
 
 The table records source-inspection status, not test results. An implementation can be present without being proven. During each port, add the actual owner and executed V1/V2 test receipts; any unproved applicable obligation continues to block V1 retirement.
@@ -19,7 +29,7 @@ The table records source-inspection status, not test results. An implementation 
 | Area | Fork obligation | Current V2 status and next boundary | Evidence required |
 | --- | --- | --- | --- |
 | V01 — unified input | One `send_input` with scalar/batch targets, message or structured items, interruption, and `w`; exact native identity | Shared policy/receipt foundation extracted. Separate V2 `send_message` and `followup_task` still need a unified adapter over real admission. | Actual advertised schemas and direct/Code Mode dispatch; invalid calls reject before admission. |
-| V02 — compact addressing | Root-relative short references, nicknames, Main, UUID fallback, and ambiguity rejection | V2 currently uses `AgentControl.resolve`; controlled-root alias and presentation owners already exist for reuse. No alias parity claim yet. | Resolution, stale namespace, mixed-tree, and unloaded-recipient tests. |
+| V02 — compact addressing | Root-scoped refs, nicknames, Main, UUID fallback, canonical task paths, and ambiguity rejection | Explicit native selectors share the existing alias owner through V2 controller APIs. Bare paths and host resolution stay distinct. Compact spawn/roster presentation and remaining parity require further work. | Native V1/V2 root-isolation, nonloading, encrypted delivery, and host no-fallback integration cases authored; remote results pending. |
 | V03 — observations | Commentary/final subscriptions, explicit passive versus omission, and exact receiving-turn identity | Shared parser is available; V2 encrypted-message delivery still needs the same observation admission/commit boundary. | Started, steered, queued, unknown, cancellation, and persisted source-to-turn correlation in both modes. |
 | V04 — queues | `q` target FIFO is distinct from ordinary, steer, and scheduled CLI input | Existing queue owner must accept the correct V2 message representation, not map `QueueOnly` to a distinct-turn queue. | FIFO, no implicit steer, source-next-turn final, and exact receipts. |
 | V05 — mailbox | `z` receiver-owned durable admission, consumption, inventory-bound conditional final, and no invented read receipt | Native V1 tool currently guards this surface. V2 needs an explicit supported representation/backend path; unsupported backends must fail before mutation. | Cold/loaded, claim epochs, crash recovery, consumption, and `zf` final tests. |
