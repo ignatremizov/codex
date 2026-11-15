@@ -4,13 +4,9 @@ use super::send_input_admission::prepare_receiver;
 use super::send_input_admission::resolve_receiver;
 use super::*;
 use crate::agent::control::render_input_preview;
-use crate::agent::response_observation::FinalResponseObservation;
-use crate::agent::response_observation::ResponseObservationPolicy;
+use crate::agent::input_policy::SendInputMode;
+use crate::tools::handlers::multi_agents_input::SendInputTarget;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
-use codex_protocol::WakeEventFinalDelivery;
-use codex_protocol::WakeEventFlags;
-use codex_protocol::WakeEventMailboxSubscription;
-use codex_protocol::WakeEventSurface;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
@@ -200,140 +196,6 @@ struct SendInputArgs {
     w: SendInputMode,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum SendInputTarget {
-    Single(String),
-    Batch(Vec<String>),
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) enum SendInputMode {
-    /// Resolve omitted response handling against each recipient's relationship to the sender.
-    #[default]
-    Default,
-    Response(ResponseObservationPolicy),
-    Mailbox(WakeEventMailboxSubscription),
-}
-
-impl SendInputMode {
-    pub(super) fn response_observation(self) -> ResponseObservationPolicy {
-        match self {
-            Self::Default => ResponseObservationPolicy::default(),
-            Self::Response(policy) => policy,
-            Self::Mailbox(_) => ResponseObservationPolicy::from_parts(
-                /*commentary*/ false,
-                FinalResponseObservation::None,
-            ),
-        }
-    }
-
-    pub(super) fn normalized_flags(self) -> String {
-        match self {
-            Self::Default => String::new(),
-            Self::Mailbox(WakeEventMailboxSubscription::None) => "z".to_string(),
-            Self::Mailbox(WakeEventMailboxSubscription::Wake) => "zf".to_string(),
-            Self::Response(policy) => {
-                let mut flags = String::new();
-                if policy.commentary() {
-                    flags.push('c');
-                }
-                match policy.final_response() {
-                    FinalResponseObservation::None | FinalResponseObservation::Passive => {}
-                    FinalResponseObservation::Wake => flags.push('f'),
-                    FinalResponseObservation::PresentationOnly => flags.push('x'),
-                }
-                if policy.queue_input() {
-                    flags.push('q');
-                }
-                flags
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for SendInputMode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        let flags =
-            WakeEventFlags::parse(&value, WakeEventSurface::AgentMailbox).map_err(|error| {
-                serde::de::Error::custom(format!("invalid wake/event state `{value}`; {error}"))
-            })?;
-        if flags.mailbox_input {
-            return Ok(Self::Mailbox(flags.mailbox_subscription));
-        }
-        let final_response = match flags.final_delivery {
-            WakeEventFinalDelivery::Passive => FinalResponseObservation::Passive,
-            WakeEventFinalDelivery::Wake => FinalResponseObservation::Wake,
-            WakeEventFinalDelivery::PresentationOnly => FinalResponseObservation::PresentationOnly,
-        };
-        Ok(Self::Response(ResponseObservationPolicy::from_turn_parts(
-            flags.commentary,
-            final_response,
-            flags.queue_input,
-        )))
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct SendInputResult {
-    pub(super) submission_id: String,
-    pub(super) status: SendInputAdmissionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) hint: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) enum SendInputAdmissionStatus {
-    Submitted,
-    Queued,
-    MailboxAccepted,
-}
-
-#[derive(Serialize)]
-struct SendInputModelResult<'a> {
-    status: &'a SendInputAdmissionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hint: Option<&'a str>,
-}
-
 #[cfg(test)]
 #[path = "send_input_tests.rs"]
 mod tests;
-
-impl ToolOutput for SendInputResult {
-    fn log_output(&self) -> String {
-        tool_output_json_text(self, "send_input")
-    }
-
-    fn success_for_logging(&self) -> bool {
-        true
-    }
-
-    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(
-            call_id,
-            payload,
-            &SendInputModelResult {
-                status: &self.status,
-                hint: self.hint.as_deref(),
-            },
-            Some(true),
-            "send_input",
-        )
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(
-            &SendInputModelResult {
-                status: &self.status,
-                hint: self.hint.as_deref(),
-            },
-            "send_input",
-        )
-    }
-}

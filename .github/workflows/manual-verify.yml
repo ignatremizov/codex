@@ -31,6 +31,11 @@ on:
         required: false
         default: false
         type: boolean
+      capture_upstream_agent_envelopes:
+        description: Capture pinned upstream agent envelopes with a recorded test-only overlay
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -252,6 +257,7 @@ jobs:
           CARGO_PROFILE_CI_TEST_DEBUG: "0"
           # Retain mismatches for review without accepting them or hiding test failures.
           INSTA_UPDATE: "new"
+          CODEX_TEST_AGENT_ENVELOPE_DIR: ${{ runner.temp }}/agent-envelope-evidence
           NEXTEST_FILTER: ${{ inputs.nextest_filter }}
           NEXTEST_PACKAGES: ${{ inputs.nextest_packages }}
           REGENERATE_TUI_SNAPSHOTS: ${{ inputs.regenerate_tui_snapshots }}
@@ -288,6 +294,15 @@ jobs:
           if [[ -n "${CODEX_TEST_REMOTE_ENV:-}" ]]; then
             docker rm -f "${CODEX_TEST_REMOTE_ENV}" >/dev/null 2>&1 || true
           fi
+
+      - name: Upload agent envelope evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: agent-envelope-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/agent-envelope-evidence
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Cargo timings
         if: always()
@@ -685,6 +700,7 @@ jobs:
         env:
           # CI's default `auto` mode otherwise suppresses .snap.new files entirely.
           INSTA_UPDATE: "new"
+          CODEX_TEST_AGENT_ENVELOPE_DIR: ${{ runner.temp }}/agent-envelope-evidence
           NEXTEST_FILTER: ${{ inputs.nextest_filter }}
           NEXTEST_PACKAGES: ${{ inputs.nextest_packages }}
           NEXTEST_STATUS_LEVEL: leak
@@ -714,6 +730,15 @@ jobs:
             "CARGO_BIN_EXE_codex-linux-sandbox=${helper}" \
             "CARGO_BIN_EXE_codex_linux_sandbox=${helper}" \
             cargo nextest "${args[@]}"
+
+      - name: Upload agent envelope evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: agent-envelope-evidence-${{ github.run_id }}-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/agent-envelope-evidence
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload nextest JUnit report
         if: always()
@@ -754,21 +779,259 @@ jobs:
           echo "Tests failed in shard ${{ matrix.shard }}/4."
           exit 1
 
+  fork_envelopes:
+    name: Fork V1/V2 agent-envelope baseline
+    if: ${{ inputs.capture_upstream_agent_envelopes }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_CI_TEST_DEBUG: "0"
+      RUST_MIN_STACK: "16777216"
+      SCCACHE_CACHE_SIZE: 6G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - name: Install baseline build dependencies
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-apt-packages.sh" \
+            pkg-config libcap-dev libasound2-dev bubblewrap
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Restore shared Cargo sources
+        id: fork_cargo_cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+          restore-keys: |
+            manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-
+
+      - uses: ./.github/actions/setup-shared-sccache
+
+      - name: Capture fork production serializers
+        id: capture
+        env:
+          CODEX_TEST_AGENT_ENVELOPE_DIR: ${{ runner.temp }}/fork-agent-envelope-evidence
+        run: |
+          set -euo pipefail
+          evidence="$CODEX_TEST_AGENT_ENVELOPE_DIR"
+          mkdir -p "$evidence"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git show HEAD:codex-rs/core/src/tools/handlers/multi_agents_v2/envelope_baseline_tests.rs > "$evidence/fork-measurement-fixture.rs"
+          cargo test --locked --profile ci-test -p codex-core --lib \
+            tools::handlers::multi_agents_v2::envelope_baseline_tests::capture_pre_migration_agent_envelopes \
+            -- --exact --nocapture 2>&1 | tee "$evidence/cargo-test.log"
+          test -s "$evidence/pre-migration-agent-envelopes.json"
+          python3 - <<'PYRECEIPT'
+          import hashlib, json, os, pathlib, subprocess
+          evidence = pathlib.Path(os.environ['CODEX_TEST_AGENT_ENVELOPE_DIR'])
+          payload_path = evidence / 'pre-migration-agent-envelopes.json'
+          payload = json.loads(payload_path.read_text())
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if payload['source_sha'] != sha or sha != os.environ['GITHUB_SHA']:
+              raise ValueError('Fork envelope provenance is not the selected source revision')
+          fixture = 'codex-rs/core/src/tools/handlers/multi_agents_v2/envelope_baseline_tests.rs'
+          receipt = {
+              'format': 1,
+              'source_sha': sha,
+              'source_tree': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              'producer_blob': subprocess.check_output(['git', 'rev-parse', f'HEAD:{fixture}'], text=True).strip(),
+              'fixture_sha256': hashlib.sha256((evidence / 'fork-measurement-fixture.rs').read_bytes()).hexdigest(),
+              'report_sha256': hashlib.sha256(payload_path.read_bytes()).hexdigest(),
+              'rows': len(payload['rows']),
+              'runtime_delivery_exercised': False,
+              'scope': 'Unmodified fork production factories and serializers; single remote test, not full runtime qualification',
+          }
+          (evidence / 'provenance.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          PYRECEIPT
+
+      - name: Upload fork baseline evidence
+        if: always() && steps.capture.outcome != 'skipped'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: fork-agent-envelope-${{ github.run_id }}
+          path: ${{ runner.temp }}/fork-agent-envelope-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Save shared Cargo sources
+        if: always() && !cancelled() && steps.fork_cargo_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+
+  upstream_envelopes:
+    name: Pinned upstream agent-envelope baseline
+    if: ${{ inputs.capture_upstream_agent_envelopes }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_CI_TEST_DEBUG: "0"
+      RUST_MIN_STACK: "16777216"
+      SCCACHE_CACHE_SIZE: 6G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Check out the immutable upstream code parent
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: openai/codex
+          ref: fa266e73c414c1798f6ada3f85a151044e07f7c4
+          persist-credentials: false
+
+      - name: Check out the exact measurement harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .baseline-harness
+          persist-credentials: false
+
+      - name: Free runner disk space
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/share/dotnet
+          docker system prune -af >/dev/null 2>&1 || true
+
+      - uses: ./.github/actions/setup-ci
+
+      - name: Install baseline build dependencies
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/.baseline-harness/.github/scripts/install-apt-packages.sh" \
+            pkg-config libcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Restore baseline Cargo downloads
+        id: baseline_cargo_cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: agent-envelope-target-cargo-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+          restore-keys: |
+            agent-envelope-target-cargo-${{ runner.os }}-
+
+      - name: Restore baseline compiler cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/sccache
+          key: agent-envelope-target-sccache-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            agent-envelope-target-sccache-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}-
+            agent-envelope-target-sccache-${{ runner.os }}-
+            manual-rust-ci-test-sccache-${{ runner.os }}-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache
+
+      - name: Prepare the recorded measurement overlay
+        id: prepare
+        working-directory: ${{ github.workspace }}
+        env:
+          HARNESS_SHA: ${{ github.sha }}
+          CODEX_TEST_AGENT_ENVELOPE_DIR: ${{ runner.temp }}/agent-envelope-target-evidence
+        run: |
+          set -euo pipefail
+          echo "CODEX_TEST_AGENT_ENVELOPE_DIR=$CODEX_TEST_AGENT_ENVELOPE_DIR" >> "$GITHUB_ENV"
+          python3 .baseline-harness/.github/scripts/prepare-agent-envelope-target.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --evidence-dir "$CODEX_TEST_AGENT_ENVELOPE_DIR" \
+            --harness-sha "$HARNESS_SHA"
+
+      - name: Capture pinned upstream production serializers
+        env:
+          RUSTC_WRAPPER: sccache
+        run: |
+          set -euo pipefail
+          export SCCACHE_DIR="$HOME/.cache/sccache"
+          cargo test --locked --profile ci-test -p codex-core --lib \
+            tools::handlers::multi_agents_v2::envelope_target_baseline::capture_pinned_target_agent_envelopes \
+            -- --exact --nocapture 2>&1 | tee "$CODEX_TEST_AGENT_ENVELOPE_DIR/cargo-test.log"
+          test -s "$CODEX_TEST_AGENT_ENVELOPE_DIR/pinned-target-agent-envelopes.json"
+
+      - name: Upload pinned upstream measurement evidence
+        if: always() && steps.prepare.outcome == 'success'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: agent-envelope-target-${{ github.run_id }}
+          path: ${{ env.CODEX_TEST_AGENT_ENVELOPE_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Save baseline Cargo downloads
+        if: always() && !cancelled() && steps.baseline_cargo_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: agent-envelope-target-cargo-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+
+      - name: Save baseline compiler cache
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/sccache
+          key: agent-envelope-target-sccache-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}-${{ github.run_id }}
+
   result:
     name: Verify result
     if: ${{ always() && !inputs.regenerate_app_server_schema && !inputs.regenerate_config_schema && !inputs.regenerate_bazel_lock && !inputs.regenerate_tui_snapshots }}
     needs:
       - static
       - shard
+      - upstream_envelopes
+      - fork_envelopes
     runs-on: ubuntu-24.04
     steps:
       - name: Check all verification jobs
         env:
           STATIC_RESULT: ${{ needs.static.result }}
           SHARD_RESULT: ${{ needs.shard.result }}
+          UPSTREAM_ENVELOPES_REQUESTED: ${{ inputs.capture_upstream_agent_envelopes }}
+          UPSTREAM_ENVELOPES_RESULT: ${{ needs.upstream_envelopes.result }}
+          FORK_ENVELOPES_RESULT: ${{ needs.fork_envelopes.result }}
         run: |
           set -euo pipefail
           echo "static=${STATIC_RESULT} shards=${SHARD_RESULT}"
           if [[ "${STATIC_RESULT}" != "success" || "${SHARD_RESULT}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "${UPSTREAM_ENVELOPES_REQUESTED}" == "true" && "${UPSTREAM_ENVELOPES_RESULT}" != "success" ]]; then
+            echo "Requested upstream envelope capture did not succeed: ${UPSTREAM_ENVELOPES_RESULT}"
+            exit 1
+          fi
+          if [[ "${UPSTREAM_ENVELOPES_REQUESTED}" == "true" && "${FORK_ENVELOPES_RESULT}" != "success" ]]; then
+            echo "Requested fork envelope capture did not succeed: ${FORK_ENVELOPES_RESULT}"
             exit 1
           fi

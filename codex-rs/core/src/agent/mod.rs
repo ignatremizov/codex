@@ -5,6 +5,7 @@ pub(crate) mod control;
 pub(crate) mod helper_daybreak;
 mod history;
 pub(crate) mod host;
+pub(crate) mod input_policy;
 mod registry;
 pub(crate) mod response_observation;
 pub(crate) mod role;

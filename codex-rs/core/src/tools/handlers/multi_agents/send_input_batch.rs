@@ -2,15 +2,15 @@
 //!
 //! An error can follow admission. Neither errors nor cancellation authorize replay of the batch.
 
-use super::send_input::SendInputAdmissionStatus;
-use super::send_input::SendInputMode;
-use super::send_input::SendInputResult;
 use super::send_input_admission::RecipientInput;
 use super::send_input_admission::admit_input;
 use super::send_input_admission::prepare_receiver;
 use super::send_input_admission::resolve_receiver;
 use super::*;
 use crate::agent::control::render_input_preview;
+use crate::agent::input_policy::SendInputMode;
+use crate::tools::handlers::multi_agents_input::SendInputAdmissionStatus;
+use crate::tools::handlers::multi_agents_input::SendInputResult;
 use codex_protocol::CollabAgentInputBatch;
 use codex_protocol::CollabAgentInputResult;
 use codex_protocol::CollabAgentInputStatus;

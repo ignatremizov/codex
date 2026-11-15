@@ -124,3 +124,22 @@ leave the TUI flag off: `INSTA_UPDATE=new` retains proposed changes in workspace
 `.snap.new` and hidden `.pending-snap` failure artifacts for review. Inline pending
 records require corresponding source edits; they are not standalone snapshot files.
 Generation and filtered runs do not replace full verification on the final revision.
+
+`capture_upstream_agent_envelopes=true` also starts an independent fork source
+serializer fixture job. It uses the exact integration commit, the existing
+production test-only fixture, and persistent compiler caching, retaining the
+complete JSON evidence, compile/test log, original source fixture, and a
+source-tree/blob/sha256 receipt even when the full archive runner is interrupted.
+The fork and pinned-upstream captures are both required when selected. Neither
+can replace the unfiltered nextest archive or any of the four test shards.
+
+`capture_upstream_agent_envelopes` adds a separate, opt-in measurement job to
+Manual Verify. It checks out upstream code parent
+`fa266e73c414c1798f6ada3f85a151044e07f7c4`, verifies the exact source and harness
+revisions, and records a test-only overlay before invoking upstream production
+factories and serializers. The artifact includes complete fixture values, UTF-8
+byte accounting, preparation provenance, the overlay, and its execution log.
+The requested measurement must succeed for the ordinary verification result to
+pass; the normal static checks and all test shards remain unfiltered. This job
+is a serializer baseline, not upstream runtime qualification. It deliberately
+reports remaining unmeasured delivery cases and does not claim token savings.

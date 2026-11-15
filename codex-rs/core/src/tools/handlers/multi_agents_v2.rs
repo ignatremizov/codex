@@ -33,6 +33,8 @@ pub(crate) use spawn::Handler as SpawnAgentHandler;
 pub(crate) use wait::Handler as WaitAgentHandler;
 
 mod analytics;
+#[cfg(test)]
+mod envelope_baseline_tests;
 mod followup_task;
 mod interrupt_agent;
 mod list_agents;

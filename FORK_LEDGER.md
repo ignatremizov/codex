@@ -18,6 +18,10 @@ Use exact semantic commit subjects as ownership anchors rather than commit hashe
 
 Direct CLI/TUI use, including over a remote terminal or SSH, is the supported client workflow. This fork does not promise app-server wire compatibility with ChatGPT web or mobile clients targeting a different upstream schema.
 
+## V2 parity workstream
+
+The selected 0.169 workstream ports the compact fork input contract into V2 without removing V1 before full feature parity. [The parity inventory](docs/multi-agent-v2-fork-parity.md) separates shared implementation, remaining gaps, and required evidence. The first migration owner, `refactor(agents): share input policy and compact receipts across tool versions`, extracts the existing flag parser and compact direct/Code Mode result projection for reuse; it does not yet replace V2's public messaging tools, weaken encrypted/audited delivery, or change runtime defaults.
+
 ## Qualification checkpoint
 
 The current 0.169.0 integration candidate requires coordinated remote regeneration and a full, unfiltered Manual Verify run at the final commit SHA after all owning fixups are folded. Historical receipts apply exclusively to their recorded source; the entire rebased stack requires fresh qualification. The preservation replay is not completion of the selected compact-V2 parity workstream, and V1 remains supported until that parity is proved. Current partial schema merges and preserved compressed bundles are provisional until regenerated and reviewed from the exact candidate.

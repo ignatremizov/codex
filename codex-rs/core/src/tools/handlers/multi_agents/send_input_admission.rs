@@ -1,8 +1,5 @@
 //! Shared single-recipient preparation and admission; lifecycle aggregation belongs to callers.
 
-use super::send_input::SendInputAdmissionStatus;
-use super::send_input::SendInputMode;
-use super::send_input::SendInputResult;
 use super::*;
 use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::api::AgentTarget;
@@ -10,10 +7,13 @@ use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::AgentModelInputOrigin;
 use crate::agent::control::QueuedInputObservationParams;
 use crate::agent::control::ResponseObservationSubmission;
+use crate::agent::input_policy::SendInputMode;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::tools::handlers::multi_agents_input::SendInputAdmissionStatus;
+use crate::tools::handlers::multi_agents_input::SendInputResult;
 use codex_protocol::WakeEventMailboxSubscription;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::MultiAgentVersion;
