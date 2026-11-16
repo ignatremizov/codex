@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use super::super::rmcp_client::remote_aware_environment_id;
 use super::super::rmcp_client::remote_aware_stdio_server_bin;
+use super::super::rmcp_client::remote_aware_stdio_server_cwd;
 
 #[test_case::test_case(false; "bundled")]
 #[test_case::test_case(true; "catalog_messages")]
@@ -36,6 +37,9 @@ async fn changed_sections_and_entries_append_without_repeating_the_catalog(
         serde_json::from_value(json!({
             "command": command,
             "environment_id": environment_id,
+            // Executor-backed stdio starts in a remote environment: its cwd
+            // must be an explicit in-environment path, not a host default.
+            "cwd": remote_aware_stdio_server_cwd(),
             "env": {"MCP_TEST_SERVER_INSTRUCTIONS": instructions},
             "enabled_tools": tools,
             "omit_tools_from": omitted,

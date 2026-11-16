@@ -1,23 +1,31 @@
 ---
 source: core/tests/suite/scenarios_exec_tools.rs
+assertion_line: 419
 expression: snapshot
 ---
 Scenario: Configured exec updates and removals use the catalog wording. Empty overrides omit that wording while retaining the changed definitions and removal keys. Compaction restores the current catalog.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (1; hash=b2c6697017b587f1):
-        - namespace/functions; hash=e9ce2d0830f744bb
+00:additional_tools/developer (2; hash=07a442e39c0edf59):
+        - namespace/functions; hash=5d277daa8eb03736
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -55,18 +63,25 @@ Scenario: Configured exec updates and removals use the catalog wording. Empty ov
 
 ## Window 2 (after request 4: settings changed (model))
 -- request 5 (turn) --
-00:additional_tools/developer (1; hash=b2c6697017b587f1):
-        - namespace/functions; hash=e9ce2d0830f744bb
+00:additional_tools/developer (2; hash=07a442e39c0edf59):
+        - namespace/functions; hash=5d277daa8eb03736
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -171,18 +186,25 @@ Scenario: Configured exec updates and removals use the catalog wording. Empty ov
 
 ## Window 3 (after request 10: settings changed (model))
 -- request 11 (turn) --
-00:additional_tools/developer (1; hash=b2c6697017b587f1):
-        - namespace/functions; hash=e9ce2d0830f744bb
+00:additional_tools/developer (2; hash=07a442e39c0edf59):
+        - namespace/functions; hash=5d277daa8eb03736
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -297,18 +319,25 @@ Scenario: Configured exec updates and removals use the catalog wording. Empty ov
 
 ## Window 4 (after request 11: settings changed (model))
 -- request 12 (turn) --
-00:additional_tools/developer (1; hash=b2c6697017b587f1):
-        - namespace/functions; hash=e9ce2d0830f744bb
+00:additional_tools/developer (2; hash=07a442e39c0edf59):
+        - namespace/functions; hash=5d277daa8eb03736
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+02:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -431,11 +460,14 @@ Scenario: Configured exec updates and removals use the catalog wording. Empty ov
 
 ## Window 5 (after request 13: input diverged at item 00)
 -- request 14 (turn) --
-00:additional_tools/developer (1; hash=c3cdfbca78ae91e2):
-        - namespace/functions; hash=36087e37fe329f5c
+00:additional_tools/developer (2; hash=89eea8aa1ce9bd77):
+        - namespace/functions; hash=5cb5d5b946d9199e
           - custom/exec
           - function/wait
+          - function/compact
           - function/request_user_input
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+          - function/check_mail
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/user:
@@ -460,11 +492,15 @@ Scenario: Configured exec updates and removals use the catalog wording. Empty ov
     Re-enable echo service entries: echo and cwd.
 12:message/user:
     Combined redefinition: resource revision, common instructions, and shared types.
-13:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+13:message/developer[3]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 14:message/user:
     <ENVIRONMENT_CONTEXT>
