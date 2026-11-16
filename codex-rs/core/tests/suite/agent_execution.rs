@@ -621,6 +621,10 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         tokio::time::timeout(Duration::from_secs(/*secs*/ 10), created_threads.recv()).await??;
     let first_thread = test.thread_manager.get_thread(first_thread_id).await?;
     wait_for_agent_completion(first_thread.as_ref()).await?;
+    assert_eq!(
+        first_thread.agent_status().await,
+        AgentStatus::Completed(Some("worker completed".to_string())),
+    );
 
     let evicted_thread = Arc::downgrade(&first_thread);
     drop(first_thread);
@@ -710,10 +714,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
                 .find(|agent| agent["agent_name"] == "/root/first")
         })
         .context("evicted worker must remain listed")?;
-    assert_eq!(
-        first["agent_status"],
-        json!({"completed": "worker completed"}),
-    );
+    assert_eq!(first["agent_status"], json!("completed"));
     assert_eq!(
         first["last_task_message"],
         if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {

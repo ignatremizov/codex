@@ -1,5 +1,6 @@
 use super::analytics::ToolCallAnalytics;
 use super::*;
+use crate::agent::status::CompactAgentStatus;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use codex_tools::ToolSpec;
 
@@ -106,8 +107,38 @@ pub(crate) struct ListAgentsResult {
     agents: Vec<ListedAgent>,
 }
 
+#[derive(Serialize)]
+struct ListedAgentView<'a> {
+    agent_name: &'a str,
+    agent_status: CompactAgentStatus,
+    last_task_message: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct ListAgentsView<'a> {
+    agents: Vec<ListedAgentView<'a>>,
+}
+
+impl ListAgentsResult {
+    fn model_view(&self) -> ListAgentsView<'_> {
+        ListAgentsView {
+            agents: self
+                .agents
+                .iter()
+                .map(|agent| ListedAgentView {
+                    agent_name: &agent.agent_name,
+                    agent_status: CompactAgentStatus::from(&agent.agent_status),
+                    last_task_message: agent.last_task_message.as_deref(),
+                })
+                .collect(),
+        }
+    }
+}
+
 impl ToolOutput for ListAgentsResult {
     fn log_output(&self) -> String {
+        // Preserve exact backend status payloads in the canonical tool log; only the
+        // model-facing discovery projection omits repeated response bodies.
         tool_output_json_text(self, "list_agents")
     }
 
@@ -116,10 +147,20 @@ impl ToolOutput for ListAgentsResult {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(call_id, payload, self, Some(true), "list_agents")
+        tool_output_response_item(
+            call_id,
+            payload,
+            &self.model_view(),
+            Some(true),
+            "list_agents",
+        )
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(self, "list_agents")
+        tool_output_code_mode_result(&self.model_view(), "list_agents")
     }
 }
+
+#[cfg(test)]
+#[path = "list_agents_tests.rs"]
+mod tests;

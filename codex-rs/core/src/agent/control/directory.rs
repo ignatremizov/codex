@@ -19,18 +19,7 @@ pub(crate) enum AgentDirectoryStatus {
     All,
 }
 
-/// Lifecycle summary without the target's potentially large or private final response.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum AgentDirectoryEntryStatus {
-    PendingInit,
-    Running,
-    Completed,
-    Interrupted,
-    Errored,
-    Closed,
-    Unloaded,
-}
+pub(crate) use crate::agent::status::CompactAgentStatus as AgentDirectoryEntryStatus;
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct AgentDirectoryEntry {
@@ -131,15 +120,7 @@ impl LocalAgentControl {
             let status = if alias.state == codex_agent_graph_store::AgentAliasState::Closed {
                 AgentDirectoryEntryStatus::Closed
             } else if let Some(thread) = &thread {
-                match thread.agent_status().await {
-                    AgentStatus::PendingInit => AgentDirectoryEntryStatus::PendingInit,
-                    AgentStatus::Running => AgentDirectoryEntryStatus::Running,
-                    AgentStatus::Completed(_) => AgentDirectoryEntryStatus::Completed,
-                    AgentStatus::Interrupted => AgentDirectoryEntryStatus::Interrupted,
-                    AgentStatus::Errored(_) => AgentDirectoryEntryStatus::Errored,
-                    AgentStatus::Shutdown => AgentDirectoryEntryStatus::Closed,
-                    AgentStatus::NotFound => AgentDirectoryEntryStatus::Unloaded,
-                }
+                AgentDirectoryEntryStatus::from(&thread.agent_status().await)
             } else {
                 AgentDirectoryEntryStatus::Unloaded
             };

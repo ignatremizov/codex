@@ -1,5 +1,45 @@
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
+use serde::Serialize;
+
+/// Version-neutral roster state: discovery is not a delivery of a final answer or error body.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CompactAgentStatus {
+    PendingInit,
+    Running,
+    Completed,
+    Interrupted,
+    Errored,
+    Closed,
+    Unloaded,
+}
+
+impl CompactAgentStatus {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::PendingInit,
+        Self::Running,
+        Self::Completed,
+        Self::Interrupted,
+        Self::Errored,
+        Self::Closed,
+        Self::Unloaded,
+    ];
+}
+
+impl From<&AgentStatus> for CompactAgentStatus {
+    fn from(status: &AgentStatus) -> Self {
+        match status {
+            AgentStatus::PendingInit => Self::PendingInit,
+            AgentStatus::Running => Self::Running,
+            AgentStatus::Completed(_) => Self::Completed,
+            AgentStatus::Interrupted => Self::Interrupted,
+            AgentStatus::Errored(_) => Self::Errored,
+            AgentStatus::Shutdown => Self::Closed,
+            AgentStatus::NotFound => Self::Unloaded,
+        }
+    }
+}
 
 /// Derive the next agent status from a single emitted event.
 /// Returns `None` when the event does not affect status tracking.

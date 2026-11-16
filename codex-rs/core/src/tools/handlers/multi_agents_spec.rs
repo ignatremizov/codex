@@ -1,3 +1,4 @@
+use crate::agent::status::CompactAgentStatus;
 use crate::config::MultiAgentMessageDelivery;
 use codex_protocol::openai_models::ModelPreset;
 use codex_tools::JsonSchema;
@@ -605,8 +606,9 @@ fn list_agents_output_schema() -> Value {
                             "description": "Canonical task name for the agent when available, otherwise the agent id."
                         },
                         "agent_status": {
-                            "description": "Last known status of the agent.",
-                            "allOf": [agent_status_output_schema()]
+                            "type": "string",
+                            "description": "Lifecycle summary only; roster discovery does not deliver the agent's final answer or error body.",
+                            "enum": CompactAgentStatus::ALL
                         },
                         "last_task_message": {
                             "type": ["string", "null"],

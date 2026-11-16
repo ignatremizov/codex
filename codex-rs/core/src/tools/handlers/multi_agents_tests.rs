@@ -2359,6 +2359,12 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         ))
         .await
         .expect("list_agents should succeed");
+    let logged: serde_json::Value =
+        serde_json::from_str(&output.log_output()).expect("full roster audit");
+    assert_eq!(
+        logged["agents"][1]["agent_status"],
+        json!({"completed": "done"})
+    );
     let (content, success) = expect_text_output(output);
     let result: ListAgentsResult =
         serde_json::from_str(&content).expect("list_agents result should be json");
@@ -2374,7 +2380,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .iter()
         .find(|agent| agent.agent_name == "/root/worker")
         .expect("worker agent should be listed");
-    assert_eq!(worker.agent_status, json!({"completed": "done"}));
+    assert_eq!(worker.agent_status, json!("completed"));
     assert_eq!(worker.last_task_message, None);
     assert_eq!(success, Some(true));
 }

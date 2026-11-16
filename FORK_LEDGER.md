@@ -526,3 +526,11 @@ Ownership anchor: `feat(agents): share explicit compact selectors with native V2
 Native controller reference resolution and typed send/resume/interrupt targets accept explicit `ref:`, `nick:`, `id:`, and `task:` selectors through the same durable root-scoped owner as V1/user controls. Unknown or denied explicit aliases never fall back to another path or backend. Unprefixed V2 paths retain their original semantics; host controllers retain full ownership of their own selector interpretation. Resolution alone does not load or transfer an agent.
 
 This is a partial V02 port with actual native V1/V2 and host integration coverage authored under `core/tests/suite/agent_compact_selectors.rs` and `agent_control_tests.rs`. No executable parity result is claimed before remote qualification. V1 stays available, the V2 public messaging tools are not yet consolidated, and envelope-size budgets remain unproved. See `docs/multi-agent-v2-fork-parity.md` for the explicit remaining obligations.
+
+## 0.169 integration: compact read-only V2 roster
+
+Ownership anchor: `feat(agents): share compact roster status across V1 and V2`.
+
+V1 directory status and model-facing V2 `list_agents` use one lifecycle-only conversion (`pending_init`, `running`, `completed`, `interrupted`, `errored`, `closed`, `unloaded`). V2 keeps its canonical agent names and complete authored task text, and preserves full completion/error payloads in the unchanged tool audit log. Direct and Code Mode presentations agree. Roster discovery does not consume response subscriptions or replace canonical history.
+
+The V2 tool schema now describes the compact projection. Authored tests cover every lifecycle state, full log evidence, direct/Code Mode equivalence, existing native handler behavior, and a declared two-row UTF-8 envelope budget independent of repeated result bodies. These are pending remote qualification, not a claim of measured token savings or full V2 parity.

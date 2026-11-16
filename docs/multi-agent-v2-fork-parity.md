@@ -22,6 +22,14 @@ This is an implemented part of V02, not full addressing parity. Source-authored 
 
 Semantic owner: `feat(agents): share explicit compact selectors with native V2 controllers`.
 
+## Compact read-only roster status
+
+Native V1 discovery and V2 roster projection now use one `CompactAgentStatus` conversion. The model-facing V2 `list_agents` output retains canonical agent names and complete readable task text, but uses the same small lifecycle labels as V1 instead of embedding final-response or error bodies in every roster refresh. Full backend `AgentStatus` payloads remain unchanged in canonical tool logs and the response/observation owners; discovery does not consume a final-response receipt or change agent ownership. Direct and Code Mode outputs use the same projection.
+
+The advertised output schema describes those exact lifecycle labels. Source tests cover every status, complete audit payload retention, direct/Code Mode equivalence, unchanged V1 vocabulary, and a two-entry 512-byte model-envelope budget with large completion/error payloads. The test emits UTF-8 byte counts through tracing when executed; no token reduction or end-to-end latency saving is claimed before measurement. Complete task text is deliberately retained, so the bound applies to the specified fixture, not arbitrary roster tasks.
+
+Semantic owner: `feat(agents): share compact roster status across V1 and V2`. This implements part of V11/V12 without changing roster visibility, host authority, wait semantics, messaging tools, or runtime defaults. Remote execution and final schema/snapshot checks remain pending.
+
 ## Parity inventory
 
 The table records source-inspection status, not test results. An implementation can be present without being proven. During each port, add the actual owner and executed V1/V2 test receipts; any unproved applicable obligation continues to block V1 retirement.
@@ -39,7 +47,7 @@ The table records source-inspection status, not test results. An implementation 
 | V09 — settings | Independent model/effort/tier, roles, captured provider/auth/executor, and bounded/full inheritance | Existing fork V2 resume/model/role and source-authority changes are retained, not assumed equivalent merely by field names. | Requested/effective settings, foreign executor, managed restrictions, and future-turn persistence. |
 | V10 — review and audit | Native hook identity, review before effects, post-hook action validation, and encrypted/audit pairing | Current V2 `EncryptedWithAudit` remains the default; compacting presentation must not replace it with plaintext or drop ciphertext/audit evidence. | All delivery modes, payload bounds, namespace aliases, Guardian denial, and opaque/readable separation. |
 | V11 — history and UI | Canonical source/receipt IDs, compaction/rollback/resume, complete export, labels, and compact projections | Source-preserving V1 and V2 publication paths exist but differ; they need explicit convergence rather than truncating authored content. | Replay and rollback proofs, same-text distinct identities, full copy, and receiving-thread presentation. |
-| V12 — questions/roster | Requester-bound asynchronous replies and stable short references; discovery must not create activity or ownership | Shared extensions and V2 listing are present; cross-version behavior remains to be qualified. | Cross-thread question identity, cold metadata, no mutation from roster reads. |
+| V12 — questions/roster | Requester-bound answers, qN identities, opt-in read-only discovery | V1/V2 now share compact lifecycle-only roster status; V2 full audit and task text retained. Visibility and question capabilities remain separately scoped. | Status/audit/size and actual handler tests authored; requester and side-effect runtime checks still require remote receipts. |
 | V13 — backend ownership | Native versus host control, host admission/accounting/outcomes, service tiers, and exact ownership epochs | `AgentControl` remains the backend boundary. A missing host capability cannot fall back to local V1 runtime or claim acceptance. | Explicit capability failures and supported local/host/mixed-tree/executor paths. |
 | V14 — exposure/continuity | Configured namespaces, discovery, Code Mode, hooks, prompts, schemas, and inert historical compatibility | V1 stays selectable. V2 public tool consolidation and guidance propagation must be coordinated rather than deleting names alone. | Both actual modes, old-record replay without execution, generated contracts, and no duplicate public variants. |
 

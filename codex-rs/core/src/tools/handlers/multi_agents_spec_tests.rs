@@ -748,13 +748,15 @@ fn list_agents_tool_status_schema_includes_interrupted() {
 
     assert_eq!(
         output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
-            ["properties"]["agent_status"]["allOf"][0]["oneOf"][0]["enum"],
+            ["properties"]["agent_status"]["enum"],
         json!([
             "pending_init",
             "running",
+            "completed",
             "interrupted",
-            "shutdown",
-            "not_found"
+            "errored",
+            "closed",
+            "unloaded"
         ])
     );
 }
