@@ -31,6 +31,9 @@ use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_core::TurnStartOptions;
+use codex_core::UnifiedInputPolicy;
+use codex_core::UnifiedModelInput;
+use codex_core::UnifiedModelInputRequest;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -150,6 +153,7 @@ pub(super) struct TestAgentControl {
     mail: Mutex<Vec<PendingAgentMessage>>,
     mailbox_state: tokio::sync::watch::Sender<bool>,
     agents: Mutex<HashMap<String, ThreadId>>,
+    resolve_calls: AtomicUsize,
 }
 
 impl TestAgentControl {
@@ -160,6 +164,7 @@ impl TestAgentControl {
             mail: Mutex::default(),
             mailbox_state: tokio::sync::watch::channel(/*init*/ false).0,
             agents: Mutex::new(HashMap::from([("/root".into(), thread_id)])),
+            resolve_calls: AtomicUsize::new(0),
         }
     }
 }
@@ -176,6 +181,7 @@ impl AgentControl for TestAgentControl {
         _source: &'a SessionSource,
         target: &'a str,
     ) -> BoxFuture<'a, CodexResult<ThreadId>> {
+        self.resolve_calls.fetch_add(1, Ordering::Relaxed);
         Box::pin(async move {
             if let Some(id) = self.agents.lock().expect("agents lock").get(target) {
                 return Ok(*id);
@@ -354,6 +360,46 @@ async fn test_with_host_control(
         .build_with_auto_env(server)
         .await?;
     Ok((test, controller))
+}
+
+#[tokio::test]
+async fn host_rejects_unified_input_before_resolving_target_or_interrupting() -> anyhow::Result<()>
+{
+    let server = responses::start_mock_server().await;
+    let (test, controller) = test_with_host_control(&server, &[]).await?;
+    let before = controller.resolve_calls.load(Ordering::Relaxed);
+    let outcome = controller
+        .submit_unified_input(UnifiedModelInputRequest {
+            caller: test.session_configured.thread_id,
+            source_instance_id: uuid::Uuid::now_v7(),
+            sender_turn_id: "host-turn".into(),
+            call_id: "host-send".into(),
+            batch_id: None,
+            target: AgentTarget::Reference("never-resolve-this".into()),
+            resume_config: test.config.clone(),
+            input: UnifiedModelInput::Structured(vec![UserInput::Text {
+                text: "preserve host input ownership".into(),
+                text_elements: Vec::new(),
+            }]),
+            policy: UnifiedInputPolicy::Default,
+            interrupt_descendant: true,
+            start_options: TurnStartOptions {
+                parent_turn_id: Some("host-turn".into()),
+                ..Default::default()
+            },
+        })
+        .await;
+    let error = outcome
+        .err()
+        .expect("host must reject unsupported capability");
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::UnsupportedOperation(_)
+    ));
+    assert!(error.to_string().contains("selected agent controller"));
+    assert_eq!(controller.resolve_calls.load(Ordering::Relaxed), before);
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

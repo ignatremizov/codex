@@ -87,6 +87,7 @@ pub(crate) use close_response::CloseAgentResponseDisposition;
 pub(crate) use close_response::ClosedAgent;
 pub(crate) use input::AgentControlInput;
 pub(crate) use turn_queue::QueuedInputObservationParams;
+mod unified_input;
 mod user_dispatch;
 mod user_observation;
 mod user_resume;

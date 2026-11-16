@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "control/unified_input_tests.rs"]
+mod unified_input_tests;
 #[path = "control/v2_completion_watcher_tests.rs"]
 mod v2_completion_watcher_tests;
 use crate::CodexThread;

@@ -30,6 +30,35 @@ The advertised output schema describes those exact lifecycle labels. Source test
 
 Semantic owner: `feat(agents): share compact roster status across V1 and V2`. This implements part of V11/V12 without changing roster visibility, host authority, wait semantics, messaging tools, or runtime defaults. Remote execution and final schema/snapshot checks remain pending.
 
+## Native selected-controller structured input groundwork
+
+The integration now adds `AgentControl::submit_unified_input` with typed policy,
+original source incarnation/turn/tool-call identity, typed structured or
+prepared-message payload, and separate admitted/queued/uncertain receipts.
+The host default fails closed **before target resolution or any side effect**;
+no adapter is authorized to bypass a host rejection by switching to the local
+runtime. Native structured input reuses the existing attributed-input owner,
+observer/admission transaction, distinct-turn FIFO, descendant-only interrupt,
+and receiver-specific omitted-policy default. The original typed items and
+attachments remain in canonical presentation, and unknown acceptance is not
+reported as proved admission or a retryable clean failure.
+
+This is an **internal, unadvertised implementation slice**, not a public V2
+`send_input` migration and not complete parity. Native `Prepared` messages,
+including `EncryptedWithAudit`, are explicitly unsupported until an exact
+receiving-turn representation preserves both ciphertext and readable audit;
+relabeling them as human `UserInput` is prohibited. Versioned durable `z`/`zf`
+mailbox storage and claims are likewise unsupported here. The old V2 delivery
+path is left intact while the new representation and runtime tests are prepared.
+The existing V1 contract and selection defaults remain unchanged.
+
+Source tests cover host rejection without resolution, early encrypted/audit
+and mailbox rejection, and stale sender-turn validation. Ordinary/queue
+successful admissions, persisted source/turn binding, live/cold resume, actual
+Code Mode and configured namespace dispatch, and full q/z semantics still
+require explicit remote V2 coverage. No passing test is claimed until that
+remote verification executes.
+
 ## Parity inventory
 
 The table records source-inspection status, not test results. An implementation can be present without being proven. During each port, add the actual owner and executed V1/V2 test receipts; any unproved applicable obligation continues to block V1 retirement.

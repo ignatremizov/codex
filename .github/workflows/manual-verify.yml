@@ -859,6 +859,17 @@ jobs:
           (evidence / 'provenance.json').write_text(json.dumps(receipt, indent=2) + '\n')
           PYRECEIPT
 
+      # Shares the producer's exact codex-core lib-test compilation; this exercises
+      # native structured admission even when the full workspace archive is interrupted.
+      - name: Verify native unified structured-input admission
+        env:
+          CODEX_TEST_AGENT_ENVELOPE_DIR: ${{ runner.temp }}/fork-agent-envelope-evidence
+        run: |
+          set -euo pipefail
+          cargo test --locked --profile ci-test -p codex-core --lib \
+            agent::control::tests::unified_input_tests:: \
+            -- --nocapture 2>&1 | tee "$CODEX_TEST_AGENT_ENVELOPE_DIR/native-unified-input.log"
+
       - name: Upload fork baseline evidence
         if: always() && steps.capture.outcome != 'skipped'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

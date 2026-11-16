@@ -69,6 +69,25 @@ pub trait AgentControl: Send + Sync {
     /// the root. Legacy user input can address loaded threads outside the agent registry.
     fn send(&self, request: SendRequest) -> BoxFuture<'_, Result<DeliveryReceipt>>;
 
+    /// Admit attributed, model-authored input through the selected controller.
+    ///
+    /// This is a separate, opt-in capability from V2's historical `send` operation.
+    /// The default host implementation rejects before resolving targets, loading agents,
+    /// interrupting, reserving observers, or accepting input. Unsupported payloads and
+    /// policies must likewise reject without partial effects; callers must not fall back
+    /// to a local controller after this error. Successful admission and unknown delivery
+    /// are different outcomes, and neither proves that the recipient read the input.
+    fn submit_unified_input(
+        &self,
+        _request: UnifiedModelInputRequest,
+    ) -> BoxFuture<'_, Result<UnifiedInputReceipt>> {
+        Box::pin(async {
+            Err(codex_protocol::error::CodexErr::UnsupportedOperation(
+                "the selected agent controller does not support unified agent input".to_string(),
+            ))
+        })
+    }
+
     /// Take queued, non-turn-starting mail in order, without loading the recipient.
     /// This in-memory operation performs no I/O; returning transfers ownership to the caller.
     fn take_mailbox(&self, agent: ThreadId) -> Vec<crate::PendingAgentMessage>;
@@ -239,6 +258,71 @@ pub struct ResumeRequest {
     pub resume_config: Config,
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Input trusted as agent-authored, rather than reclassified as human input.
+///
+/// Structured items preserve typed attachments and their canonical presentation.
+/// Prepared V2 messages carry separate ciphertext and readable audit content; the
+/// receiving controller must explicitly support that representation before admission.
+pub enum UnifiedModelInput {
+    Structured(Vec<UserInput>),
+    Prepared(AgentMessage),
+}
+
+/// Separates receiver scheduling from final/commentary observation and durable mail.
+///
+/// `Default` is not an explicit passive subscription: its directional behavior
+/// belongs to the selected backend. Queue is a distinct turn, not V2 QueueOnly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnifiedInputPolicy {
+    Default,
+    Response {
+        commentary: bool,
+        final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery,
+    },
+    Queue {
+        commentary: bool,
+        final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery,
+    },
+    Mailbox {
+        final_subscription: codex_protocol::WakeEventMailboxSubscription,
+    },
+}
+
+/// The exact captured source incarnation and input identity. Resolution must never
+/// silently replace this identity with the current owner of the same thread ID.
+pub struct UnifiedModelInputRequest {
+    pub caller: ThreadId,
+    pub source_instance_id: uuid::Uuid,
+    pub sender_turn_id: String,
+    pub call_id: String,
+    pub batch_id: Option<String>,
+    pub target: AgentTarget,
+    pub resume_config: Config,
+    pub input: UnifiedModelInput,
+    pub policy: UnifiedInputPolicy,
+    pub interrupt_descendant: bool,
+    pub start_options: TurnStartOptions,
+}
+
+/// Report a proved admission, a queued distinct turn, or an uncertain result.
+/// None of the outcomes prove that a receiving model consumed the input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnifiedInputStatus {
+    Submitted,
+    Queued,
+    /// Admission was proved, but a later persistence/observation step failed.
+    AdmittedWithWarning,
+    /// Input may have been accepted; do not automatically retry.
+    Unknown,
+}
+
+pub struct UnifiedInputReceipt {
+    pub submission_id: String,
+    pub status: UnifiedInputStatus,
+    pub target_turn_id: Option<String>,
+    pub warning: Option<String>,
 }
 
 pub struct DeliveryReceipt {

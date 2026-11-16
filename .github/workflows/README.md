@@ -132,6 +132,11 @@ complete JSON evidence, compile/test log, original source fixture, and a
 source-tree/blob/sha256 receipt even when the full archive runner is interrupted.
 The fork and pinned-upstream captures are both required when selected. Neither
 can replace the unfiltered nextest archive or any of the four test shards.
+The fork capture job also runs the selected native unified structured-input
+lib tests against its already compiled `codex-core` test binary. Their separate
+log is uploaded with the fork evidence. Those tests are a narrow admission
+regression, not full Code Mode, host, or V2 runtime qualification. They do not
+substitute for the independent unfiltered archive and four test shards.
 
 `capture_upstream_agent_envelopes` adds a separate, opt-in measurement job to
 Manual Verify. It checks out upstream code parent

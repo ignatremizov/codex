@@ -13,6 +13,8 @@ use crate::agent::api::DeliveryReceipt;
 use crate::agent::api::ResumeRequest;
 use crate::agent::api::SendRequest;
 use crate::agent::api::SpawnRequest;
+use crate::agent::api::UnifiedInputReceipt;
+use crate::agent::api::UnifiedModelInputRequest;
 use crate::agent::types::AgentExecutionGuard;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
@@ -197,6 +199,13 @@ impl AgentControl for LocalAgentControl {
                 submission_id,
             })
         })
+    }
+
+    fn submit_unified_input(
+        &self,
+        request: UnifiedModelInputRequest,
+    ) -> BoxFuture<'_, Result<UnifiedInputReceipt>> {
+        Box::pin(self.submit_native_unified_input(request))
     }
 
     fn take_mailbox(&self, agent: ThreadId) -> Vec<crate::PendingAgentMessage> {
