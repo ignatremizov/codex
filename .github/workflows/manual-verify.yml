@@ -870,6 +870,18 @@ jobs:
             agent::control::tests::unified_input_tests:: \
             -- --nocapture 2>&1 | tee "$CODEX_TEST_AGENT_ENVELOPE_DIR/native-unified-input.log"
 
+      - name: Verify prepared-agent protocol and runtime
+        env:
+          CODEX_TEST_AGENT_ENVELOPE_DIR: ${{ runner.temp }}/fork-agent-envelope-evidence
+        run: |
+          set -euo pipefail
+          cargo test --locked --profile ci-test -p codex-protocol --lib \
+            prepared_agent_input::tests:: \
+            -- --nocapture 2>&1 | tee "$CODEX_TEST_AGENT_ENVELOPE_DIR/prepared-protocol-input.log"
+          cargo test --locked --profile ci-test -p codex-core --lib \
+            prepared_agent_input \
+            -- --nocapture 2>&1 | tee "$CODEX_TEST_AGENT_ENVELOPE_DIR/prepared-core-input.log"
+
       - name: Upload fork baseline evidence
         if: always() && steps.capture.outcome != 'skipped'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

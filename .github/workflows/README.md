@@ -148,3 +148,9 @@ The requested measurement must succeed for the ordinary verification result to
 pass; the normal static checks and all test shards remain unfiltered. This job
 is a serializer baseline, not upstream runtime qualification. It deliberately
 reports remaining unmeasured delivery cases and does not claim token savings.
+
+The opt-in fork envelope job also runs the prepared-agent protocol and native
+runtime tests, recording their logs separately from serializer measurements.
+These tests exercise the new typed input and canonical ciphertext/audit boundary;
+they do not make a serializer report into runtime or full-parity evidence. The
+full unfiltered archive and four-shard qualification remain independent requirements.

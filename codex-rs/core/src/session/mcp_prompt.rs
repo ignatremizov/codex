@@ -242,6 +242,7 @@ impl Session {
             TurnInput::ResponseItem(envelope) => use_text(&envelope.item, server_name),
             TurnInput::UserInput { .. }
             | TurnInput::AgentInput { .. }
+            | TurnInput::PreparedAgentInput { .. }
             | TurnInput::FunctionCallOutput(_)
             | TurnInput::UserShellContextReady
             | TurnInput::InterAgentCommunication(_) => None,
@@ -473,6 +474,7 @@ impl Session {
                 TurnInput::ResponseItem(item) => Some(item),
                 TurnInput::UserInput { .. }
                 | TurnInput::AgentInput { .. }
+                | TurnInput::PreparedAgentInput { .. }
                 | TurnInput::FunctionCallOutput(_)
                 | TurnInput::UserShellContextReady
                 | TurnInput::InterAgentCommunication(_) => None,

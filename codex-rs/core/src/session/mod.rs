@@ -328,6 +328,7 @@ pub(crate) mod multi_agents;
 mod ownership_handoff;
 mod passive_final_activity;
 mod plugin_selection;
+mod prepared_agent_input;
 mod prompt_input;
 mod realtime_history;
 mod reconstruction_publication;

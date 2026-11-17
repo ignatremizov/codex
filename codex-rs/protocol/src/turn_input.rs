@@ -41,6 +41,9 @@ pub enum TurnInput {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         context: Vec<ResponseItem>,
     },
+    /// Prepared native agent content whose admission binds to an exact target turn.
+    /// Unlike legacy mail, this never returns an acceptance-only receipt.
+    PreparedAgentInput(Box<crate::PreparedAgentInput>),
     ResponseItem(ResponseItem),
     AnnotatedResponseItem(AnnotatedResponseItem),
     InterAgentCommunication(InterAgentCommunication),

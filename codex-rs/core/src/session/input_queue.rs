@@ -60,6 +60,11 @@ pub enum TurnInput {
         #[serde(flatten)]
         metadata: UserInputMetadata,
     },
+    PreparedAgentInput {
+        input: Box<codex_protocol::PreparedAgentInput>,
+        #[serde(flatten)]
+        metadata: UserInputMetadata,
+    },
     FunctionCallOutput(#[serde(with = "turn_input_response_item")] ResponseItemEnvelope),
     // Preserve the existing serialized format while carrying injection API metadata
     // through the in-memory queue.
@@ -112,13 +117,17 @@ impl TurnInput {
             }
             Self::UserInput { .. }
             | Self::AgentInput { .. }
+            | Self::PreparedAgentInput { .. }
             | Self::UserShellContextReady
             | Self::FunctionCallOutput(_) => true,
         }
     }
 
     pub(crate) fn is_prompt(&self) -> bool {
-        matches!(self, Self::UserInput { .. } | Self::AgentInput { .. })
+        matches!(
+            self,
+            Self::UserInput { .. } | Self::AgentInput { .. } | Self::PreparedAgentInput { .. }
+        )
     }
 }
 
@@ -151,6 +160,7 @@ impl TurnInput {
             }) => true,
             Self::UserInput { .. }
             | Self::AgentInput { .. }
+            | Self::PreparedAgentInput { .. }
             | Self::UserShellContextReady
             | Self::FunctionCallOutput(_)
             | Self::ResponseItem(_) => false,
@@ -166,6 +176,7 @@ impl TurnInput {
             }) => InputQueueActivity::Mailbox,
             Self::UserInput { .. }
             | Self::AgentInput { .. }
+            | Self::PreparedAgentInput { .. }
             | Self::UserShellContextReady
             | Self::FunctionCallOutput(_)
             | Self::ResponseItem(_) => InputQueueActivity::Steer,
@@ -407,6 +418,7 @@ impl InputQueue {
                     TurnInput::UserInput { .. }
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::AgentInput { .. }
+                    | TurnInput::PreparedAgentInput { .. }
                     | TurnInput::UserShellContextReady
                     | TurnInput::ResponseItem(_) => None,
                 })
@@ -793,6 +805,7 @@ impl InputQueue {
                 TurnInput::UserInput { .. }
                 | TurnInput::FunctionCallOutput(_)
                 | TurnInput::AgentInput { .. }
+                | TurnInput::PreparedAgentInput { .. }
                 | TurnInput::ResponseItem(_)
                 | TurnInput::UserShellContextReady
                 | TurnInput::InterAgentCommunication(_) => {}

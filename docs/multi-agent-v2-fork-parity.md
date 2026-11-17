@@ -30,34 +30,50 @@ The advertised output schema describes those exact lifecycle labels. Source test
 
 Semantic owner: `feat(agents): share compact roster status across V1 and V2`. This implements part of V11/V12 without changing roster visibility, host authority, wait semantics, messaging tools, or runtime defaults. Remote execution and final schema/snapshot checks remain pending.
 
-## Native selected-controller structured input groundwork
+## Selected-controller structured and prepared input
 
-The integration now adds `AgentControl::submit_unified_input` with typed policy,
-original source incarnation/turn/tool-call identity, typed structured or
-prepared-message payload, and separate admitted/queued/uncertain receipts.
-The host default fails closed **before target resolution or any side effect**;
-no adapter is authorized to bypass a host rejection by switching to the local
-runtime. Native structured input reuses the existing attributed-input owner,
-observer/admission transaction, distinct-turn FIFO, descendant-only interrupt,
-and receiver-specific omitted-policy default. The original typed items and
-attachments remain in canonical presentation, and unknown acceptance is not
-reported as proved admission or a retryable clean failure.
+`AgentControl::submit_unified_input` carries typed policy, original source
+incarnation/turn/tool-call identity, and separate admitted/queued/uncertain
+receipts. Its host default rejects **before target resolution or other effects**;
+no adapter may bypass a host rejection by switching to the local runtime.
+Native structured input reuses trusted attribution, the observation/admission
+transaction, distinct-turn FIFO, descendant-only interruption, and the
+receiver-specific omitted-policy default. CI21's targeted run at
+`c290c0d5016acacb62139368e70f385a8950d336` passed five native structured-input
+cases and the host fail-closed integration case. This is not full V2 parity.
 
-This is an **internal, unadvertised implementation slice**, not a public V2
-`send_input` migration and not complete parity. Native `Prepared` messages,
-including `EncryptedWithAudit`, are explicitly unsupported until an exact
-receiving-turn representation preserves both ciphertext and readable audit;
-relabeling them as human `UserInput` is prohibited. Versioned durable `z`/`zf`
-mailbox storage and claims are likewise unsupported here. The old V2 delivery
-path is left intact while the new representation and runtime tests are prepared.
-The existing V1 contract and selection defaults remain unchanged.
+A new internal `PreparedAgentInput` turn-input variant now carries native V2
+plaintext or opaque ciphertext, separate complete readable audit, captured
+sender/receiver incarnations, attribution, and the original invocation ID.
+It uses the existing exact start/steer admission transaction, not the legacy
+mailbox path returning `Accepted`. Prepared input is never converted to human
+`UserInput`, never sent through human prompt hooks, and never interpreted as
+human authorization. A mismatched receiver or runtime incarnation is rejected
+before admission. Native non-V2 senders and receivers are unsupported.
 
-Source tests cover host rejection without resolution, early encrypted/audit
-and mailbox rejection, and stale sender-turn validation. Ordinary/queue
-successful admissions, persisted source/turn binding, live/cold resume, actual
-Code Mode and configured namespace dispatch, and full q/z semantics still
-require explicit remote V2 coverage. No passing test is claimed until that
-remote verification executes.
+Canonical publication records the `ResponseItem::AgentMessage` model payload
+and its attributed presentation together. A host-only, defaulted optional
+history field retains the complete original prepared input, including both
+ciphertext and readable audit. Audit is not substituted for ciphertext in model
+context, and encrypted-only input does not acquire invented readable text.
+Old serialized inputs, ordinary V1 messages, and the existing V2 acceptance-only
+mail path keep their existing shapes and behavior.
+
+This new prepared-input slice has authored protocol, canonical-publication,
+selected-controller runtime, and public rejection tests, but **has not yet been
+remotely qualified**. Its tests cover payload/audit round trips, idle-start receipts, exact steering,
+queued acceptance without steering, canonical history and presentation,
+publication receipt settlement, and stale/foreign receiver rejection. Queued
+consumption after an idle transition, cold resume, cancellation races,
+Code Mode/hooks, and complete history/Guardian behavior remain separate gates.
+A queued receipt is not a read receipt, and an admitted turn is not proof of
+model consumption.
+
+Versioned durable V2 `z`/`zf` storage, inventory, claims, consumption, and
+conditional final handling remain explicitly unsupported before effects. The
+new prepared-input representation is not a shortcut around those requirements.
+The public V2 `send_message`/`followup_task` tools and the V1 contract/defaults
+remain unchanged; public unified `send_input` consolidation is still pending.
 
 ## Parity inventory
 
@@ -67,8 +83,8 @@ The table records source-inspection status, not test results. An implementation 
 | --- | --- | --- | --- |
 | V01 — unified input | One `send_input` with scalar/batch targets, message or structured items, interruption, and `w`; exact native identity | Shared policy/receipt foundation extracted. Separate V2 `send_message` and `followup_task` still need a unified adapter over real admission. | Actual advertised schemas and direct/Code Mode dispatch; invalid calls reject before admission. |
 | V02 — compact addressing | Root-scoped refs, nicknames, Main, UUID fallback, canonical task paths, and ambiguity rejection | Explicit native selectors share the existing alias owner through V2 controller APIs. Bare paths and host resolution stay distinct. Compact spawn/roster presentation and remaining parity require further work. | Native V1/V2 root-isolation, nonloading, encrypted delivery, and host no-fallback integration cases authored; remote results pending. |
-| V03 — observations | Commentary/final subscriptions, explicit passive versus omission, and exact receiving-turn identity | Shared parser is available; V2 encrypted-message delivery still needs the same observation admission/commit boundary. | Started, steered, queued, unknown, cancellation, and persisted source-to-turn correlation in both modes. |
-| V04 — queues | `q` target FIFO is distinct from ordinary, steer, and scheduled CLI input | Existing queue owner must accept the correct V2 message representation, not map `QueueOnly` to a distinct-turn queue. | FIFO, no implicit steer, source-next-turn final, and exact receipts. |
+| V03 — observations | Commentary/final subscriptions, explicit passive versus omission, and exact receiving-turn identity | Shared parser is available; a new internal prepared-agent type now uses the exact observation admission/commit boundary, pending remote qualification and public routing. | Started, steered, queued, unknown, cancellation, and persisted source-to-turn correlation in both modes. |
+| V04 — queues | `q` target FIFO is distinct from ordinary, steer, and scheduled CLI input | Existing queue owner now retains typed prepared content; targeted drain, replay, and publication proof remain pending. `QueueOnly` is not a distinct-turn queue. | FIFO, no implicit steer, source-next-turn final, and exact receipts. |
 | V05 — mailbox | `z` receiver-owned durable admission, consumption, inventory-bound conditional final, and no invented read receipt | Native V1 tool currently guards this surface. V2 needs an explicit supported representation/backend path; unsupported backends must fail before mutation. | Cold/loaded, claim epochs, crash recovery, consumption, and `zf` final tests. |
 | V06 — batch | Canonical recipient deduplication, per-recipient policy, partial outcomes, and safe cancellation | Shared target syntax and compact receipt are reusable; V2 batch dispatch remains to be ported. | Mixed recipients, independent default resolution, uncertain admission, and no blind retries. |
 | V07 — lifecycle | Spawn/resume/close, owning-parent restoration, detach/reattach, provisional cleanup, and durable subtree unload | Existing V2 spawn/resume/interruption and shared runtime owners are retained. Additional fork behavior needs real V2-path coverage. | Loaded/cold authority, accepted-child ownership, duplicate IDs, drain, and writer release. |

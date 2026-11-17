@@ -199,6 +199,8 @@ mod pending_input_persistence;
 mod permissions_messages;
 mod personality;
 mod plugins;
+#[path = "prepared_agent_input_tests.rs"]
+mod prepared_agent_input;
 mod prompt_cache_key;
 mod prompt_caching;
 mod prompt_debug_tests;

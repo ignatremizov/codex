@@ -171,6 +171,11 @@ pub struct CodexHarnessMetadata {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_search_fallback_used: bool,
 
+    /// Captured prepared-agent input, including complete opaque payload and audit.
+    /// Host-only source evidence, never a model-visible field or proof of consumption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_agent_input: Option<Box<codex_protocol::PreparedAgentInput>>,
+
     /// Sender context captured by the host when this task message was accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_user_messages: Option<Box<SenderUserMessages>>,

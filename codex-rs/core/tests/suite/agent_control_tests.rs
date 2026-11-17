@@ -362,9 +362,12 @@ async fn test_with_host_control(
     Ok((test, controller))
 }
 
+#[test_case(false; "structured input")]
+#[test_case(true; "prepared encrypted audit")]
 #[tokio::test]
-async fn host_rejects_unified_input_before_resolving_target_or_interrupting() -> anyhow::Result<()>
-{
+async fn host_rejects_unified_input_before_resolving_target_or_interrupting(
+    prepared: bool,
+) -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
     let (test, controller) = test_with_host_control(&server, &[]).await?;
     let before = controller.resolve_calls.load(Ordering::Relaxed);
@@ -377,10 +380,17 @@ async fn host_rejects_unified_input_before_resolving_target_or_interrupting() ->
             batch_id: None,
             target: AgentTarget::Reference("never-resolve-this".into()),
             resume_config: test.config.clone(),
-            input: UnifiedModelInput::Structured(vec![UserInput::Text {
-                text: "preserve host input ownership".into(),
-                text_elements: Vec::new(),
-            }]),
+            input: if prepared {
+                UnifiedModelInput::Prepared(codex_core::AgentMessage::EncryptedWithAudit {
+                    encrypted_content: "opaque host-owned input".into(),
+                    audit_content: "preserve complete host-owned audit".into(),
+                })
+            } else {
+                UnifiedModelInput::Structured(vec![UserInput::Text {
+                    text: "preserve host input ownership".into(),
+                    text_elements: Vec::new(),
+                }])
+            },
             policy: UnifiedInputPolicy::Default,
             interrupt_descendant: true,
             start_options: TurnStartOptions {

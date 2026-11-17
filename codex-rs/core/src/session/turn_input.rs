@@ -372,6 +372,9 @@ pub(super) async fn handle(
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
     let request = request.into();
+    if let SubmittedTurnInput::PreparedAgentInput(input) = &request.request.input {
+        session.validate_prepared_agent_input(input)?;
+    }
     if request.request.start.service_tier.is_some()
         && crate::agent::host::host_child_uses_shared_service_tier(session)
     {
@@ -406,6 +409,7 @@ pub(super) async fn handle(
         }
         TurnInputMode::StartIfIdle => {
             let kind = match &request.request.input {
+                SubmittedTurnInput::PreparedAgentInput(_) => TurnStartKind::User,
                 SubmittedTurnInput::UserInput { content, .. }
                 | SubmittedTurnInput::AgentInput { content, .. }
                     if !content.is_empty() =>
@@ -593,6 +597,7 @@ async fn start_or_steer(
         ..
     } = request;
     let has_explicit_input = match &input {
+        SubmittedTurnInput::PreparedAgentInput(_) => true,
         SubmittedTurnInput::UserInput { content, .. }
         | SubmittedTurnInput::AgentInput { content, .. } => !content.is_empty(),
         SubmittedTurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
@@ -740,7 +745,11 @@ impl Session {
         lease: impl Send,
         on_admitted: impl FnOnce(&str) + Send,
     ) -> CodexResult<TurnInputSubmission> {
+        if let SubmittedTurnInput::PreparedAgentInput(input) = &request.input {
+            self.validate_prepared_agent_input(input)?;
+        }
         let kind = match &request.input {
+            SubmittedTurnInput::PreparedAgentInput(_) => TurnStartKind::User,
             SubmittedTurnInput::UserInput { content, .. }
             | SubmittedTurnInput::AgentInput { content, .. } => {
                 if content.is_empty() {
@@ -1090,7 +1099,9 @@ async fn steer(
     } = request;
     if !matches!(
         &input,
-        SubmittedTurnInput::UserInput { .. } | SubmittedTurnInput::AgentInput { .. }
+        SubmittedTurnInput::UserInput { .. }
+            | SubmittedTurnInput::AgentInput { .. }
+            | SubmittedTurnInput::PreparedAgentInput(_)
     ) {
         return Err(CodexErr::InvalidRequest(
             "only user or agent input can steer a turn".to_string(),
@@ -1525,6 +1536,13 @@ async fn pending_turn_input(
             content,
             presentation,
             context,
+            metadata: super::UserInputMetadata {
+                acceptance_order: Some(session.reserve_user_input_order().await),
+                ..input_metadata
+            },
+        },
+        SubmittedTurnInput::PreparedAgentInput(input) => TurnInput::PreparedAgentInput {
+            input,
             metadata: super::UserInputMetadata {
                 acceptance_order: Some(session.reserve_user_input_order().await),
                 ..input_metadata

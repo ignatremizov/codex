@@ -7,8 +7,14 @@ use crate::agent::api::UnifiedModelInputRequest;
 use test_case::test_case;
 
 #[tokio::test]
-async fn prepared_encrypted_input_rejects_before_target_resolution() {
-    let harness = AgentControlHarness::new().await;
+async fn v1_prepared_encrypted_input_rejects_before_target_resolution() {
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::Collab).expect("V1");
+    config
+        .features
+        .disable(Feature::MultiAgentV2)
+        .expect("not V2");
+    let harness = AgentControlHarness::new_with_config(home, config).await;
     let (sender, root) = harness.start_thread().await;
     let result = harness
         .control

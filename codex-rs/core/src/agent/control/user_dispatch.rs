@@ -297,7 +297,23 @@ impl LocalAgentControl {
             .submission_admission
             .try_accept_completion_delivery()
             .ok_or_else(|| CodexErr::InvalidRequest("observer is closing".into()))?;
-        if let AgentControlInput::AttributedAgentInput { attribution, .. } = &request.input {
+        let attribution = match &request.input {
+            AgentControlInput::User(_) => None,
+            AgentControlInput::AttributedAgentInput { attribution, .. } => {
+                Some(attribution.as_ref())
+            }
+            AgentControlInput::PreparedAgentInput(input) => {
+                if input.sender_instance_id != request.observer.instance_id
+                    || input.recipient_instance_id != child.instance_id
+                {
+                    return Ok(ObservedInputResult::OriginRejected(
+                        "prepared agent input runtime incarnation is no longer current".to_string(),
+                    ));
+                }
+                Some(input.attribution.as_ref())
+            }
+        };
+        if let Some(attribution) = attribution {
             if attribution.sender.thread_id != request.observer.thread_id
                 || attribution.recipient.thread_id != agent_id
             {
@@ -354,8 +370,7 @@ impl LocalAgentControl {
             } else {
                 None
             };
-        let last_task_message =
-            non_empty_task_message(render_input_preview(request.input.presentation()));
+        let last_task_message = non_empty_task_message(request.input.preview());
         let input = request.input.into_request().on_start(request.start_options);
         #[cfg(test)]
         if let codex_protocol::turn_input::TurnInput::AgentInput { presentation, .. } = &input.input

@@ -1180,7 +1180,8 @@ async fn run_hooks_and_record_accepted_inputs(
                 input_item.as_ref(),
                 TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
                     if !content.is_empty()
-            ) {
+            ) || matches!(input_item.as_ref(), TurnInput::PreparedAgentInput { .. })
+            {
                 accepted_user_input = true;
             }
             // Tool outputs retain their durability barrier, including in mixed input batches.
@@ -1301,7 +1302,8 @@ pub(crate) fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
             TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. } => {
                 Some(content.as_slice())
             }
-            TurnInput::ResponseItem(_)
+            TurnInput::PreparedAgentInput { .. }
+            | TurnInput::ResponseItem(_)
             | TurnInput::FunctionCallOutput(_)
             | TurnInput::UserShellContextReady
             | TurnInput::InterAgentCommunication(_) => None,
@@ -1684,7 +1686,8 @@ async fn track_turn_resolved_config_analytics(
                 .filter_map(|item| match item {
                     TurnInput::UserInput { content, .. }
                     | TurnInput::AgentInput { content, .. } => Some(content.as_slice()),
-                    TurnInput::ResponseItem(_)
+                    TurnInput::PreparedAgentInput { .. }
+                    | TurnInput::ResponseItem(_)
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::UserShellContextReady
                     | TurnInput::InterAgentCommunication(_) => None,

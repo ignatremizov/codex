@@ -297,7 +297,7 @@ impl AgentTurnQueue {
                 source_thread_id: turn.source.thread_id,
                 target_thread_id: turn.target_thread_id,
                 input: turn.input.presentation().to_vec(),
-                prompt_preview: super::control::render_input_preview(turn.input.presentation()),
+                prompt_preview: turn.input.preview(),
                 response_observation: turn.response_observation,
                 authored_selector: turn.authored_selector.clone(),
             })

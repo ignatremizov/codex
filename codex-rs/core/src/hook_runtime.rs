@@ -739,6 +739,7 @@ pub(crate) async fn inspect_pending_input(
             .await
         }
         TurnInput::AgentInput { .. }
+        | TurnInput::PreparedAgentInput { .. }
         | TurnInput::ResponseItem(_)
         | TurnInput::UserShellContextReady
         | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
@@ -808,6 +809,16 @@ pub(crate) async fn record_pending_input(
                         .collect(),
                 )
                 .await;
+        }
+        TurnInput::PreparedAgentInput { input, metadata } => {
+            sess.record_prepared_agent_input(
+                turn_context,
+                model_info,
+                input,
+                metadata,
+                persist_context,
+            )
+            .await?;
         }
         TurnInput::ResponseItem(item) => {
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item])
