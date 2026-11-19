@@ -5434,7 +5434,10 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         .into_iter()
         .find_map(|request| request.function_call_output_text(failed_send_call_id))
         .expect("closed-target tool error");
-    assert_eq!(failed_send, format!("agent with id {spawned_id} not found"));
+    assert_eq!(
+        failed_send,
+        format!("agent with id {spawned_id} is closed; use resume_agent to load it")
+    );
     assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
     assert_eq!(
         test.codex

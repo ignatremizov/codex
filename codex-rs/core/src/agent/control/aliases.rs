@@ -259,7 +259,7 @@ impl LocalAgentControl {
             })
     }
 
-    pub(super) async fn find_session_agent_alias(
+    pub(crate) async fn find_session_agent_alias(
         &self,
         thread_id: ThreadId,
     ) -> CodexResult<Option<AgentAlias>> {

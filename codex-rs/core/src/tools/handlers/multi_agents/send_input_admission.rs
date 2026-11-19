@@ -5,6 +5,7 @@ use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::api::AgentTarget;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::AgentModelInputOrigin;
+use crate::agent::control::LocalAgentControl;
 use crate::agent::control::QueuedInputObservationParams;
 use crate::agent::control::ResponseObservationSubmission;
 use crate::agent::input_policy::SendInputMode;
@@ -14,7 +15,9 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_input::SendInputAdmissionStatus;
 use crate::tools::handlers::multi_agents_input::SendInputResult;
+use codex_agent_graph_store::AgentAliasState;
 use codex_protocol::WakeEventMailboxSubscription;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::user_input::UserInput;
@@ -94,11 +97,17 @@ pub(super) async fn prepare_receiver(
         }
         SendInputMode::Response(_) | SendInputMode::Mailbox(_) => mode,
     };
-    let sends_to_descendant = !mailbox
-        && control
+    let sends_to_descendant = if mailbox {
+        false
+    } else {
+        match control
             .is_live_agent_descendant(session.thread_id, receiver)
             .await
-            .map_err(|err| collab_agent_error(receiver, err))?;
+        {
+            Ok(descendant) => descendant,
+            Err(err) => return Err(send_input_receiver_error(&control, receiver, err).await),
+        }
+    };
     if interrupt && !sends_to_descendant {
         return Err(FunctionCallError::RespondToModel(
             "an agent can interrupt only its descendants, not its parent or peers".to_string(),
@@ -226,13 +235,39 @@ pub(super) async fn admit_input(
         }
     }
     .await;
-    result.map_err(|err| {
-        if matches!(mode, SendInputMode::Mailbox(_))
-            && let CodexErrorDetails::UnsupportedOperation(message) = err.details()
-        {
-            FunctionCallError::RespondToModel(message.clone())
-        } else {
-            collab_agent_error(receiver_id, err)
-        }
-    })
+    match result {
+        Ok(receipt) => Ok(receipt),
+        Err(err) if matches!(mode, SendInputMode::Mailbox(_)) => Err(
+            if let CodexErrorDetails::UnsupportedOperation(message) = err.details() {
+                FunctionCallError::RespondToModel(message.clone())
+            } else {
+                collab_agent_error(receiver_id, err)
+            },
+        ),
+        Err(err) => Err(send_input_receiver_error(&control, receiver_id, err).await),
+    }
+}
+
+async fn send_input_receiver_error(
+    control: &LocalAgentControl,
+    receiver: ThreadId,
+    err: CodexErr,
+) -> FunctionCallError {
+    if matches!(err.details(), CodexErrorDetails::ThreadNotFound(id) if *id == receiver)
+        && let Ok(Some(alias)) = control.find_session_agent_alias(receiver).await
+    {
+        let state = match alias.state {
+            AgentAliasState::Closed => "closed",
+            AgentAliasState::Active => "unloaded",
+            AgentAliasState::Transferred => {
+                return FunctionCallError::RespondToModel(format!(
+                    "agent with id {receiver} was transferred out of this root"
+                ));
+            }
+        };
+        return FunctionCallError::RespondToModel(format!(
+            "agent with id {receiver} is {state}; use resume_agent to load it"
+        ));
+    }
+    collab_agent_error(receiver, err)
 }

@@ -3808,6 +3808,26 @@ async fn send_input_mailbox_hints_when_receiver_is_unloaded() {
         parent_session.begin_agent_response_turn(&parent_turn.sub_id),
         "parent turn should become active"
     );
+    let Err(err) = SendInputHandler
+        .handle(invocation(
+            Arc::clone(&parent_session),
+            Arc::clone(&parent_turn),
+            "send_input",
+            function_payload(json!({
+                "target": agent_id.to_string(),
+                "message": "receiver must be loaded for direct delivery",
+            })),
+        ))
+        .await
+    else {
+        panic!("direct input should reject the unloaded receiver");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(format!(
+            "agent with id {agent_id} is unloaded; use resume_agent to load it"
+        ))
+    );
     let output = SendInputHandler
         .handle(invocation(
             parent_session,
